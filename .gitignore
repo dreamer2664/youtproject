@@ -1,0 +1,34 @@
+# ============================================================================
+#  SECRETS — never commit these. The repo is PUBLIC, so this matters.
+#  (There is no OAuth here at all; the only secret is the Gemini key.)
+# ============================================================================
+.env
+.env.*
+.secrets/
+*.pem
+*.key
+
+# Local config may contain your Gemini key
+config.yaml
+
+# Generated output
+work/
+out/
+upload/
+state.json
+state.corrupt.json
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.mp3
+*.wav
+*.jpg
+*.jpeg
+*.png
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/

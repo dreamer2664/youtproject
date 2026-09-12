@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+"""Pre-commit guard: refuse to commit anything that looks like a credential.
+
+Install once:  cp hooks/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+"""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+
+# Filenames that must never be committed.
+BANNED_FILES = {
+    "config.yaml",
+    ".env",
+}
+
+# Token-shaped strings, whatever file they are in.
+PATTERNS = [
+    (r"ghp_[A-Za-z0-9]{36}", "GitHub classic personal access token"),
+    (r"github_pat_[A-Za-z0-9_]{20,}", "GitHub fine-grained personal access token"),
+    (r"AIza[0-9A-Za-z\-_]{35}", "Google API key"),
+    # Newer Gemini/AI Studio keys use an "AQ." prefix, not "AIza".
+    (r"AQ\.[A-Za-z0-9_\-]{40,}", "Gemini / Google AI Studio key"),
+    (r'"client_secret"\s*:\s*"[^"]{10,}"', "OAuth client secret"),
+    (r'"refresh_token"\s*:\s*"[^"]{10,}"', "OAuth refresh token"),
+    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key"),
+]
+
+
+def staged_files() -> list[str]:
+    out = subprocess.run(
+        ["git", "diff", "--cached", "--name-only", "--diff-filter=ACM"],
+        capture_output=True,
+        text=True,
+    )
+    return [line for line in out.stdout.splitlines() if line.strip()]
+
+
+def main() -> int:
+    problems: list[str] = []
+
+    for path in staged_files():
+        name = path.rsplit("/", 1)[-1]
+        if name in BANNED_FILES:
+            problems.append(f"{path}: banned filename (may contain secrets)")
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+                content = handle.read()
+        except OSError:
+            continue
+        for pattern, label in PATTERNS:
+            if re.search(pattern, content):
+                problems.append(f"{path}: contains {label}")
+
+    if problems:
+        print("\n\u274c commit blocked — secrets detected:\n")
+        for problem in problems:
+            print(f"   - {problem}")
+        print("\nUnstage with:  git restore --staged <file>")
+        print("If this is a false positive:  git commit --no-verify\n")
+        return 1
+
+    print("\u2705 no credentials in staged files")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,181 @@
+# youtproject — free AI video generator (no audit needed, ever)
+
+Makes documentary-style videos with AI and prepares everything for upload.
+**Everything here is free, and no audit or verification can ever be required —
+because this tool never talks to the YouTube API at all.** You upload the
+finished files yourself in about 3 minutes per video.
+
+```
+Gemini script  ->  Pollinations images  ->  edge-tts voice  ->  FFmpeg  ->  YOU upload
+   (free key)         (free, no key)        (free, no key)     (free)     (youtube.com)
+```
+
+Each video gets an upload kit with the file, thumbnail, title, description,
+tags, and a step-by-step `CHECKLIST.md` for that exact video.
+
+---
+
+## Why this project exists (the audit problem, in plain words)
+
+YouTube's rule for API uploads:
+
+> All videos uploaded via `videos.insert` from **unverified API projects created
+> after 28 July 2020** are restricted to **private viewing mode**.
+
+Worse, that lock is **permanent**: a video uploaded through an unaudited API
+project cannot be made public afterwards — not via the API, not in YouTube
+Studio — and there is no appeal. You would have to re-upload every video.
+
+Lifting the lock requires passing YouTube's Compliance Audit: a free form, read
+by a human, with no guaranteed approval and no published timeline. Personal and
+hobby projects get rejected often.
+
+This project sidesteps the whole thing: **no API calls means no private lock,
+no quota, no OAuth dance, no audit form, nothing to reject.** The price is
+three minutes of manual uploading per video — which also happens to be where
+you tick YouTube's AI-disclosure box, set scheduling, and do all the things the
+API makes awkward anyway.
+
+---
+
+## Setup
+
+### Windows (PowerShell)
+
+```powershell
+cd $HOME
+git clone https://github.com/dreamer2664/youtproject.git
+cd youtproject
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+Re-run the last line once in a fresh window after it installs FFmpeg, since
+PATH changes need a new window. Then:
+
+```powershell
+.\venv\Scripts\Activate.ps1
+notepad config.yaml
+```
+
+> **Python version note.** If `pip install` fails on very new Python, install
+> Python 3.12 from python.org — `setup.ps1` prefers it automatically.
+
+> If `Activate.ps1` is blocked by execution policy:
+> `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`
+
+### Linux / macOS
+
+```bash
+sudo apt install ffmpeg          # or: brew install ffmpeg
+git clone https://github.com/dreamer2664/youtproject.git
+cd youtproject
+bash setup.sh
+source venv/bin/activate
+```
+
+### Gemini API key (free, no card)
+
+<https://aistudio.google.com/apikey>
+
+Open `config.yaml` and paste it in:
+
+```yaml
+ai:
+  provider: "gemini"
+  gemini_api_key: "AQ.your-key-here"
+```
+
+`config.yaml` is git-ignored, so it will not be committed. No key? Set
+`provider: "template"` and it runs fully offline with lower-quality scripts.
+
+### Check it
+
+```bash
+python main.py preflight          # checks FFmpeg, libraries, key, folders
+python main.py preflight --live   # also validates the Gemini key (one tiny free call)
+```
+
+---
+
+## Use
+
+```bash
+python main.py generate                 # make one video
+python main.py generate --count 3       # make three
+python main.py generate --topic "..."   # override the channel topic for one run
+python main.py queue                    # what's in the queue
+python main.py package                  # build upload kits for generated videos
+python main.py published <id> <url>     # record a manual upload's URL
+python main.py voices --lang it-        # list Italian voiceover voices
+```
+
+### The daily flow
+
+1. `python main.py generate` → finished video lands in `out/`.
+2. `python main.py package` → upload kit lands in `upload/<id>/`.
+3. Open `upload/<id>/CHECKLIST.md`, drag `video.mp4` into
+   <https://youtube.com/upload>, follow the checklist (~3 min).
+4. `python main.py published <id> https://youtu.be/...` → queue stays accurate.
+
+One video a day, at the same hour, beats five at once. See `UPLOAD-GUIDE.md`
+for the full walkthrough: the AI-disclosure box, audience settings, tags,
+thumbnails, and what not to do on a new channel.
+
+---
+
+## Configuration
+
+Everything lives in `config.yaml`. The important keys:
+
+| Key | What it does |
+|---|---|
+| `channel.topic` | Your niche. Drives every script and image. Be specific. |
+| `channel.tone` | How the narration sounds. |
+| `channel.voice` | Free neural voice. `python main.py voices` lists them. |
+| `channel.target_seconds` | Target length. 90–180 suits a new channel. |
+| `channel.category_id` | Prefilled into each video's checklist. |
+| `disclosure.append_to_description` | Adds the AI-disclosure footer to descriptions. Leave on. |
+| `ai.provider` | `gemini` (good scripts) or `template` (keyless fallback). |
+| `ai.gemini_model` | `gemini-flash-latest` tracks the current model automatically. |
+
+---
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `main.py` | CLI |
+| `config.py` | Config loading, env overrides |
+| `scriptgen.py` | Gemini + offline template script writers |
+| `images.py` | Pollinations image generation |
+| `voiceover.py` | edge-tts voiceover |
+| `assembler.py` | FFmpeg: Ken Burns motion, audio, thumbnails |
+| `package.py` | Builds the upload kits + per-video checklists |
+| `jobqueue.py` | `state.json` job tracking |
+| `UPLOAD-GUIDE.md` | The manual-upload walkthrough |
+| `hooks/pre-commit` | Blocks credentials from being committed |
+
+> `jobqueue.py` is deliberately **not** named `queue.py` — that would shadow
+> Python's stdlib `queue` module.
+
+---
+
+## Security
+
+There is no OAuth here at all. The only secret in the project is your Gemini
+key in `config.yaml`, which is git-ignored, and `hooks/pre-commit` blocks
+commits containing API keys or tokens. The setup scripts install that guard
+automatically — this repo is public, so that guard is not optional.
+
+---
+
+## Not recommended
+
+- **Uploading via the YouTube API from an unaudited project.** Videos get
+  permanently locked to private. That is the trap this project exists to avoid.
+- **Selenium / browser automation for uploading.** Violates the YouTube ToS,
+  breaks whenever Studio's HTML changes, and risks your channel. Three minutes
+  of manual uploading is not worth automating at that price.
+- **Dumping dozens of videos on day one.** New channels that publish one solid
+  video a day do better than ones that flood. The tool can generate faster than
+  you should publish.
