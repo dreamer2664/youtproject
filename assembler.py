@@ -34,6 +34,11 @@ def run(cmd: list[str], what: str) -> None:
         raise AssemblyError(
             f"{what} failed (exit {result.returncode}):\n  " + "\n  ".join(tail)
         )
+    # Surface warnings (libass/font issues hide here) instead of swallowing them.
+    err = (result.stderr or "").strip()
+    if err:
+        for line in err.splitlines():
+            print(f"    [ffmpeg:{what}] {line[:200]}")
 
 
 def ffprobe_duration(path: Path) -> float:
@@ -117,7 +122,7 @@ def build_segments(
             )
             run(
                 [
-                    "ffmpeg", "-y", "-loglevel", "error",
+                    "ffmpeg", "-y", "-loglevel", "warning",
                     "-loop", "1", "-i", str(image),
                     "-vf", vf,
                     "-t", f"{part_seconds:.3f}",
@@ -134,7 +139,7 @@ def build_segments(
         pad = work_dir / f"pad_{s_num:02d}.wav"
         run(
             [
-                "ffmpeg", "-y", "-loglevel", "error",
+                "ffmpeg", "-y", "-loglevel", "warning",
                 "-i", str(audio),
                 "-af", f"adelay={int(HEAD_TAIL * 1000)}|{int(HEAD_TAIL * 1000)},"
                        f"apad=whole_dur={scene_seconds:.3f}",
@@ -183,17 +188,14 @@ def assemble_video(
     # avoids amix's input-sync buffering, which ballooned past 1GB on
     # small machines and OOM-killed the mux.
     cmd = [
-        "ffmpeg", "-y", "-loglevel", "error",
+        "ffmpeg", "-y", "-loglevel", "warning",
         "-f", "concat", "-safe", "0", "-i", str(concat_txt),
         "-f", "concat", "-safe", "0", "-i", str(audio_txt),
     ]
     if srt_path is not None:
-        from subtitles import burn_style, esc_subs_path
+        from subtitles import filter_args
 
-        cmd += [
-            "-vf",
-            f"subtitles={esc_subs_path(srt_path)}:force_style='{burn_style(cfg.format)}'",
-        ]
+        cmd += ["-vf", filter_args(srt_path, cfg.format)]
     cmd += [
         "-filter_complex",
         "[1:a]volume=1.0,afade=t=out:st="
@@ -297,7 +299,7 @@ def build_thumbnail(
         try:
             run(
                 [
-                    "ffmpeg", "-y", "-loglevel", "error",
+                    "ffmpeg", "-y", "-loglevel", "warning",
                     "-i", str(image_path),
                     "-vf", vf,
                     "-frames:v", "1",

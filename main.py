@@ -7,6 +7,7 @@
                                  vertical Short with burned-in subtitles
     python main.py queue         show queue status
     python main.py package       build upload-ready kits in upload/<id>/
+    python main.py reburn <id>   burn subtitles into an already-made video
     python main.py published     record a manual upload's URL
     python main.py voices        list available voiceover voices
 
@@ -119,6 +120,19 @@ def cmd_preflight(cfg, args) -> int:
                 "subtitle burn-in unavailable in this FFmpeg build",
                 "captions.srt will still be included in every kit for manual upload",
             )
+
+    if shutil.which("ffmpeg"):
+        from assembler import _ffmpeg_has_filter as _has_subs
+
+        if _has_subs("subtitles"):
+            if _subtitle_render_test(cfg):
+                ok("subtitle render test passed (burned text is visible)")
+            else:
+                warn(
+                    "subtitle burn-in produced no visible text",
+                    "font lookup failed — videos will lack burned subs "
+                    "(captions.srt still works)",
+                )
 
     # 6. optional live Gemini check (one tiny free request)
     if args.live:
@@ -352,6 +366,100 @@ def cmd_package(cfg, args) -> int:
     return 0
 
 
+def _subtitle_render_test(cfg) -> bool:
+    """Burn one test frame and check pixels actually changed. True if visible."""
+    import subprocess
+
+    from subtitles import filter_args
+
+    test_dir = cfg.work_dir / ".subtest"
+    try:
+        test_dir.mkdir(parents=True, exist_ok=True)
+        srt = test_dir / "t.srt"
+        srt.write_text(
+            "1\n00:00:00,000 --> 00:00:05,000\nSubtitle render test\n",
+            encoding="utf-8",
+        )
+        bg = test_dir / "bg.jpg"
+        # Test at the real configured resolution: subtitle size and margins
+        # scale with frame size, so a tiny test frame would mis-position them.
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+             "-i", f"color=c=black:s={cfg.width}x{cfg.height}:d=1",
+             "-frames:v", "1", str(bg)],
+            capture_output=True,
+        )
+        if result.returncode != 0 or not bg.exists():
+            return False
+        plain = test_dir / "plain.png"
+        burned = test_dir / "burned.png"
+        for out, extra in ((plain, []), (burned, ["-vf", filter_args(srt, cfg.format)])):
+            result = subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-loop", "1",
+                 "-i", str(bg), *extra, "-frames:v", "1", str(out)],
+                capture_output=True,
+            )
+            if result.returncode != 0 or not out.exists():
+                return False
+        return plain.read_bytes() != burned.read_bytes()
+    except OSError:
+        return False
+    finally:
+        shutil.rmtree(test_dir, ignore_errors=True)
+
+
+# --------------------------------------------------------------------------
+# reburn
+# --------------------------------------------------------------------------
+def cmd_reburn(cfg, args) -> int:
+    """Burn subtitles into an already-generated video (no regeneration)."""
+    from assembler import AssemblyError, _ffmpeg_has_filter, run
+    from subtitles import filter_args
+
+    queue = Queue(cfg.state_file)
+    job = queue.get(args.id)
+    if job is None:
+        die(f"no job matching '{args.id}'. Run: python main.py queue")
+    if job.status not in ("generated", "packaged"):
+        die(f"job {job.id} is '{job.status}' — reburn needs a generated video.")
+    video_path = Path(job.video_file)
+    if not video_path.exists():
+        die(f"video file missing: {video_path}")
+    srt_path = video_path.with_suffix(".srt")
+    if not srt_path.exists():
+        die(f"no subtitle file next to the video ({srt_path.name}). "
+            f"This job was made with subtitles off — regenerate instead.")
+    if not _ffmpeg_has_filter("subtitles"):
+        die("this FFmpeg build has no subtitles filter — can't burn in.")
+    tmp = video_path.with_name(video_path.stem + "_reburn.mp4")
+    print(f"Burning {srt_path.name} into {video_path.name} ...")
+    try:
+        run(["ffmpeg", "-y", "-loglevel", "warning",
+             "-i", str(video_path),
+             "-vf", filter_args(srt_path, cfg.format),
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+             "-c:a", "copy",
+             str(tmp)], "reburn")
+    except AssemblyError as exc:
+        tmp.unlink(missing_ok=True)
+        die(str(exc))
+    tmp.replace(video_path)
+    try:
+        meta_path = Path(job.meta_file)
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["subtitle_file"] = srt_path.name
+            meta["subtitles_burned_in"] = True
+            meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+    if job.status == "packaged":
+        queue.update(job, status="generated", package_dir="")
+        print("Kit is stale now — re-run: python main.py package")
+    print(f"\u2705 burned in. Watch it: {video_path}")
+    return 0
+
+
 # --------------------------------------------------------------------------
 # published / queue / voices
 # --------------------------------------------------------------------------
@@ -410,6 +518,9 @@ def main() -> int:
     p.add_argument("--id", help="package only the job with this id (prefix ok)")
     p.add_argument("--limit", type=int, help="max kits to build this run")
 
+    p = sub.add_parser("reburn", help="burn subtitles into an existing video")
+    p.add_argument("id", help="job id (prefix ok)")
+
     p = sub.add_parser("published", help="record a manual upload's URL")
     p.add_argument("id", help="job id (prefix ok)")
     p.add_argument("url", help="the YouTube URL, e.g. https://youtu.be/....")
@@ -429,6 +540,7 @@ def main() -> int:
         "preflight": cmd_preflight,
         "generate": cmd_generate,
         "package": cmd_package,
+        "reburn": cmd_reburn,
         "published": cmd_published,
         "queue": cmd_queue,
         "voices": cmd_voices,

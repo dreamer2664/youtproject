@@ -149,12 +149,19 @@ def max_chars_for(fmt: str) -> int:
 
 
 def burn_style(video_format: str) -> str:
-    """force_style value for the burn-in (libass). No surrounding quotes."""
+    """force_style value for the burn-in (libass). No surrounding quotes.
+
+    NOTE: FontSize AND margins are in PlayRes units (libass default
+    PlayResY=288) and get scaled up to video size — portrait x6.67,
+    landscape x3.75. Margins must be tiny numbers here or the text lands
+    off-screen (MarginV=330 on portrait = 2200px = invisible!).
+    """
     if video_format == "portrait":
-        # Chunkier text sitting high enough to clear the Shorts UI overlay.
-        fontsize, margin_v = 11, 330
+        # ~73px text sitting ~333px up — clears the Shorts UI overlay.
+        fontsize, margin_v = 11, 50
     else:
-        fontsize, margin_v = 14, 45
+        # ~52px text, ~45px from the bottom.
+        fontsize, margin_v = 14, 12
     return (
         f"FontName=Arial,FontSize={fontsize},"
         "PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,"
@@ -167,3 +174,23 @@ def esc_subs_path(path: Path) -> str:
     """Quote an .srt path for the subtitles filter (Windows-colon safe)."""
     safe = str(path.absolute()).replace("\\", "/").replace("'", "")
     return "'" + safe.replace(":", "\\:") + "'"
+
+
+def system_fonts_dir() -> Path | None:
+    """Directory holding system fonts, for libass font lookup.
+
+    Needed on Windows, where fontconfig does not search C:\\Windows\\Fonts
+    by itself — without this, burn-in silently renders no text.
+    """
+    cand = Path("C:/Windows/Fonts")
+    return cand if cand.is_dir() else None
+
+
+def filter_args(srt_path: Path, video_format: str) -> str:
+    """Full `subtitles=...` filter argument value (without -vf quotes)."""
+    parts = [f"subtitles={esc_subs_path(srt_path)}"]
+    fonts = system_fonts_dir()
+    if fonts is not None:
+        parts.append(f"fontsdir={esc_subs_path(fonts)}")
+    parts.append(f"force_style='{burn_style(video_format)}'")
+    return ":".join(parts)
