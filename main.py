@@ -8,6 +8,7 @@
     python main.py queue         show queue status
     python main.py package       build upload-ready kits in upload/<id>/
     python main.py batch --topics topics.txt   render a whole batch of videos
+    python main.py bot                       render videos from your phone via Telegram
     python main.py reburn <id>   burn subtitles into an already-made video
     python main.py published     record a manual upload's URL
     python main.py voices        list available voiceover voices
@@ -135,7 +136,20 @@ def cmd_preflight(cfg, args) -> int:
                     "(captions.srt still works)",
                 )
 
-    # 6. optional live Gemini check (one tiny free request)
+    # 6. phone control (only when enabled)
+    if cfg.telegram_enabled:
+        print()
+        if not cfg.telegram_token or not cfg.telegram_owner:
+            warn("Telegram enabled but token/owner missing",
+                 "see telegram: in config.yaml")
+        else:
+            try:
+                from bot import check_token
+                ok(f"Telegram bot reachable (@{check_token(cfg)})")
+            except Exception as exc:  # noqa: BLE001
+                warn("Telegram bot unreachable", str(exc).splitlines()[0][:140])
+
+    # 7. optional live Gemini check (one tiny free request)
     if args.live:
         print()
         if not cfg.gemini_api_key:
@@ -541,6 +555,31 @@ def cmd_batch(cfg, args) -> int:
 
 
 # --------------------------------------------------------------------------
+# bot — render videos from your phone via Telegram
+# --------------------------------------------------------------------------
+def cmd_bot(cfg, args) -> int:
+    """Poll Telegram for topics; render each; send back the finished video."""
+    print(BANNER)
+    if not cfg.telegram_token:
+        die("no Telegram bot token — message @BotFather for one, then set "
+            "telegram.bot_token in config.yaml (or export TELEGRAM_BOT_TOKEN).")
+    if not cfg.telegram_owner:
+        die("no Telegram owner id — message @userinfobot, then set "
+            "telegram.owner_id in config.yaml.")
+    if not cfg.telegram_enabled:
+        print("NOTE: telegram.enabled is false — starting anyway. "
+              "Set it true to silence this.\n")
+    print(f"Video settings for bot renders: {cfg.format} {cfg.width}x{cfg.height}, "
+          f"~{cfg.target_seconds}s, {cfg.images_per_scene} images/scene.\n")
+    from bot import PhoneBot
+    try:
+        PhoneBot(cfg, seconds=args.seconds, fmt=args.format).run_forever()
+    except KeyboardInterrupt:
+        print("\n  [bot] stopped. Bye!")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # published / queue / voices
 # --------------------------------------------------------------------------
 def cmd_published(cfg, args) -> int:
@@ -607,6 +646,11 @@ def main() -> int:
     p.add_argument("--keep-work", action="store_true")
     p.add_argument("--verbose", action="store_true")
 
+    p = sub.add_parser("bot", help="render videos from your phone via Telegram")
+    p.add_argument("--seconds", type=int, help="target length for bot renders")
+    p.add_argument("--format", choices=["landscape", "portrait"],
+                   help="orientation for bot renders")
+
     p = sub.add_parser("package", help="build upload-ready kits")
     p.add_argument("--id", help="package only the job with this id (prefix ok)")
     p.add_argument("--limit", type=int, help="max kits to build this run")
@@ -633,6 +677,7 @@ def main() -> int:
         "preflight": cmd_preflight,
         "generate": cmd_generate,
         "batch": cmd_batch,
+        "bot": cmd_bot,
         "package": cmd_package,
         "reburn": cmd_reburn,
         "published": cmd_published,

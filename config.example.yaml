@@ -107,3 +107,17 @@ paths:
   out_dir: "out"
   package_dir: "upload"
   state_file: "state.json"
+
+telegram:
+  # Phone control (free): text the bot a topic, get back a finished video.
+  # Your PC must be on with `python main.py bot` running — the bot polls
+  # Telegram from here, so no firewall or port setup is needed.
+  enabled: false
+
+  # 1. Message @BotFather on Telegram -> /newbot -> paste the token here
+  #    (or export TELEGRAM_BOT_TOKEN instead of writing it in this file).
+  bot_token: ""
+
+  # 2. Message @userinfobot on Telegram -> paste your numeric user id here.
+  #    The bot ONLY talks to this account — everyone else is ignored.
+  owner_id: 0

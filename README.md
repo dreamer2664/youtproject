@@ -110,6 +110,7 @@ python main.py generate --images-per-scene 3             # denser cuts
 python main.py generate --no-subs       # skip subtitles for one run
 python main.py batch --topics topics.txt  # render a whole list overnight
 python main.py batch --count 7          # 7 auto-variations of your topic
+python main.py bot                         # render videos from your phone via Telegram
 python main.py queue                    # what's in the queue
 python main.py package                  # build upload kits for generated videos
 python main.py published <id> <url>     # record a manual upload's URL
@@ -141,6 +142,22 @@ The output always tells you which it used (`from config.yaml` vs
 One video a day, at the same hour, beats five at once. See `UPLOAD-GUIDE.md`
 for the full walkthrough: the AI-disclosure box, captions, audience settings,
 thumbnails, Shorts, and what not to do on a new channel.
+
+### Phone control (Telegram, free)
+
+Text the bot a topic from your phone, get back the finished video:
+
+1. Message `@BotFather` → `/newbot` → copy the token.
+2. Message `@userinfobot` → copy your numeric user id.
+3. Put both in `config.yaml` (`telegram.bot_token` / `telegram.owner_id`),
+   set `telegram.enabled: true`.
+4. `python main.py bot` — leave your PC on; the bot polls from here, so no
+   firewall or port setup is needed.
+
+Plain text = a topic to render. `/queue` shows progress. One video renders
+at a time; extras queue up. The video arrives as a file (bit-exact, ready
+to upload) plus the caption and hashtags, and the full YouTube kit is also
+built on your PC. Only your account can use the bot.
 
 ---
 
@@ -182,6 +199,7 @@ long-form without touching the config.
 | `assembler.py` | FFmpeg: sub-segments, burn-in, mux, thumbnails |
 | `package.py` | Upload kits + checklists + TikTok/Reels captions |
 | `jobqueue.py` | `state.json` job tracking |
+| `bot.py` | Telegram phone control (polls, renders, delivers) |
 | `UPLOAD-GUIDE.md` | The manual-upload walkthrough |
 | `hooks/pre-commit` | Blocks credentials from being committed |
 
@@ -192,8 +210,9 @@ long-form without touching the config.
 
 ## Security
 
-There is no OAuth here at all. The only secret in the project is your Gemini
-key in `config.yaml`, which is git-ignored, and `hooks/pre-commit` blocks
+There is no OAuth here at all. The only secrets in the project are your Gemini
+key and (if you enable phone control) your Telegram bot token, both living in
+`config.yaml`, which is git-ignored, and `hooks/pre-commit` blocks
 commits containing API keys or tokens. The setup scripts install that guard
 automatically — this repo is public, so that guard is not optional.
 

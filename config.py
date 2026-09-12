@@ -67,6 +67,16 @@ DEFAULTS: dict[str, Any] = {
         # Seconds to wait per image before giving up.
         "image_timeout": 90,
     },
+    "telegram": {
+        # Phone control: text the bot a topic, get back a finished video.
+        # Free. Your PC must be on with `python main.py bot` running.
+        "enabled": False,
+        # From @BotFather on Telegram (/newbot). Or export TELEGRAM_BOT_TOKEN.
+        "bot_token": "",
+        # Your numeric Telegram user id from @userinfobot. The bot ONLY
+        # talks to this account — everyone else is ignored.
+        "owner_id": 0,
+    },
     "paths": {
         "work_dir": "work",
         "out_dir": "out",
@@ -180,6 +190,25 @@ class Config:
     @property
     def thumb_height(self) -> int:
         return 720 if self.format == "landscape" else 1280
+
+    # -- telegram --------------------------------------------------------
+    @property
+    def telegram_enabled(self) -> bool:
+        return bool(self.data.get("telegram", {}).get("enabled", False))
+
+    @property
+    def telegram_token(self) -> str:
+        return (
+            os.environ.get("TELEGRAM_BOT_TOKEN")
+            or str(self.data.get("telegram", {}).get("bot_token") or "")
+        ).strip()
+
+    @property
+    def telegram_owner(self) -> int:
+        try:
+            return int(str(self.data.get("telegram", {}).get("owner_id", 0)))
+        except (ValueError, TypeError):
+            return 0
 
     # -- subtitles -------------------------------------------------------
     @property
