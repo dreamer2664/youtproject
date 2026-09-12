@@ -34,7 +34,9 @@ Time per video: about 3 minutes once you've done it twice.
 - **Description** — paste from `description.txt`. It ends with an AI-disclosure
   footer. **Do not delete that footer.**
 - **Thumbnail** — *Upload File* → pick `thumbnail.jpg`. Custom thumbnails
-  massively outperform auto frames; always upload it.
+  massively outperform auto frames; always upload it. (For Shorts, see
+  section 8 — the thumbnail file is a fallback; viewers mostly see a
+  freeze-frame you pick in the mobile app.)
 - **Tags** — under *Show more*, paste from `tags.txt`. Already ≤ 500
   characters total. Tags barely matter for discovery in 2026, but they cost
   nothing.
@@ -58,7 +60,21 @@ channel, and viewers increasingly filter for disclosed content anyway. The
 description footer and this checkbox together are the complete, correct
 disclosure. It takes five seconds.
 
-## 5. Audience
+## 5. Captions — upload the .srt even though subs are burned in
+
+Subtitles are already burned into the picture, but still upload
+`captions.srt`: Studio → left menu **Subtitles** → pick the video → *Add* →
+*Upload file*. Why:
+
+- Viewers can turn captions **off** (burned-in can't be disabled).
+- YouTube **indexes caption text for search**.
+- Auto-translate to other languages only works from uploaded captions.
+
+If your video was made with `--no-subs`, there is no `.srt` — either let
+YouTube auto-generate captions (slower, no Studio action needed) or regenerate
+with subtitles on.
+
+## 6. Audience
 
 > *Is this video made for kids?*
 
@@ -67,7 +83,7 @@ Answer **No** unless the video genuinely targets children. Answering Yes
 direction brings COPPA trouble you do not want. Documentary-style narration =
 not for kids.
 
-## 6. Visibility — schedule, don't dump
+## 7. Visibility — schedule, don't dump
 
 - **First video:** Public, publish now. Check it renders correctly (thumbnail,
   captions, end screen).
@@ -77,7 +93,22 @@ not for kids.
   to automated systems and splits your tiny initial audience across videos
   instead of concentrating watch time on one.
 
-## 7. After publishing
+## 8. Shorts (portrait videos)
+
+- Anything vertical under 3 minutes is shelved as a Short **automatically** —
+  there is no separate upload flow. Just upload normally.
+- **Thumbnail:** Shorts show a freeze-frame, picked in the **mobile** YouTube /
+  Studio app after upload (web Studio can't change it). Scroll to a frame with
+  a clean background and visible subtitles.
+- **Pacing:** the first 2 seconds decide everything. Watch your Short once and
+  check the hook lands immediately — if the opening line is slow, regenerate
+  with a punchier `--topic` angle.
+- **Subtitles** are placed high enough to clear the Shorts UI overlay (title,
+  like/subscribe buttons). Don't move them.
+- Don't hashtag-stuff: `#Shorts` in the description is harmless but no longer
+  required for shelfing.
+
+## 9. After publishing
 
 ```bash
 python main.py published <id> https://youtu.be/PASTE-ID-HERE

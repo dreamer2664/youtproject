@@ -47,12 +47,27 @@ python main.py package       # builds the upload kit into upload\<id>\
 ```
 
 Then open `upload\<id>\CHECKLIST.md` and follow it — drag the video into
-<https://youtube.com/upload>, paste the title/description/tags, tick the
-AI-disclosure box. About 3 minutes.
+<https://youtube.com/upload>, paste the title/description/tags, upload the
+captions file, tick the AI-disclosure box. About 3 minutes.
 
 ```powershell
 python main.py published <id> https://youtu.be/...   # record the URL
 ```
+
+---
+
+## Useful variations
+
+```powershell
+python main.py generate --format portrait --seconds 45   # vertical Short
+python main.py generate --seconds 120                    # 2-minute landscape video
+python main.py generate --topic "one-off idea here"      # single video outside your niche
+python main.py generate --images-per-scene 3             # more pictures, denser cuts
+python main.py generate --no-subs                        # no subtitles for this run
+```
+
+These override `config.yaml` for one run only — the file stays untouched, so
+you can mix Shorts and long-form freely.
 
 ---
 
@@ -81,4 +96,4 @@ there's no appeal.
 
 Manual uploading has none of that. No audit, no quota, no lock. The
 `CHECKLIST.md` in each kit walks you through YouTube Studio step by step,
-including the AI-disclosure box you're required to tick.
+including the captions upload and the AI-disclosure box you're required to tick.

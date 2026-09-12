@@ -2,7 +2,9 @@
 """Free AI video generator with manual YouTube upload — no API, no audit.
 
     python main.py preflight     check setup before anything else
-    python main.py generate      AI script -> images -> voice -> finished MP4
+    python main.py generate      AI script -> voice -> images -> subtitled MP4
+    python main.py generate --format portrait --seconds 45
+                                 vertical Short with burned-in subtitles
     python main.py queue         show queue status
     python main.py package       build upload-ready kits in upload/<id>/
     python main.py published     record a manual upload's URL
@@ -100,7 +102,25 @@ def cmd_preflight(cfg, args) -> int:
     except OSError as exc:
         bad("output folders not writable", str(exc))
 
-    # 5. optional live Gemini check (one tiny free request)
+    # 5. effective video settings + subtitle burn-in
+    print()
+    ok(
+        f"default video: {cfg.format} {cfg.width}x{cfg.height}, "
+        f"{cfg.target_seconds}s target, {cfg.images_per_scene} images/scene, "
+        f"subtitles {'on' if cfg.subtitles_enabled else 'off'}"
+    )
+    if shutil.which("ffmpeg"):
+        from assembler import _ffmpeg_has_filter
+
+        if _ffmpeg_has_filter("subtitles"):
+            ok("subtitle burn-in available")
+        else:
+            warn(
+                "subtitle burn-in unavailable in this FFmpeg build",
+                "captions.srt will still be included in every kit for manual upload",
+            )
+
+    # 6. optional live Gemini check (one tiny free request)
     if args.live:
         print()
         if not cfg.gemini_api_key:
@@ -142,6 +162,21 @@ def cmd_preflight(cfg, args) -> int:
 # --------------------------------------------------------------------------
 def cmd_generate(cfg, args) -> int:
     print(BANNER)
+    if args.seconds is not None:
+        cfg.data["channel"]["target_seconds"] = args.seconds
+    if args.format is not None:
+        cfg.data["video"]["format"] = args.format
+    if args.images_per_scene is not None:
+        cfg.data["video"]["images_per_scene"] = args.images_per_scene
+    if args.no_subs:
+        cfg.data["subtitles"]["enabled"] = False
+
+    print(
+        f"Settings for this run: {cfg.format} {cfg.width}x{cfg.height}, "
+        f"~{cfg.target_seconds}s, {cfg.images_per_scene} images/scene, "
+        f"subtitles {'on' if cfg.subtitles_enabled else 'off'}\n"
+    )
+
     provider = get_provider(cfg)
     queue = Queue(cfg.state_file)
     count = args.count
@@ -150,14 +185,15 @@ def cmd_generate(cfg, args) -> int:
         topic = args.topic or cfg.topic
         if count > 1:
             topic = f"{topic} (variation {number} of {count}: choose a different specific story each time)"
-        print(f"[{number}/{count}] topic: {topic}")
+        source = "--topic override" if args.topic else "from config.yaml"
+        print(f"[{number}/{count}] topic: {topic}  ({source})")
 
         job = queue.add(topic)
         job_dir = cfg.work_dir / job.id
         job_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            print("  1/4 script")
+            print("  1/5 script")
             script = provider.generate(cfg, args.topic)
             print(f"      title   : {script.title}")
             print(f"      scenes  : {len(script.scenes)}")
@@ -180,18 +216,20 @@ def cmd_generate(cfg, args) -> int:
                 encoding="utf-8",
             )
 
-            print("  2/4 voiceover")
+            print("  2/5 voiceover")
             from voiceover import generate_scene_audio
 
-            audio_paths = generate_scene_audio(script, cfg, job_dir / "audio")
+            audio_paths, timings = generate_scene_audio(script, cfg, job_dir / "audio")
 
-            print("  3/4 images")
+            print("  3/5 images")
             from images import generate_scene_images
 
-            image_paths = generate_scene_images(script, cfg, job_dir / "images")
+            images_by_scene = generate_scene_images(script, cfg, job_dir / "images")
 
-            print("  4/4 assembling video")
+            print("  4/5 cutting scenes")
             from assembler import (
+                HEAD_TAIL,
+                _ffmpeg_has_filter,
                 assemble_video,
                 build_segments,
                 build_thumbnail,
@@ -199,12 +237,47 @@ def cmd_generate(cfg, args) -> int:
             )
 
             segments, padded, durations = build_segments(
-                image_paths, audio_paths, job_dir, cfg
+                images_by_scene, audio_paths, job_dir, cfg
             )
             out_path = cfg.out_dir / f"{job.id}.mp4"
-            assemble_video(segments, padded, out_path, cfg, work_dir=job_dir)
-            build_thumbnail(image_paths[0], script.title, out_path.with_suffix(".jpg"), cfg)
-            meta_path = write_metadata(script, out_path, cfg)
+
+            print("  5/5 subtitles + final video")
+            srt_path = None
+            burned_in = False
+            if cfg.subtitles_enabled:
+                from subtitles import build_cues, max_chars_for, write_srt
+
+                starts: list[float] = []
+                running = 0.0
+                for scene_len in durations:
+                    starts.append(running)
+                    running += scene_len
+                cues = build_cues(
+                    [s.narration for s in script.scenes],
+                    timings,
+                    starts,
+                    durations,
+                    max_chars_for(cfg.format),
+                    HEAD_TAIL,
+                )
+                srt_path = write_srt(cues, out_path.with_suffix(".srt"))
+                print(f"      subtitles : {len(cues)} cues -> {srt_path.name}")
+                if _ffmpeg_has_filter("subtitles"):
+                    burned_in = True
+                else:
+                    print("      subtitles : burn-in unavailable in this FFmpeg build —")
+                    print("                    captions.srt is still included in the kit")
+
+            assemble_video(segments, padded, out_path, cfg, work_dir=job_dir,
+                           srt_path=srt_path if burned_in else None)
+            build_thumbnail(images_by_scene[0][0], script.title,
+                            out_path.with_suffix(".jpg"), cfg)
+            meta_path = write_metadata(
+                script, out_path, cfg,
+                duration_seconds=sum(durations),
+                subtitle_file=srt_path.name if srt_path else None,
+                subtitles_burned_in=burned_in,
+            )
 
             total = sum(durations)
             size_mb = out_path.stat().st_size / (1024 * 1024)
@@ -323,6 +396,12 @@ def main() -> int:
     p = sub.add_parser("generate", help="make videos")
     p.add_argument("--topic", help="override the configured channel topic")
     p.add_argument("--count", type=int, default=1, help="how many videos to make")
+    p.add_argument("--seconds", type=int, help="target length, e.g. 45 for a Short")
+    p.add_argument("--format", choices=["landscape", "portrait"],
+                   help="landscape = regular video, portrait = Shorts (1080x1920)")
+    p.add_argument("--images-per-scene", type=int, dest="images_per_scene",
+                   help="pictures per narrated scene, 1-6 (default 2)")
+    p.add_argument("--no-subs", action="store_true", help="skip subtitles for this run")
     p.add_argument("--keep-work", action="store_true", help="keep intermediate files")
     p.add_argument("--keep-going", action="store_true", help="continue after a failure")
     p.add_argument("--verbose", action="store_true")
@@ -341,7 +420,10 @@ def main() -> int:
     p.add_argument("--lang", default="en-", help="voice prefix filter, e.g. en-, it-, de-")
 
     args = parser.parse_args()
-    cfg = load_config(args.config)
+    try:
+        cfg = load_config(args.config)
+    except ValueError as exc:
+        die(str(exc))
 
     handlers = {
         "preflight": cmd_preflight,

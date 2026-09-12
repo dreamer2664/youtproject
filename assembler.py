@@ -61,63 +61,77 @@ def _esc(text: str) -> str:
 
 
 def build_segments(
-    image_paths: list[Path],
+    images_by_scene: list[list[Path]],
     audio_paths: list[Path],
     work_dir: Path,
     cfg: Config,
 ) -> tuple[list[Path], list[Path], list[float]]:
-    """Create per-scene video segments and padded audio. Returns (segments, audio, durations)."""
+    """Create video sub-segments and padded scene audio.
+
+    Each scene is split into one sub-segment per image (see
+    video.images_per_scene), so the picture cuts regularly under the
+    narration. Returns (segments, padded_audio, scene_durations) — audio and
+    durations stay per-scene, since concatenation only needs matching totals.
+    """
     segments: list[Path] = []
     padded_audio: list[Path] = []
-    durations: list[float] = []
+    scene_durations: list[float] = []
 
-    total = len(image_paths)
+    total = len(audio_paths)
     pre_w, pre_h = cfg.width * 2, cfg.height * 2  # pre-upscale to kill zoompan jitter
+    sub_index = 0
 
-    for index, (image, audio) in enumerate(zip(image_paths, audio_paths), start=1):
+    for s_num, (scene_images, audio) in enumerate(zip(images_by_scene, audio_paths), start=1):
         narration_seconds = ffprobe_duration(audio)
         scene_seconds = max(MIN_SCENE_SECONDS, narration_seconds + 2 * HEAD_TAIL)
-        durations.append(scene_seconds)
+        scene_durations.append(scene_seconds)
 
-        frames = max(1, int(scene_seconds * cfg.fps))
-        zoom_delta = cfg.zoom - 1.0
-        # Alternate push-in and push-out so the video does not feel repetitive.
-        zoom_in = index % 2 == 1
+        shots = scene_images or []
+        if not shots:
+            raise AssemblyError(f"scene {s_num} has no images")
+        part_seconds = scene_seconds / len(shots)
 
-        if zoom_in:
-            zoom_expr = f"min(1+{zoom_delta:.4f}*on/{frames},{cfg.zoom:.4f})"
-            x_expr = "iw/2-(iw/zoom/2)"
-            y_expr = "ih/2-(ih/zoom/2)"
-        else:
-            zoom_expr = f"max({cfg.zoom:.4f}-{zoom_delta:.4f}*on/{frames},1)"
-            x_expr = "iw/2-(iw/zoom/2)"
-            y_expr = "ih/2-(ih/zoom/2)"
+        for slot, image in enumerate(shots, start=1):
+            sub_index += 1
+            frames = max(1, int(part_seconds * cfg.fps))
+            zoom_delta = cfg.zoom - 1.0
+            # Alternate push-in and push-out so the video does not feel repetitive.
+            zoom_in = sub_index % 2 == 1
 
-        segment = work_dir / f"seg_{index:02d}.mp4"
-        vf = (
-            f"scale={pre_w}:{pre_h}:force_original_aspect_ratio=increase,"
-            f"crop={pre_w}:{pre_h},"
-            f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':"
-            f"d={frames}:s={cfg.width}x{cfg.height}:fps={cfg.fps},"
-            f"format=yuv420p"
-        )
-        run(
-            [
-                "ffmpeg", "-y", "-loglevel", "error",
-                "-loop", "1", "-i", str(image),
-                "-vf", vf,
-                "-t", f"{scene_seconds:.3f}",
-                "-r", str(cfg.fps),
-                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
-                "-pix_fmt", "yuv420p",
-                str(segment),
-            ],
-            f"segment {index}/{total}",
-        )
-        segments.append(segment)
+            if zoom_in:
+                zoom_expr = f"min(1+{zoom_delta:.4f}*on/{frames},{cfg.zoom:.4f})"
+                x_expr = "iw/2-(iw/zoom/2)"
+                y_expr = "ih/2-(ih/zoom/2)"
+            else:
+                zoom_expr = f"max({cfg.zoom:.4f}-{zoom_delta:.4f}*on/{frames},1)"
+                x_expr = "iw/2-(iw/zoom/2)"
+                y_expr = "ih/2-(ih/zoom/2)"
+
+            segment = work_dir / f"seg_{s_num:02d}_{slot}.mp4"
+            vf = (
+                f"scale={pre_w}:{pre_h}:force_original_aspect_ratio=increase,"
+                f"crop={pre_w}:{pre_h},"
+                f"zoompan=z='{zoom_expr}':x='{x_expr}':y='{y_expr}':"
+                f"d={frames}:s={cfg.width}x{cfg.height}:fps={cfg.fps},"
+                f"format=yuv420p"
+            )
+            run(
+                [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-loop", "1", "-i", str(image),
+                    "-vf", vf,
+                    "-t", f"{part_seconds:.3f}",
+                    "-r", str(cfg.fps),
+                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                    "-pix_fmt", "yuv420p",
+                    str(segment),
+                ],
+                f"segment scene {s_num}/{total} shot {slot}/{len(shots)}",
+            )
+            segments.append(segment)
 
         # Pad narration so its length matches the video segment exactly.
-        pad = work_dir / f"pad_{index:02d}.wav"
+        pad = work_dir / f"pad_{s_num:02d}.wav"
         run(
             [
                 "ffmpeg", "-y", "-loglevel", "error",
@@ -127,11 +141,11 @@ def build_segments(
                 "-ar", "48000", "-ac", "2",
                 str(pad),
             ],
-            f"audio pad {index}/{total}",
+            f"audio pad {s_num}/{total}",
         )
         padded_audio.append(pad)
 
-    return segments, padded_audio, durations
+    return segments, padded_audio, scene_durations
 
 
 def assemble_video(
@@ -140,8 +154,13 @@ def assemble_video(
     out_path: Path,
     cfg: Config,
     work_dir: Path | None = None,
+    srt_path: Path | None = None,
 ) -> Path:
-    """Concatenate segments, build the audio track, mux to the final MP4."""
+    """Concatenate segments, build the audio track, mux to the final MP4.
+
+    When srt_path is given, subtitles are burned into the picture (requires
+    a libass-enabled FFmpeg — the caller checks for the subtitles filter).
+    """
     if work_dir is None:
         work_dir = out_path.parent
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -154,40 +173,45 @@ def assemble_video(
         "".join(f"file {shlex.quote(str(p))}\n" for p in padded_audio), encoding="utf-8"
     )
 
-    silence_video = work_dir / "silence.mp4"
-    run(
-        [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
-            "-t", "1", "-c:a", "aac", "-b:a", "192k",
-            str(silence_video),
-        ],
-        "silence track",
-    )
-
     total_seconds = ffprobe_duration(segments[0])
     for seg in segments[1:]:
         total_seconds += ffprobe_duration(seg)
 
-    run(
-        [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-f", "concat", "-safe", "0", "-i", str(concat_txt),
-            "-f", "concat", "-safe", "0", "-i", str(audio_txt),
-            "-i", str(silence_video),
-            "-filter_complex",
-            "[1:a]volume=1.15,afade=t=out:st="
-            f"{max(0.0, total_seconds - 1.0):.3f}:d=1.0[narr];"
-            "[narr][2:a]amix=inputs=2:duration=first:dropout_transition=0[a]",
-            "-map", "0:v", "-map", "[a]",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "20",
-            "-c:a", "aac", "-b:a", "192k",
-            "-movflags", "+faststart",
-            "-shortest",
-            str(out_path),
-        ],
-        "final mux",
-    )
+    # Note: the narration track already spans the full video (each scene's
+    # audio is padded to its exact length), so no silence bed or amix is
+    # needed — a straight volume+fade chain. Besides being simpler, this
+    # avoids amix's input-sync buffering, which ballooned past 1GB on
+    # small machines and OOM-killed the mux.
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-f", "concat", "-safe", "0", "-i", str(concat_txt),
+        "-f", "concat", "-safe", "0", "-i", str(audio_txt),
+    ]
+    if srt_path is not None:
+        from subtitles import burn_style, esc_subs_path
+
+        cmd += [
+            "-vf",
+            f"subtitles={esc_subs_path(srt_path)}:force_style='{burn_style(cfg.format)}'",
+        ]
+    cmd += [
+        "-filter_complex",
+        "[1:a]volume=1.0,afade=t=out:st="
+        f"{max(0.0, total_seconds - 1.0):.3f}:d=1.0[a]",
+        "-map", "0:v", "-map", "[a]",
+        # veryfast + capped threads: the medium preset's lookahead buffers
+        # can OOM small machines on 2MP frames; visually identical here
+        # since the segments were already encoded once at CRF 20.
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        "-threads", "4",
+        "-c:a", "aac", "-b:a", "192k",
+        "-movflags", "+faststart",
+        # No -shortest: it balloons the mux queue past 1GB and OOM-kills
+        # small machines. Audio and video match by construction anyway
+        # (each scene's audio is padded to its exact length).
+        str(out_path),
+    ]
+    run(cmd, "final mux")
     return out_path
 
 
@@ -204,7 +228,7 @@ def _ffmpeg_has_filter(name: str) -> bool:
     return out.returncode == 0 and f" {name} " in f" {out.stdout} "
 
 
-def _thumbnail_filters(title: str) -> list[tuple[str, str]]:
+def _thumbnail_filters(title: str, cfg: Config) -> list[tuple[str, str]]:
     """(label, filter) variants to try in order, most to least capable.
 
     drawtext font handling differs across FFmpeg builds and OSes — Windows
@@ -213,17 +237,20 @@ def _thumbnail_filters(title: str) -> list[tuple[str, str]]:
     fontfile with plain colon, fontconfig by name (two common fonts), then a
     textless fallback that cannot fail on fonts.
     """
-    base = ("scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,"
+    tw, th = cfg.thumb_width, cfg.thumb_height
+    base = (f"scale={tw}:{th}:force_original_aspect_ratio=increase,crop={tw}:{th},"
             "eq=brightness=-0.12:saturation=1.15")
     words = title.split()
     wrapped_raw = (" ".join(words[:8]) if len(words) > 8 else title)[:80]
-    # Shrink the font for long titles so the text stays inside the frame.
+    # Shrink the font for long titles so the text stays inside the frame,
+    # scaled down further on narrow portrait thumbnails.
     if len(wrapped_raw) <= 30:
         fontsize = 72
     elif len(wrapped_raw) <= 45:
         fontsize = 56
     else:
         fontsize = 44
+    fontsize = max(18, int(fontsize * tw / 1280))
     wrapped = _esc(wrapped_raw)
     text_args = (f"text='{wrapped}':fontsize={fontsize}:fontcolor=white:"
                  f"borderw=5:bordercolor=black@0.9:x=(w-text_w)/2:y=h-text_h-90")
@@ -258,7 +285,7 @@ def build_thumbnail(
     out_path: Path,
     cfg: Config,
 ) -> Path:
-    """1280x720 thumbnail: scene image, darkened, with the title on it.
+    """Sized thumbnail for the video orientation, darkened, with the title on it.
 
     Tries several drawtext spellings because font handling varies by FFmpeg
     build and OS; falls back to a plain (textless) thumbnail rather than
@@ -266,7 +293,7 @@ def build_thumbnail(
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     errors: list[str] = []
-    for label, vf in _thumbnail_filters(title):
+    for label, vf in _thumbnail_filters(title, cfg):
         try:
             run(
                 [
@@ -287,7 +314,14 @@ def build_thumbnail(
     raise AssemblyError(errors[0] if errors else "thumbnail failed with no details")
 
 
-def write_metadata(script, out_path: Path, cfg: Config) -> Path:
+def write_metadata(
+    script,
+    out_path: Path,
+    cfg: Config,
+    duration_seconds: float = 0.0,
+    subtitle_file: str | None = None,
+    subtitles_burned_in: bool = False,
+) -> Path:
     """Sidecar JSON the packager reads to know title/description/tags."""
     meta = {
         "title": script.title,
@@ -295,8 +329,15 @@ def write_metadata(script, out_path: Path, cfg: Config) -> Path:
         "tags": (script.tags + cfg.default_tags)[:30],
         "categoryId": cfg.category_id,
         "language": cfg.language,
+        "format": cfg.format,
+        "width": cfg.width,
+        "height": cfg.height,
+        "duration_seconds": round(duration_seconds, 1),
+        "images_per_scene": cfg.images_per_scene,
+        "subtitles_burned_in": bool(subtitles_burned_in),
         "video_file": out_path.name,
         "thumbnail_file": out_path.with_suffix(".jpg").name,
+        "subtitle_file": subtitle_file,
         "provider": script.provider,
         "scenes": len(script.scenes),
     }

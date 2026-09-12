@@ -13,6 +13,12 @@ from typing import Any
 
 import yaml
 
+# (width, height) per format. Portrait is what YouTube shelves as Shorts.
+FORMATS: dict[str, tuple[int, int]] = {
+    "landscape": (1920, 1080),
+    "portrait": (1080, 1920),
+}
+
 DEFAULTS: dict[str, Any] = {
     "channel": {
         "topic": "unusual true stories from maritime history",
@@ -25,11 +31,19 @@ DEFAULTS: dict[str, Any] = {
         "default_tags": [],
     },
     "video": {
-        "width": 1920,
-        "height": 1080,
+        # landscape = 1920x1080 regular video, portrait = 1080x1920 (Shorts).
+        "format": "landscape",
         "fps": 30,
         "zoom": 1.12,
         "transition": 0.5,
+        # Images per narrated scene. 2+ feels much denser; each extra image
+        # costs one more (free) image generation.
+        "images_per_scene": 2,
+    },
+    "subtitles": {
+        # Word-timed subtitles, burned into the video. A captions.srt is also
+        # written for manual upload in YouTube Studio either way.
+        "enabled": True,
     },
     "disclosure": {
         # Appended to description.txt at package time (meta.json stays clean).
@@ -46,8 +60,7 @@ DEFAULTS: dict[str, Any] = {
         "gemini_api_key": "",
         "gemini_model": "gemini-flash-latest",
         "image_provider": "pollinations",
-        "image_width": 1280,
-        "image_height": 720,
+        # Seconds to wait per image before giving up.
         "image_timeout": 90,
     },
     "paths": {
@@ -109,12 +122,16 @@ class Config:
 
     # -- video -----------------------------------------------------------
     @property
+    def format(self) -> str:
+        return str(self.data["video"].get("format", "landscape")).lower()
+
+    @property
     def width(self) -> int:
-        return int(self.data["video"]["width"])
+        return FORMATS[self.format][0]
 
     @property
     def height(self) -> int:
-        return int(self.data["video"]["height"])
+        return FORMATS[self.format][1]
 
     @property
     def fps(self) -> int:
@@ -127,6 +144,23 @@ class Config:
     @property
     def transition(self) -> float:
         return float(self.data["video"]["transition"])
+
+    @property
+    def images_per_scene(self) -> int:
+        return max(1, min(6, int(self.data["video"].get("images_per_scene", 2))))
+
+    @property
+    def thumb_width(self) -> int:
+        return 1280 if self.format == "landscape" else 720
+
+    @property
+    def thumb_height(self) -> int:
+        return 720 if self.format == "landscape" else 1280
+
+    # -- subtitles -------------------------------------------------------
+    @property
+    def subtitles_enabled(self) -> bool:
+        return bool(self.data["subtitles"].get("enabled", True))
 
     # -- disclosure ------------------------------------------------------
     @property
@@ -155,11 +189,12 @@ class Config:
 
     @property
     def image_width(self) -> int:
-        return int(self.data["ai"]["image_width"])
+        # Generated images match the video orientation.
+        return 1280 if self.format == "landscape" else 720
 
     @property
     def image_height(self) -> int:
-        return int(self.data["ai"]["image_height"])
+        return 720 if self.format == "landscape" else 1280
 
     @property
     def image_timeout(self) -> int:
@@ -198,6 +233,13 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
         with open(cfg_path, "r", encoding="utf-8") as handle:
             user = yaml.safe_load(handle) or {}
         data = _deep_merge(DEFAULTS, user)
+
+    fmt = str(data["video"].get("format", "landscape")).lower()
+    if fmt not in FORMATS:
+        raise ValueError(
+            f"video.format is {fmt!r} — must be one of: {', '.join(FORMATS)}. "
+            f"Fix it in {cfg_path}."
+        )
 
     cfg = Config(root=root, data=data)
     cfg.ensure_dirs()

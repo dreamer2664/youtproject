@@ -3,6 +3,10 @@
 Verified free and keyless: a plain GET to image.pollinations.ai returns a JPEG
 with no API key, no signup and no billing. There is no SLA, so every call is
 retried and failures are handled rather than fatal.
+
+Each narrated scene gets `video.images_per_scene` images (default 2), each
+framed as a different cinematic shot so the video cuts regularly instead of
+sitting on one picture for 20 seconds.
 """
 
 from __future__ import annotations
@@ -16,9 +20,18 @@ from pathlib import Path
 import requests
 
 from config import Config
-from scriptgen import Scene
 
 ENDPOINT = "https://image.pollinations.ai/prompt/{prompt}"
+
+# Cycled through when a scene needs several images.
+SHOT_STYLES = [
+    "wide establishing shot",
+    "medium shot from a new angle",
+    "close-up detail",
+    "dramatic low angle",
+    "aerial view",
+    "over-the-shoulder perspective",
+]
 
 
 def _safe_slug(text: str, limit: int = 40) -> str:
@@ -69,17 +82,27 @@ def generate_image(
     raise RuntimeError(f"image generation failed after {attempts} attempts: {last_error}")
 
 
-def generate_scene_images(script, cfg: Config, out_dir: Path) -> list[Path]:
-    """Generate one image per scene. Returns paths in scene order."""
+def generate_scene_images(script, cfg: Config, out_dir: Path) -> list[list[Path]]:
+    """Generate images_per_scene images per scene. Returns paths grouped by scene."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    paths: list[Path] = []
+    grouped: list[list[Path]] = []
     total = len(script.scenes)
+    per_scene = cfg.images_per_scene
 
     for index, scene in enumerate(script.scenes, start=1):
-        name = f"scene_{index:02d}_{_safe_slug(scene.image_prompt)}.jpg"
-        dest = out_dir / name
-        print(f"  [image] {index}/{total}: {scene.image_prompt[:70]}...")
-        generate_image(scene.image_prompt, dest, cfg, seed=1000 + index)
-        paths.append(dest)
+        scene_paths: list[Path] = []
+        for slot in range(per_scene):
+            if per_scene > 1:
+                prompt = f"{scene.image_prompt}, {SHOT_STYLES[slot % len(SHOT_STYLES)]}"
+                tag = f"#{slot + 1}"
+            else:
+                prompt = scene.image_prompt
+                tag = ""
+            name = f"scene_{index:02d}_{slot + 1}of{per_scene}_{_safe_slug(prompt)}.jpg"
+            dest = out_dir / name
+            print(f"  [image] {index}/{total}{tag}: {scene.image_prompt[:60]}...")
+            generate_image(prompt, dest, cfg, seed=1000 + index * 100 + slot)
+            scene_paths.append(dest)
+        grouped.append(scene_paths)
 
-    return paths
+    return grouped

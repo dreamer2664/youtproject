@@ -26,6 +26,7 @@ state.corrupt.json
 *.jpg
 *.jpeg
 *.png
+*.srt
 
 # Python
 __pycache__/

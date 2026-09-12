@@ -6,12 +6,13 @@ because this tool never talks to the YouTube API at all.** You upload the
 finished files yourself in about 3 minutes per video.
 
 ```
-Gemini script  ->  Pollinations images  ->  edge-tts voice  ->  FFmpeg  ->  YOU upload
-   (free key)         (free, no key)        (free, no key)     (free)     (youtube.com)
+Gemini script -> edge-tts voice -> Pollinations images -> FFmpeg -> YOU upload
+   (free key)      (free, no key)      (free, no key)     (free)   (youtube.com)
+                                              + word-timed subtitles burned in
 ```
 
 Each video gets an upload kit with the file, thumbnail, title, description,
-tags, and a step-by-step `CHECKLIST.md` for that exact video.
+tags, captions file, and a step-by-step `CHECKLIST.md` for that exact video.
 
 ---
 
@@ -100,14 +101,32 @@ python main.py preflight --live   # also validates the Gemini key (one tiny free
 ## Use
 
 ```bash
-python main.py generate                 # make one video
+python main.py generate                 # make one video (config defaults)
 python main.py generate --count 3       # make three
 python main.py generate --topic "..."   # override the channel topic for one run
+python main.py generate --seconds 45    # target ~45 seconds
+python main.py generate --format portrait --seconds 45   # vertical Short
+python main.py generate --images-per-scene 3             # denser cuts
+python main.py generate --no-subs       # skip subtitles for one run
 python main.py queue                    # what's in the queue
 python main.py package                  # build upload kits for generated videos
 python main.py published <id> <url>     # record a manual upload's URL
 python main.py voices --lang it-        # list Italian voiceover voices
 ```
+
+### Picking topics (nothing is random)
+
+Every run uses `channel.topic` from `config.yaml` — set it to your niche once:
+
+```yaml
+channel:
+  topic: "forgotten medieval engineering"
+```
+
+Each run then picks **one different story inside that topic**. For a one-off
+idea without changing the config: `python main.py generate --topic "..."`.
+The output always tells you which it used (`from config.yaml` vs
+`--topic override`).
 
 ### The daily flow
 
@@ -118,8 +137,8 @@ python main.py voices --lang it-        # list Italian voiceover voices
 4. `python main.py published <id> https://youtu.be/...` → queue stays accurate.
 
 One video a day, at the same hour, beats five at once. See `UPLOAD-GUIDE.md`
-for the full walkthrough: the AI-disclosure box, audience settings, tags,
-thumbnails, and what not to do on a new channel.
+for the full walkthrough: the AI-disclosure box, captions, audience settings,
+thumbnails, Shorts, and what not to do on a new channel.
 
 ---
 
@@ -132,11 +151,18 @@ Everything lives in `config.yaml`. The important keys:
 | `channel.topic` | Your niche. Drives every script and image. Be specific. |
 | `channel.tone` | How the narration sounds. |
 | `channel.voice` | Free neural voice. `python main.py voices` lists them. |
-| `channel.target_seconds` | Target length. 90–180 suits a new channel. |
+| `channel.target_seconds` | Default target length. 90–180 suits a new channel. |
 | `channel.category_id` | Prefilled into each video's checklist. |
+| `video.format` | `landscape` (1920x1080) or `portrait` (1080x1920 Shorts). |
+| `video.images_per_scene` | Pictures per narrated scene, 1–6. Higher = denser cuts. |
+| `subtitles.enabled` | Word-timed subtitles burned into the video. Leave on. |
 | `disclosure.append_to_description` | Adds the AI-disclosure footer to descriptions. Leave on. |
 | `ai.provider` | `gemini` (good scripts) or `template` (keyless fallback). |
 | `ai.gemini_model` | `gemini-flash-latest` tracks the current model automatically. |
+
+Every run setting has a CLI override too (`--seconds`, `--format`,
+`--images-per-scene`, `--no-subs`, `--topic`), so you can mix Shorts and
+long-form without touching the config.
 
 ---
 
@@ -148,8 +174,9 @@ Everything lives in `config.yaml`. The important keys:
 | `config.py` | Config loading, env overrides |
 | `scriptgen.py` | Gemini + offline template script writers |
 | `images.py` | Pollinations image generation |
-| `voiceover.py` | edge-tts voiceover |
-| `assembler.py` | FFmpeg: Ken Burns motion, audio, thumbnails |
+| `voiceover.py` | edge-tts voiceover + word timings |
+| `subtitles.py` | Word-timed cues, SRT writer, burn-in styling |
+| `assembler.py` | FFmpeg: sub-segments, burn-in, mux, thumbnails |
 | `package.py` | Builds the upload kits + per-video checklists |
 | `jobqueue.py` | `state.json` job tracking |
 | `UPLOAD-GUIDE.md` | The manual-upload walkthrough |

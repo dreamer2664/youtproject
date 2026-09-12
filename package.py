@@ -8,6 +8,7 @@
         title.txt          copy-paste (100 chars max, enforced)
         description.txt    copy-paste (AI-disclosure footer appended)
         tags.txt           copy-paste (comma-separated, <= 500 chars)
+        captions.srt       upload under Subtitles in Studio (when present)
         CHECKLIST.md       step-by-step Studio walkthrough for THIS video
 
 Nothing here touches the YouTube API, so there is no quota, no OAuth and no
@@ -62,17 +63,67 @@ def build_description(meta: dict, cfg: Config) -> str:
     return description
 
 
+def _format_line(meta: dict) -> str:
+    fmt = str(meta.get("format", "landscape"))
+    width = meta.get("width", "")
+    height = meta.get("height", "")
+    duration = meta.get("duration_seconds", 0)
+    dims = f"{width}x{height}" if width and height else fmt
+    return f"{fmt} {dims}, {duration:.0f}s"
+
+
 def build_checklist(job: Job, meta: dict, cfg: Config, kit: Path) -> str:
     """Per-video Studio walkthrough with this video's values prefilled."""
     title = meta.get("title", "")
     tags = fit_tags(meta.get("tags") or [])
     category = CATEGORY_NAMES.get(str(meta.get("categoryId", "")), "see dropdown in Studio")
     description = build_description(meta, cfg)
+    fmt = str(meta.get("format", "landscape"))
+    duration = float(meta.get("duration_seconds") or 0)
+    burned_in = bool(meta.get("subtitles_burned_in"))
+    has_srt = bool(meta.get("subtitle_file"))
+
+    is_short = fmt == "portrait" and duration <= 180
+    shorts_note = ""
+    if is_short:
+        shorts_note = (
+            "\n> This video is vertical and under 3 minutes, so YouTube shelves it\n"
+            "> as a **Short** automatically. Shorts thumbnails are picked from a\n"
+            "> freeze-frame in the mobile app — `thumbnail.jpg` is still used\n"
+            "> anywhere the video shows as a regular video.\n"
+        )
+
+    if burned_in:
+        subs_note = (
+            "Subtitles are **burned into the picture** already. Uploading the\n"
+            "`.srt` as well still helps: viewers can turn captions off, and\n"
+            "YouTube indexes the text for search."
+        )
+    elif has_srt:
+        subs_note = (
+            "Subtitles are **not** burned into this video (your FFmpeg build\n"
+            "lacks the subtitle filter), so uploading the `.srt` below is what\n"
+            "gives viewers captions. Do not skip it."
+        )
+    else:
+        subs_note = "This video was generated with subtitles off — nothing to do here."
+
+    captions_step = ""
+    if has_srt:
+        captions_step = (
+            "## 4. Captions\n\n"
+            f"{subs_note}\n\n"
+            "- [ ] In Studio's left menu open **Subtitles** → pick this video →\n"
+            "      *Add* → *Upload file* → choose `captions.srt` from this folder.\n\n"
+        )
+    n_aud = 5 if has_srt else 4
+    n_after = 6 if has_srt else 5
 
     return f"""# Upload checklist — {job.id}
 
 Video: **{title}**
-
+Format: {_format_line(meta)}
+{shorts_note}
 Follow top to bottom. Takes about 3 minutes.
 
 ## 1. Upload the file
@@ -106,14 +157,14 @@ removal of the video — it takes five seconds, just do it.
 
 Full steps with screenshots context: see `UPLOAD-GUIDE.md` in the project root.
 
-## 4. Audience + visibility
+{captions_step}## {n_aud}. Audience + visibility
 
 - [ ] **Audience** — *No, it's not made for kids* (unless it genuinely is —
       see UPLOAD-GUIDE.md before answering Yes).
 - [ ] **Visibility** — Public + *Publish now*, or Schedule it. Scheduling one
       video per day at the same hour beats dumping five at once.
 
-## 5. After publishing
+## {n_after}. After publishing
 
 Back in the terminal, record the URL so the queue stays accurate:
 
@@ -168,6 +219,14 @@ def build_package(job: Job, cfg: Config) -> Path:
     thumb_src = video_path.with_suffix(".jpg")
     if thumb_src.exists():
         shutil.copy2(thumb_src, kit / "thumbnail.jpg")
+
+    srt_name = meta.get("subtitle_file")
+    if srt_name:
+        srt_src = meta_path.parent / srt_name
+        if srt_src.exists():
+            shutil.copy2(srt_src, kit / "captions.srt")
+        else:
+            meta["subtitle_file"] = None  # keep the checklist honest
 
     (kit / "title.txt").write_text(title, encoding="utf-8")
     (kit / "description.txt").write_text(build_description(meta, cfg), encoding="utf-8")

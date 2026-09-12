@@ -206,8 +206,8 @@ class GeminiProvider:
     def generate(self, cfg: Config, topic_override: str | None = None) -> Script:
         topic = topic_override or cfg.topic
         target = cfg.target_seconds
-        # roughly 155 words/minute of narration
-        scene_count = max(3, min(10, round(target / 22)))
+        # roughly 155 words/minute of narration; ~20s scenes for Shorts pacing
+        scene_count = max(3, min(12, round(target / 20)))
 
         prompt = f"""You are a script writer for a YouTube channel.
 
