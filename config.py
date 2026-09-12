@@ -24,21 +24,22 @@ DEFAULTS: dict[str, Any] = {
         "topic": "unusual true stories from maritime history",
         "tone": "calm, factual, quietly dramatic",
         "audience": "curious adults who like short documentary-style videos",
-        "target_seconds": 150,
+        "target_seconds": 65,
         "voice": "en-GB-RyanNeural",
         "language": "English",
         "category_id": "22",
         "default_tags": [],
     },
     "video": {
-        # landscape = 1920x1080 regular video, portrait = 1080x1920 (Shorts).
-        "format": "landscape",
+        # portrait = 1080x1920 vertical (Shorts) is the default;
+        # landscape = 1920x1080 regular video.
+        "format": "portrait",
         "fps": 30,
         "zoom": 1.12,
         "transition": 0.5,
-        # Images per narrated scene. 2+ feels much denser; each extra image
-        # costs one more (free) image generation.
-        "images_per_scene": 2,
+        # Images per narrated scene. 3 is the default; each extra image
+        # costs one more (free) image generation but cuts much denser.
+        "images_per_scene": 3,
     },
     "subtitles": {
         # Word-timed subtitles, burned into the video. A captions.srt is also

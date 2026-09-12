@@ -20,10 +20,10 @@ channel:
   # Who is watching. Affects the voice and the writing.
   audience: "curious adults who like short documentary-style videos"
 
-  # Target length of the finished video, in seconds.
-  # 90-180 is the sweet spot for a new landscape channel.
-  # Override one run with:  python main.py generate --seconds 45
-  target_seconds: 150
+  # Target length of the finished video, in seconds. 65 is the default —
+  # a portrait Short. Use 90-180 for landscape videos.
+  # Override one run with:  python main.py generate --seconds 120
+  target_seconds: 65
 
   # Language / accent for the voiceover (BCP-47 style edge-tts voice).
   # Free options include:
@@ -45,10 +45,10 @@ channel:
   default_tags: []
 
 video:
-  # landscape = 1920x1080 regular video.
   # portrait  = 1080x1920 vertical. Under 3 minutes, YouTube shelves it as a Short.
-  # Override one run with:  python main.py generate --format portrait --seconds 45
-  format: "landscape"
+  # landscape = 1920x1080 regular video.
+  # Override one run with:  python main.py generate --format landscape --seconds 120
+  format: "portrait"
 
   fps: 30
   # Gentle Ken Burns zoom. 1.0 = static image, 1.12 = slow push in.
@@ -56,10 +56,11 @@ video:
   # Crossfade between scenes, seconds.
   transition: 0.5
 
-  # Pictures per narrated scene, 1-6. Higher = denser cuts, slower runs
-  # (each picture is one more free image generation).
-  # Override one run with:  python main.py generate --images-per-scene 3
-  images_per_scene: 2
+  # Pictures per narrated scene, 1-6. 3 is the default: each scene cuts
+  # through three different framings (wide, detail, new angle...).
+  # Slower runs, denser videos — each picture is one more free generation.
+  # Override one run with:  python main.py generate --images-per-scene 2
+  images_per_scene: 3
 
 subtitles:
   # Word-timed subtitles, burned into the video. A captions.srt is ALSO

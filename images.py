@@ -23,7 +23,8 @@ from config import Config
 
 ENDPOINT = "https://image.pollinations.ai/prompt/{prompt}"
 
-# Cycled through when a scene needs several images.
+# Cycled through when a scene needs several images. All framings are
+# subject-agnostic on purpose — they must make sense appended to any prompt.
 SHOT_STYLES = [
     "wide establishing shot",
     "medium shot from a new angle",
@@ -31,6 +32,12 @@ SHOT_STYLES = [
     "dramatic low angle",
     "aerial view",
     "over-the-shoulder perspective",
+    "extreme close-up",
+    "high angle view",
+    "side profile view",
+    "symmetrical centered composition",
+    "shallow depth of field",
+    "moody cinematic lighting",
 ]
 
 
