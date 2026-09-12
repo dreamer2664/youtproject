@@ -22,10 +22,13 @@ FORMATS: dict[str, tuple[int, int]] = {
 DEFAULTS: dict[str, Any] = {
     "channel": {
         "topic": "unusual true stories from maritime history",
-        "tone": "calm, factual, quietly dramatic",
-        "audience": "curious adults who like short documentary-style videos",
+        "tone": "fast, punchy, high-energy",
+        "audience": "scrolling TikTok/Shorts viewers with short attention spans",
         "target_seconds": 65,
         "voice": "en-GB-RyanNeural",
+        # Narration speed for edge-tts: "+40%" is brisk TikTok pacing (~180 wpm),
+        # "+0%" is normal, "-10%" is slow. Range -50%..+100%.
+        "speech_rate": "+40%",
         "language": "English",
         "category_id": "22",
         "default_tags": [],
@@ -35,7 +38,7 @@ DEFAULTS: dict[str, Any] = {
         # landscape = 1920x1080 regular video.
         "format": "portrait",
         "fps": 30,
-        "zoom": 1.12,
+        "zoom": 1.18,
         "transition": 0.5,
         # Images per narrated scene. 3 is the default; each extra image
         # costs one more (free) image generation but cuts much denser.
@@ -108,6 +111,26 @@ class Config:
     @property
     def voice(self) -> str:
         return self.data["channel"]["voice"]
+
+    @property
+    def speech_rate_pct(self) -> int:
+        """Speech speed as an int percent. Garbage in -> 0 (never crashes)."""
+        raw = str(self.data["channel"].get("speech_rate", "+0%")).strip()
+        try:
+            pct = int(raw.lstrip("+").rstrip("%").strip() or "0")
+        except ValueError:
+            pct = 0
+        return max(-50, min(100, pct))
+
+    @property
+    def speech_rate(self) -> str:
+        """edge-tts rate string, e.g. '+25%'. Always valid."""
+        return f"{self.speech_rate_pct:+d}%"
+
+    @property
+    def speech_rate_factor(self) -> float:
+        """1.25 for '+25%' — scales script word budgets and estimates."""
+        return 1.0 + self.speech_rate_pct / 100.0
 
     @property
     def language(self) -> str:

@@ -5,10 +5,13 @@ time. If a scene has no usable timings (voice-engine hiccup, or the spoken
 words don't match the text because e.g. numbers get expanded), words are
 spread evenly across the narration instead — subtitles always exist.
 
-Two outputs:
+Three outputs:
   1. out/<id>.srt — copied into the kit as captions.srt for manual upload
-     in YouTube Studio (accessibility + SEO), and
-  2. burn-in during the final mux, when this FFmpeg build has libass.
+     in YouTube Studio (accessibility + SEO),
+  2. out/<id>.ass — TikTok-style karaoke captions (word-by-word yellow
+     highlight), burned into the picture during the final mux when this
+     FFmpeg build has libass, and
+  3. the burn-in itself.
 """
 
 from __future__ import annotations
@@ -186,11 +189,194 @@ def system_fonts_dir() -> Path | None:
     return cand if cand.is_dir() else None
 
 
-def filter_args(srt_path: Path, video_format: str) -> str:
+def filter_args(sub_path: Path, video_format: str) -> str:
     """Full `subtitles=...` filter argument value (without -vf quotes)."""
-    parts = [f"subtitles={esc_subs_path(srt_path)}"]
+    parts = [f"subtitles={esc_subs_path(sub_path)}"]
     fonts = system_fonts_dir()
     if fonts is not None:
         parts.append(f"fontsdir={esc_subs_path(fonts)}")
-    parts.append(f"force_style='{burn_style(video_format)}'")
+    if sub_path.suffix.lower() != ".ass":
+        # SRT carries no styling; ASS files style themselves.
+        parts.append(f"force_style='{burn_style(video_format)}'")
     return ":".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Karaoke captions (TikTok style): one event per word, active word highlighted.
+# The .ass sets its own PlayRes = video pixels, so sizes and margins below
+# are TRUE pixels — no PlayRes scaling math needed (see burn_style's warning).
+# ---------------------------------------------------------------------------
+KARAOKE_MAX_WORDS = 5
+KARAOKE_MAX_CHARS = 30
+KARAOKE_GAP_SPLIT = 0.30
+KARAOKE_HOLD_AFTER = 0.25
+KARAOKE_WHITE = r"{\c&HFFFFFF&}"
+KARAOKE_YELLOW = r"{\c&H00FFFF&}"
+
+
+@dataclass
+class KaraokeEvent:
+    start: float
+    end: float
+    text: str  # ASS-formatted (highlight overrides + \N breaks baked in)
+
+
+def ass_timestamp(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    centis = int(round((seconds - int(seconds)) * 100))
+    if centis == 100:
+        secs += 1
+        centis = 0
+    return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
+
+
+def _esc_ass(text: str) -> str:
+    return text.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
+
+
+def _balance_break(words: list[str]) -> int:
+    """Word index where line 2 starts (0 = single line). Balanced, <=2 lines."""
+    text = " ".join(words)
+    if len(words) < 2 or len(text) <= 14:
+        return 0
+    best: float | None = None
+    best_i = 0
+    for i in range(1, len(words)):
+        score = abs(len(" ".join(words[:i])) - len(" ".join(words[i:])))
+        if best is None or score < best:
+            best, best_i = score, i
+    return best_i
+
+
+def build_karaoke_events(
+    narrations: list[str],
+    timings_per_scene: list[list[tuple[float, float]]],
+    scene_starts: list[float],
+    scene_durations: list[float],
+    head_tail: float,
+    max_words: int = KARAOKE_MAX_WORDS,
+    max_chars: int = KARAOKE_MAX_CHARS,
+) -> list[KaraokeEvent]:
+    """One highlighted-word event per word; phrases never cross scenes.
+
+    Words are chunked into short phrases (natural pauses, punctuation, or
+    size limits). Every event in a phrase shows the same two lines with a
+    different word highlighted, so the layout never jumps mid-phrase.
+    """
+    events: list[KaraokeEvent] = []
+    for narration, timings, start, duration in zip(
+        narrations, timings_per_scene, scene_starts, scene_durations
+    ):
+        words = _word_times(narration, timings, start, duration, head_tail)
+        if not words:
+            continue
+        scene_end = start + duration
+        # Chunk into phrases.
+        phrases: list[list[tuple[str, float, float]]] = []
+        current: list[tuple[str, float, float]] = []
+        for index, item in enumerate(words):
+            word, t0, _ = item
+            gap = t0 - words[index - 1][2] if current else 0.0
+            trial = " ".join([w for w, _, _ in current] + [word])
+            if current and (
+                gap > KARAOKE_GAP_SPLIT
+                or len(current) >= max_words
+                or len(trial) > max_chars
+            ):
+                phrases.append(current)
+                current = []
+            current.append(item)
+            if word and word[-1] in ".!?\u2026" and len(current) >= 3:
+                phrases.append(current)
+                current = []
+        if current:
+            phrases.append(current)
+        # One event per word.
+        phrase_starts = [ph[0][1] for ph in phrases]
+        for pos, phrase in enumerate(phrases):
+            plain = [w for w, _, _ in phrase]
+            break_at = _balance_break(plain)
+            next_start = phrase_starts[pos + 1] if pos + 1 < len(phrases) else None
+            last_phrase = pos == len(phrases) - 1
+            for wpos, (_, t0, t1) in enumerate(phrase):
+                if wpos + 1 < len(phrase):
+                    end = phrase[wpos + 1][1]
+                elif next_start is not None:
+                    end = min(next_start - 0.03, t1 + KARAOKE_HOLD_AFTER)
+                else:
+                    end = t1 + KARAOKE_HOLD_AFTER + 0.15
+                if last_phrase and wpos == len(phrase) - 1:
+                    end = min(end, scene_end)
+                end = max(end, t0 + 0.08)
+                parts = []
+                for j, raw in enumerate(plain):
+                    safe = _esc_ass(raw)
+                    if j == wpos:
+                        parts.append(f"{KARAOKE_YELLOW}{safe}{KARAOKE_WHITE}")
+                    else:
+                        parts.append(safe)
+                if break_at:
+                    text = " ".join(parts[:break_at]) + "\\N" + " ".join(parts[break_at:])
+                else:
+                    text = " ".join(parts)
+                events.append(KaraokeEvent(start=t0, end=end, text=text))
+
+    # Clamp overlaps left by rounding so words never double-render.
+    for first, second in zip(events, events[1:]):
+        if first.end > second.start:
+            first.end = max(first.start + 0.04, second.start - 0.01)
+    return events
+
+
+def _karaoke_style(video_format: str) -> str:
+    if video_format == "portrait":
+        # Big centered captions = the TikTok look; center also dodges the
+        # Shorts UI (bottom ~300px + right rail). TRUE pixels: PlayRes is set
+        # to the video resolution in write_ass.
+        fontsize, align, margin_v = 88, 5, 0
+    else:
+        fontsize, align, margin_v = 52, 2, 45
+    return (
+        "Style: Karaoke,Arial,"
+        f"{fontsize},&H00FFFFFF,&H00001919,&H80000000,&H80000000,"
+        f"-1,0,0,0,100,100,0,0,1,3,0,{align},60,60,{margin_v},1"
+    )
+
+
+def write_ass(
+    events: list[KaraokeEvent],
+    path: Path,
+    video_format: str,
+    width: int,
+    height: int,
+) -> Path:
+    """Write karaoke events as an .ass file styled for the video size."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        f"PlayResX: {width}",
+        f"PlayResY: {height}",
+        "WrapStyle: 0",
+        "ScaledBorderAndShadow: yes",
+        "",
+        "[V4+ Styles]",
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding",
+        _karaoke_style(video_format),
+        "",
+        "[Events]",
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+    ]
+    for event in events:
+        lines.append(
+            f"Dialogue: 0,{ass_timestamp(event.start)},{ass_timestamp(event.end)},"
+            f"Karaoke,,0,0,0,,{event.text}"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path

@@ -30,8 +30,8 @@ class WordTiming:
     end: float
 
 
-async def _synth(text: str, voice: str, dest: Path) -> list[WordTiming]:
-    communicate = edge_tts.Communicate(text, voice, boundary="WordBoundary")
+async def _synth(text: str, voice: str, rate: str, dest: Path) -> list[WordTiming]:
+    communicate = edge_tts.Communicate(text, voice, rate=rate, boundary="WordBoundary")
     timings: list[WordTiming] = []
     with open(dest, "wb") as handle:
         async for chunk in communicate.stream():
@@ -63,7 +63,7 @@ def synthesise(
 
     for attempt in range(1, attempts + 1):
         try:
-            timings = asyncio.run(_synth(text, cfg.voice, dest))
+            timings = asyncio.run(_synth(text, cfg.voice, cfg.speech_rate, dest))
             if dest.exists() and dest.stat().st_size > 1000:
                 return dest, timings
             raise RuntimeError("output file missing or empty")
@@ -86,6 +86,7 @@ def generate_scene_audio(
     paths: list[Path] = []
     all_timings: list[list[tuple[float, float]]] = []
     total = len(script.scenes)
+    print(f"  [voice] {cfg.voice} at {cfg.speech_rate}")
 
     for index, scene in enumerate(script.scenes, start=1):
         dest = out_dir / f"scene_{index:02d}.mp3"

@@ -8,7 +8,7 @@ finished files yourself in about 3 minutes per video.
 ```
 Gemini script -> edge-tts voice -> Pollinations images -> FFmpeg -> YOU upload
    (free key)      (free, no key)      (free, no key)     (free)   (youtube.com)
-                                              + word-timed subtitles burned in
+                                              + karaoke subtitles burned in
 ```
 
 Each video gets an upload kit with the file, thumbnail, title, description,
@@ -108,6 +108,8 @@ python main.py generate --seconds 45    # target ~45 seconds
 python main.py generate --format portrait --seconds 45   # vertical Short
 python main.py generate --images-per-scene 3             # denser cuts
 python main.py generate --no-subs       # skip subtitles for one run
+python main.py batch --topics topics.txt  # render a whole list overnight
+python main.py batch --count 7          # 7 auto-variations of your topic
 python main.py queue                    # what's in the queue
 python main.py package                  # build upload kits for generated videos
 python main.py published <id> <url>     # record a manual upload's URL
@@ -151,11 +153,12 @@ Everything lives in `config.yaml`. The important keys:
 | `channel.topic` | Your niche. Drives every script and image. Be specific. |
 | `channel.tone` | How the narration sounds. |
 | `channel.voice` | Free neural voice. `python main.py voices` lists them. |
+| `channel.speech_rate` | Narration speed. `+40%` is brisk TikTok pacing (~180 wpm). |
 | `channel.target_seconds` | Default target length. 90–180 suits a new channel. |
 | `channel.category_id` | Prefilled into each video's checklist. |
 | `video.format` | `landscape` (1920x1080) or `portrait` (1080x1920 Shorts). |
 | `video.images_per_scene` | Pictures per narrated scene, 1–6. Higher = denser cuts. |
-| `subtitles.enabled` | Word-timed subtitles burned into the video. Leave on. |
+| `subtitles.enabled` | Karaoke captions (word highlight) burned in. Leave on. |
 | `disclosure.append_to_description` | Adds the AI-disclosure footer to descriptions. Leave on. |
 | `ai.provider` | `gemini` (good scripts) or `template` (keyless fallback). |
 | `ai.gemini_model` | `gemini-flash-latest` tracks the current model automatically. |
@@ -175,9 +178,9 @@ long-form without touching the config.
 | `scriptgen.py` | Gemini + offline template script writers |
 | `images.py` | Pollinations image generation |
 | `voiceover.py` | edge-tts voiceover + word timings |
-| `subtitles.py` | Word-timed cues, SRT writer, burn-in styling |
+| `subtitles.py` | Karaoke ASS + SRT writer, burn-in styling |
 | `assembler.py` | FFmpeg: sub-segments, burn-in, mux, thumbnails |
-| `package.py` | Builds the upload kits + per-video checklists |
+| `package.py` | Upload kits + checklists + TikTok/Reels captions |
 | `jobqueue.py` | `state.json` job tracking |
 | `UPLOAD-GUIDE.md` | The manual-upload walkthrough |
 | `hooks/pre-commit` | Blocks credentials from being committed |

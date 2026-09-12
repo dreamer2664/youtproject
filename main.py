@@ -7,6 +7,7 @@
                                  vertical Short with burned-in subtitles
     python main.py queue         show queue status
     python main.py package       build upload-ready kits in upload/<id>/
+    python main.py batch --topics topics.txt   render a whole batch of videos
     python main.py reburn <id>   burn subtitles into an already-made video
     python main.py published     record a manual upload's URL
     python main.py voices        list available voiceover voices
@@ -211,7 +212,7 @@ def cmd_generate(cfg, args) -> int:
             script = provider.generate(cfg, args.topic)
             print(f"      title   : {script.title}")
             print(f"      scenes  : {len(script.scenes)}")
-            print(f"      est. len: {script.estimated_seconds()}s (target {cfg.target_seconds}s)")
+            print(f"      est. len: {script.estimated_seconds(130.0 * cfg.speech_rate_factor)}s (target {cfg.target_seconds}s)")
             (job_dir / "script.json").write_text(
                 json.dumps(
                     {
@@ -256,40 +257,51 @@ def cmd_generate(cfg, args) -> int:
             out_path = cfg.out_dir / f"{job.id}.mp4"
 
             print("  5/5 subtitles + final video")
+            burn_path = None
             srt_path = None
+            karaoke_name = None
             burned_in = False
             if cfg.subtitles_enabled:
-                from subtitles import build_cues, max_chars_for, write_srt
+                from subtitles import (
+                    build_cues,
+                    build_karaoke_events,
+                    max_chars_for,
+                    write_ass,
+                    write_srt,
+                )
 
                 starts: list[float] = []
                 running = 0.0
                 for scene_len in durations:
                     starts.append(running)
                     running += scene_len
-                cues = build_cues(
-                    [s.narration for s in script.scenes],
-                    timings,
-                    starts,
-                    durations,
-                    max_chars_for(cfg.format),
-                    HEAD_TAIL,
-                )
+                narrations = [s.narration for s in script.scenes]
+                cues = build_cues(narrations, timings, starts, durations,
+                                  max_chars_for(cfg.format), HEAD_TAIL)
                 srt_path = write_srt(cues, out_path.with_suffix(".srt"))
                 print(f"      subtitles : {len(cues)} cues -> {srt_path.name}")
+                events = build_karaoke_events(narrations, timings, starts,
+                                              durations, HEAD_TAIL)
+                ass_path = write_ass(events, out_path.with_suffix(".ass"),
+                                     cfg.format, cfg.width, cfg.height)
+                karaoke_name = ass_path.name
+                print(f"      karaoke   : {len(events)} word events -> {ass_path.name}")
                 if _ffmpeg_has_filter("subtitles"):
+                    burn_path = ass_path
                     burned_in = True
                 else:
                     print("      subtitles : burn-in unavailable in this FFmpeg build —")
                     print("                    captions.srt is still included in the kit")
 
             assemble_video(segments, padded, out_path, cfg, work_dir=job_dir,
-                           srt_path=srt_path if burned_in else None)
+                           burn_path=burn_path)
             build_thumbnail(images_by_scene[0][0], script.title,
                             out_path.with_suffix(".jpg"), cfg)
             meta_path = write_metadata(
                 script, out_path, cfg,
                 duration_seconds=sum(durations),
                 subtitle_file=srt_path.name if srt_path else None,
+                karaoke_file=karaoke_name,
                 subtitles_burned_in=burned_in,
             )
 
@@ -367,18 +379,18 @@ def cmd_package(cfg, args) -> int:
 
 
 def _subtitle_render_test(cfg) -> bool:
-    """Burn one test frame and check pixels actually changed. True if visible."""
+    """Burn one karaoke test frame and check pixels changed. True if visible."""
     import subprocess
 
-    from subtitles import filter_args
+    from subtitles import KaraokeEvent, filter_args, write_ass
 
     test_dir = cfg.work_dir / ".subtest"
     try:
         test_dir.mkdir(parents=True, exist_ok=True)
-        srt = test_dir / "t.srt"
-        srt.write_text(
-            "1\n00:00:00,000 --> 00:00:05,000\nSubtitle render test\n",
-            encoding="utf-8",
+        subs = write_ass(
+            [KaraokeEvent(0.0, 5.0,
+                          r"{\c&H00FFFF&}Subtitle{\c&HFFFFFF&} render test")],
+            test_dir / "t.ass", cfg.format, cfg.width, cfg.height,
         )
         bg = test_dir / "bg.jpg"
         # Test at the real configured resolution: subtitle size and margins
@@ -393,7 +405,7 @@ def _subtitle_render_test(cfg) -> bool:
             return False
         plain = test_dir / "plain.png"
         burned = test_dir / "burned.png"
-        for out, extra in ((plain, []), (burned, ["-vf", filter_args(srt, cfg.format)])):
+        for out, extra in ((plain, []), (burned, ["-vf", filter_args(subs, cfg.format)])):
             result = subprocess.run(
                 ["ffmpeg", "-y", "-loglevel", "error", "-loop", "1",
                  "-i", str(bg), *extra, "-frames:v", "1", str(out)],
@@ -425,18 +437,20 @@ def cmd_reburn(cfg, args) -> int:
     video_path = Path(job.video_file)
     if not video_path.exists():
         die(f"video file missing: {video_path}")
-    srt_path = video_path.with_suffix(".srt")
-    if not srt_path.exists():
-        die(f"no subtitle file next to the video ({srt_path.name}). "
+    sub_path = video_path.with_suffix(".ass")
+    if not sub_path.exists():
+        sub_path = video_path.with_suffix(".srt")
+    if not sub_path.exists():
+        die(f"no subtitle file next to the video ({video_path.stem}.ass/.srt). "
             f"This job was made with subtitles off — regenerate instead.")
     if not _ffmpeg_has_filter("subtitles"):
         die("this FFmpeg build has no subtitles filter — can't burn in.")
     tmp = video_path.with_name(video_path.stem + "_reburn.mp4")
-    print(f"Burning {srt_path.name} into {video_path.name} ...")
+    print(f"Burning {sub_path.name} into {video_path.name} ...")
     try:
         run(["ffmpeg", "-y", "-loglevel", "warning",
              "-i", str(video_path),
-             "-vf", filter_args(srt_path, cfg.format),
+             "-vf", filter_args(sub_path, cfg.format),
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
              "-c:a", "copy",
              str(tmp)], "reburn")
@@ -448,7 +462,10 @@ def cmd_reburn(cfg, args) -> int:
         meta_path = Path(job.meta_file)
         if meta_path.exists():
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta["subtitle_file"] = srt_path.name
+            if sub_path.suffix == ".ass":
+                meta["karaoke_file"] = sub_path.name
+            else:
+                meta["subtitle_file"] = sub_path.name
             meta["subtitles_burned_in"] = True
             meta_path.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
     except (OSError, ValueError):
@@ -458,6 +475,69 @@ def cmd_reburn(cfg, args) -> int:
         print("Kit is stale now — re-run: python main.py package")
     print(f"\u2705 burned in. Watch it: {video_path}")
     return 0
+
+
+# --------------------------------------------------------------------------
+# batch — render a whole queue of videos unattended
+# --------------------------------------------------------------------------
+def cmd_batch(cfg, args) -> int:
+    """Render many videos in one run: topics file or N auto-variations."""
+    import time
+
+    print(BANNER)
+    topics: list[str] = []
+    if args.topics:
+        topics_path = Path(args.topics)
+        if not topics_path.exists():
+            die(f"topics file not found: {topics_path}")
+        topics = [line.strip() for line in
+                  topics_path.read_text(encoding="utf-8").splitlines()
+                  if line.strip() and not line.strip().startswith("#")]
+        if not topics:
+            die(f"no topics in {topics_path} (one per line, # = comment).")
+    count = args.count or (len(topics) if topics else 3)
+    if not topics:
+        topics = [cfg.topic] * count
+    topics = topics[:count]
+
+    gen_args = argparse.Namespace(
+        topic=None, count=1, seconds=args.seconds, format=args.format,
+        images_per_scene=args.images_per_scene, no_subs=args.no_subs,
+        keep_work=args.keep_work, keep_going=True, verbose=args.verbose,
+    )
+    results: list[tuple[str, str, str]] = []  # topic, status, detail
+    for number, topic in enumerate(topics, start=1):
+        print(f"\n===== batch {number}/{len(topics)}: {topic} =====")
+        before = {job.id for job in Queue(cfg.state_file).jobs}
+        gen_args.topic = topic
+        try:
+            cmd_generate(cfg, gen_args)
+        except SystemExit as exc:
+            results.append((topic, "failed", f"exit {exc.code}"))
+            break
+        except Exception as exc:  # noqa: BLE001 - batch never dies on one video
+            print(f"  \u274c failed: {exc}")
+            results.append((topic, "failed", str(exc)[:120]))
+            continue
+        new = [j for j in Queue(cfg.state_file).jobs if j.id not in before]
+        if not new:
+            results.append((topic, "failed", "no job was created"))
+        else:
+            job = new[-1]
+            results.append((topic, job.status, job.title or job.error[:100]))
+        if number < len(topics) and args.sleep > 0:
+            print(f"  sleeping {args.sleep}s before the next video...")
+            time.sleep(args.sleep)
+
+    print("\n===== batch summary =====")
+    ok = sum(1 for _, status, _ in results if status == "generated")
+    for topic, status, detail in results:
+        mark = "\u2705" if status == "generated" else "\u274c"
+        print(f"  {mark} [{status}] {topic[:60]} — {detail[:70]}")
+    print(f"\n{ok}/{len(results)} videos generated.")
+    if ok:
+        print("Next: python main.py package")
+    return 0 if ok == len(results) else 1
 
 
 # --------------------------------------------------------------------------
@@ -514,6 +594,19 @@ def main() -> int:
     p.add_argument("--keep-going", action="store_true", help="continue after a failure")
     p.add_argument("--verbose", action="store_true")
 
+    p = sub.add_parser("batch", help="render many videos unattended")
+    p.add_argument("--topics", help="text file with one topic per line (# = comment)")
+    p.add_argument("--count", type=int, default=0,
+                   help="how many videos (default: all topics, or 3)")
+    p.add_argument("--sleep", type=int, default=5,
+                   help="seconds between videos (default 5)")
+    p.add_argument("--seconds", type=int, help="target length, e.g. 45 for a Short")
+    p.add_argument("--format", choices=["landscape", "portrait"])
+    p.add_argument("--images-per-scene", type=int, dest="images_per_scene")
+    p.add_argument("--no-subs", action="store_true")
+    p.add_argument("--keep-work", action="store_true")
+    p.add_argument("--verbose", action="store_true")
+
     p = sub.add_parser("package", help="build upload-ready kits")
     p.add_argument("--id", help="package only the job with this id (prefix ok)")
     p.add_argument("--limit", type=int, help="max kits to build this run")
@@ -539,6 +632,7 @@ def main() -> int:
     handlers = {
         "preflight": cmd_preflight,
         "generate": cmd_generate,
+        "batch": cmd_batch,
         "package": cmd_package,
         "reburn": cmd_reburn,
         "published": cmd_published,

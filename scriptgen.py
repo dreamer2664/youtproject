@@ -35,7 +35,7 @@ class Script:
     scenes: list[Scene]
     provider: str = "unknown"
 
-    def estimated_seconds(self, words_per_minute: float = 155.0) -> float:
+    def estimated_seconds(self, words_per_minute: float = 130.0) -> float:
         words = sum(len(s.narration.split()) for s in self.scenes)
         return round(words / words_per_minute * 60.0, 1)
 
@@ -206,10 +206,16 @@ class GeminiProvider:
     def generate(self, cfg: Config, topic_override: str | None = None) -> Script:
         topic = topic_override or cfg.topic
         target = cfg.target_seconds
-        # roughly 155 words/minute of narration; ~20s scenes for Shorts pacing
-        scene_count = max(3, min(12, round(target / 20)))
+        # Narration runs at ~130 wpm times the speech-rate factor (measured on
+        # edge-tts neural voices); portrait
+        # cuts fast (~10s scenes) for TikTok/Shorts pacing, landscape
+        # breathes (~20s scenes).
+        wpm = 130.0 * cfg.speech_rate_factor
+        scene_len = 10 if cfg.format == "portrait" else 20
+        scene_count = max(3, min(12, round(target / scene_len)))
+        word_budget = int(target * wpm / 60)
 
-        prompt = f"""You are a script writer for a YouTube channel.
+        prompt = f"""You are a script writer for a high-retention vertical video channel (TikTok, YouTube Shorts, Instagram Reels).
 
 CHANNEL TOPIC: {topic}
 TONE: {cfg.tone}
@@ -219,13 +225,23 @@ TARGET VIDEO LENGTH: about {target} seconds
 
 Pick ONE specific, genuinely interesting story or fact within the topic.
 Write {scene_count} scenes of narration that together take about {target} seconds
-when read aloud (roughly {int(target * 2.6)} words total).
+when read aloud fast (roughly {word_budget} words total).
 
-Requirements:
+RETENTION RULES — follow all of them:
+- COLD OPEN: the first sentence must hook in under 3 seconds. A shocking payoff,
+  a bold claim, or a question. Never a greeting, never "in this video", never setup.
+- SHORT sentences: 12 words max each, one idea per sentence. Staccato rhythm.
+- NO filler: cut every word that does not earn the next second of attention.
+- One PATTERN INTERRUPT around the middle: a twist ("but here's what nobody
+  tells you..."), a rhetorical question, or a contrarian turn.
+- One OPEN LOOP before the payoff ("...and the last one is the wildest").
+- END with a punchy payoff line plus a call to action of 5 words or less
+  (e.g. "Follow for part two.").
 - narration: plain spoken prose for a voiceover. No stage directions, no quotes
   inside the text, no markdown, no emoji.
 - image_prompt: a detailed visual description for an AI image generator matching
   that scene. Photorealistic, cinematic, specific. No text or watermarks in image.
+- title: curiosity-gap style, under 70 characters. No clickbait lies.
 - tags: 8 to 12 short search tags. Do not leave this empty.
 - Be factually careful. If a detail is uncertain, leave it out rather than invent it.
 
@@ -297,26 +313,41 @@ class TemplateProvider:
         topic = topic_override or cfg.topic
         seed = random.choice(self.FRAMINGS)
         title = f"{seed} {topic}"[:100]
+        scene_len = 10 if cfg.format == "portrait" else 20
+        count = max(3, min(8, round(cfg.target_seconds / scene_len)))
 
-        beats = [
-            f"Today we look at {topic}, a subject that is far stranger than most people realise.",
-            f"To understand it, we have to start with the context, because {topic} did not "
-            f"happen in isolation.",
-            "The details that survive are specific, and they are the reason this story still "
-            "holds up today.",
-            "There is a moment in this account that changes how you read everything before it.",
-            f"So what does {topic} actually tell us? More than you would expect.",
+        # Fast-paced even offline: cold open, short sentences, a twist,
+        # an open loop, and a punchy CTA last.
+        core = [
+            f"Stop scrolling. Nobody knows this about {topic}.",
+            f"Here is the part they always skip. {topic} started with one strange decision.",
+            "The details sound fake. Every single one is documented.",
+            "But here is the twist nobody talks about. Everything flips right here.",
+            f"Think that is wild? The last fact about {topic} tops all of it.",
+            "Records from the time back it up. The witnesses all agreed.",
+            f"So remember this. {topic} changed everything that came after.",
         ]
-
+        cta = "Follow for part two."
+        shots = [
+            "extreme close-up", "wide establishing shot", "dramatic low angle",
+            "close-up detail", "aerial view", "medium shot from a new angle",
+            "moody cinematic lighting", "high angle view",
+        ]
+        picked = (core * 2)[: max(2, count - 1)] + [cta]
         scenes = [
-            Scene(narration=beat, image_prompt=f"cinematic photorealistic scene depicting {topic}")
-            for beat in beats
+            Scene(
+                narration=beat,
+                image_prompt=(
+                    f"cinematic photorealistic {shots[i % len(shots)]} depicting {topic}"
+                ),
+            )
+            for i, beat in enumerate(picked)
         ]
 
         return Script(
             title=title,
             description=(
-                f"{title}\n\nA short documentary-style look at {topic}.\n\n"
+                f"{title}\n\nA fast-paced short about {topic}.\n\n"
                 "Generated with the offline template provider — add a free Gemini key "
                 "to config.yaml for much better scripts."
             ),

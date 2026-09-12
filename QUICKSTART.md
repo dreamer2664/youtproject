@@ -64,6 +64,7 @@ python main.py generate --seconds 120                    # 2-minute landscape vi
 python main.py generate --topic "one-off idea here"      # single video outside your niche
 python main.py generate --images-per-scene 3             # more pictures, denser cuts
 python main.py generate --no-subs                        # no subtitles for this run
+python main.py batch --topics topics.txt     # render a whole list overnight
 ```
 
 These override `config.yaml` for one run only — the file stays untouched, so

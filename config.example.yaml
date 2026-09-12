@@ -13,12 +13,13 @@ channel:
   #   python main.py generate --topic "your one-off idea"
   topic: "unusual true stories from maritime history"
 
-  # Tone of the narration. Examples: calm and factual, dark and dramatic,
-  # warm and conversational, dry and witty.
-  tone: "calm, factual, quietly dramatic"
+  # Tone of the narration. Tuned for fast, high-retention Shorts by default.
+  # Examples: fast and punchy, dark and dramatic, warm and conversational,
+  # dry and witty, calm and factual.
+  tone: "fast, punchy, high-energy"
 
   # Who is watching. Affects the voice and the writing.
-  audience: "curious adults who like short documentary-style videos"
+  audience: "scrolling TikTok/Shorts viewers with short attention spans"
 
   # Target length of the finished video, in seconds. 65 is the default —
   # a portrait Short. Use 90-180 for landscape videos.
@@ -32,6 +33,12 @@ channel:
   #   it-IT-ElsaNeural      it-IT-DiegoNeural     de-DE-KatjaNeural
   # Full list: python main.py voices --lang en-
   voice: "en-GB-RyanNeural"
+
+  # Narration speed. "+40%" is brisk TikTok pacing, ~180 wpm (recommended),
+  # "+0%" is normal speed, "-10%" is slow and dramatic. Range -50%..+100%.
+  # Script word budgets scale automatically, so the video still hits
+  # target_seconds — faster speech just fits more words.
+  speech_rate: "+40%"
 
   # Spoken language, used to prompt the script writer.
   language: "English"
@@ -51,8 +58,9 @@ video:
   format: "portrait"
 
   fps: 30
-  # Gentle Ken Burns zoom. 1.0 = static image, 1.12 = slow push in.
-  zoom: 1.12
+  # Snappy Ken Burns zoom. 1.0 = static image, 1.18 = punchy push in/out.
+  # Shots alternate direction so the motion never feels repetitive.
+  zoom: 1.18
   # Crossfade between scenes, seconds.
   transition: 0.5
 
@@ -63,7 +71,8 @@ video:
   images_per_scene: 3
 
 subtitles:
-  # Word-timed subtitles, burned into the video. A captions.srt is ALSO
+  # TikTok-style karaoke captions: big centered text with a word-by-word
+  # yellow highlight, burned into the video. A captions.srt is ALSO
   # written for manual upload in YouTube Studio either way (accessibility + SEO).
   # Skip for one run with:  python main.py generate --no-subs
   enabled: true

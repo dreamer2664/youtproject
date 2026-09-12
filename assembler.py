@@ -17,8 +17,9 @@ from pathlib import Path
 
 from config import Config
 
-# Scene gets this much silence before/after narration so speech is not clipped.
-HEAD_TAIL = 0.35
+# Scene gets this much silence before/after narration: enough that speech is
+# never clipped, tight enough that the pacing stays snappy for Shorts.
+HEAD_TAIL = 0.25
 MIN_SCENE_SECONDS = 1.0
 
 
@@ -159,12 +160,13 @@ def assemble_video(
     out_path: Path,
     cfg: Config,
     work_dir: Path | None = None,
-    srt_path: Path | None = None,
+    burn_path: Path | None = None,
 ) -> Path:
     """Concatenate segments, build the audio track, mux to the final MP4.
 
-    When srt_path is given, subtitles are burned into the picture (requires
-    a libass-enabled FFmpeg — the caller checks for the subtitles filter).
+    When burn_path is given (.ass karaoke captions or .srt), subtitles are
+    burned into the picture (requires a libass-enabled FFmpeg — the caller
+    checks for the subtitles filter).
     """
     if work_dir is None:
         work_dir = out_path.parent
@@ -192,10 +194,10 @@ def assemble_video(
         "-f", "concat", "-safe", "0", "-i", str(concat_txt),
         "-f", "concat", "-safe", "0", "-i", str(audio_txt),
     ]
-    if srt_path is not None:
+    if burn_path is not None:
         from subtitles import filter_args
 
-        cmd += ["-vf", filter_args(srt_path, cfg.format)]
+        cmd += ["-vf", filter_args(burn_path, cfg.format)]
     cmd += [
         "-filter_complex",
         "[1:a]volume=1.0,afade=t=out:st="
@@ -322,6 +324,7 @@ def write_metadata(
     cfg: Config,
     duration_seconds: float = 0.0,
     subtitle_file: str | None = None,
+    karaoke_file: str | None = None,
     subtitles_burned_in: bool = False,
 ) -> Path:
     """Sidecar JSON the packager reads to know title/description/tags."""
@@ -340,6 +343,7 @@ def write_metadata(
         "video_file": out_path.name,
         "thumbnail_file": out_path.with_suffix(".jpg").name,
         "subtitle_file": subtitle_file,
+        "karaoke_file": karaoke_file,
         "provider": script.provider,
         "scenes": len(script.scenes),
     }

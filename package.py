@@ -9,6 +9,8 @@
         description.txt    copy-paste (AI-disclosure footer appended)
         tags.txt           copy-paste (comma-separated, <= 500 chars)
         captions.srt       upload under Subtitles in Studio (when present)
+        tiktok.txt         caption + hashtags for TikTok (portrait videos)
+        reels.txt          caption + hashtags for Instagram Reels (portrait videos)
         CHECKLIST.md       step-by-step Studio walkthrough for THIS video
 
 Nothing here touches the YouTube API, so there is no quota, no OAuth and no
@@ -19,6 +21,7 @@ from all of that.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -119,6 +122,36 @@ def build_checklist(job: Job, meta: dict, cfg: Config, kit: Path) -> str:
     n_aud = 5 if has_srt else 4
     n_after = 6 if has_srt else 5
 
+    if fmt == "portrait":
+        crosspost_section = f"""## {n_after + 1}. Cross-post to TikTok + Reels (same file)
+
+Your `video.mp4` is already 1080x1920 with centered karaoke captions, so it
+meets TikTok and Reels specs as-is. Post within a day of the YouTube upload:
+
+**TikTok**
+- [ ] Open TikTok → **+** → **Upload** → pick `video.mp4`.
+- [ ] Paste the caption from `tiktok.txt` (title + hashtags).
+- [ ] Keep the **original sound** (your narration) — sounds carry your voice.
+- [ ] Post. Reply to the first comments within an hour if you can.
+
+**Instagram Reels**
+- [ ] Open Instagram → **+** → **Reel** → pick `video.mp4`.
+- [ ] Paste the caption from `reels.txt`.
+- [ ] Post. Share the reel to your Story for the first-hour boost.
+
+Safe zones are already handled: captions sit centered, clear of TikTok's
+right rail and bottom bar — do not add TikTok's auto-captions on top.
+
+"""
+    else:
+        crosspost_section = f"""## {n_after + 1}. TikTok + Reels
+
+This video is landscape, so it will letterbox on TikTok/Reels. It still works
+in a pinch (`tiktok.txt` / `reels.txt` have captions ready), but for these
+platforms re-run the same topic in portrait instead.
+
+"""
+
     return f"""# Upload checklist — {job.id}
 
 Video: **{title}**
@@ -172,7 +205,7 @@ Back in the terminal, record the URL so the queue stays accurate:
 python main.py published {job.id} https://youtu.be/PASTE-ID-HERE
 ```
 
----
+{crosspost_section}---
 
 <details><summary>What YouTube sees (for reference)</summary>
 
@@ -193,6 +226,52 @@ python main.py published {job.id} https://youtu.be/PASTE-ID-HERE
 
 </details>
 """
+
+
+PLATFORM_TAGS = {"tiktok": ["fyp"], "reels": ["reels"]}
+HASHTAG_STOPWORDS = {
+    "the", "and", "for", "with", "that", "this", "from", "into", "your",
+    "about", "which", "their", "there", "what", "when", "were", "have",
+    "video", "videos", "short", "shorts", "part",
+}
+
+
+def _hashtag(word: str) -> str:
+    """Sanitise one word into a hashtag body (alphanumeric, lowercase)."""
+    return "".join(c for c in word.lower() if c.isalnum())
+
+
+def platform_hashtags(tags: list[str], platform: str, limit: int = 5) -> list[str]:
+    """Up to `limit` hashtags from the video tags plus the platform staple."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in tags:
+        for piece in re.split(r"\s+", raw):
+            tag = _hashtag(piece)
+            if len(tag) >= 3 and tag not in seen and tag not in HASHTAG_STOPWORDS:
+                seen.add(tag)
+                out.append(tag)
+            if len(out) >= limit - 1:
+                break
+        if len(out) >= limit - 1:
+            break
+    for extra in PLATFORM_TAGS.get(platform, []):
+        if extra not in seen:
+            out.append(extra)
+    return out[:limit]
+
+
+def build_platform_caption(meta: dict, platform: str) -> str:
+    """Title + hashtags, ready to paste into TikTok / Reels."""
+    title = str(meta.get("title", "") or "").strip()
+    tags = platform_hashtags(meta.get("tags") or [], platform)
+    caption = title
+    if tags:
+        caption += "\n\n" + " ".join(f"#{t}" for t in tags)
+    if str(meta.get("format", "")) != "portrait":
+        caption += ("\n\n(NOTE: this video is landscape — TikTok/Reels prefer "
+                    "1080x1920 portrait. Re-run with format: portrait for best results.)")
+    return caption.strip() + "\n"
 
 
 def build_package(job: Job, cfg: Config) -> Path:
@@ -231,6 +310,8 @@ def build_package(job: Job, cfg: Config) -> Path:
     (kit / "title.txt").write_text(title, encoding="utf-8")
     (kit / "description.txt").write_text(build_description(meta, cfg), encoding="utf-8")
     (kit / "tags.txt").write_text(", ".join(tags), encoding="utf-8")
+    (kit / "tiktok.txt").write_text(build_platform_caption(meta, "tiktok"), encoding="utf-8")
+    (kit / "reels.txt").write_text(build_platform_caption(meta, "reels"), encoding="utf-8")
     (kit / "CHECKLIST.md").write_text(build_checklist(job, meta, cfg, kit), encoding="utf-8")
 
     return kit
