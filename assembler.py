@@ -204,6 +204,54 @@ def _ffmpeg_has_filter(name: str) -> bool:
     return out.returncode == 0 and f" {name} " in f" {out.stdout} "
 
 
+def _thumbnail_filters(title: str) -> list[tuple[str, str]]:
+    """(label, filter) variants to try in order, most to least capable.
+
+    drawtext font handling differs across FFmpeg builds and OSes — Windows
+    drive-letter colons are the classic trap — so instead of guessing one
+    perfect spelling, try several: quoted fontfile with escaped colon, quoted
+    fontfile with plain colon, fontconfig by name (two common fonts), then a
+    textless fallback that cannot fail on fonts.
+    """
+    base = ("scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,"
+            "eq=brightness=-0.12:saturation=1.15")
+    words = title.split()
+    wrapped_raw = (" ".join(words[:8]) if len(words) > 8 else title)[:80]
+    # Shrink the font for long titles so the text stays inside the frame.
+    if len(wrapped_raw) <= 30:
+        fontsize = 72
+    elif len(wrapped_raw) <= 45:
+        fontsize = 56
+    else:
+        fontsize = 44
+    wrapped = _esc(wrapped_raw)
+    text_args = (f"text='{wrapped}':fontsize={fontsize}:fontcolor=white:"
+                 f"borderw=5:bordercolor=black@0.9:x=(w-text_w)/2:y=h-text_h-90")
+
+    variants: list[tuple[str, str]] = []
+    if _ffmpeg_has_filter("drawtext"):
+        font_candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/Library/Fonts/Arial Bold.ttf",
+            "C:/Windows/Fonts/arialbd.ttf",
+        ]
+        fontfile = next((f for f in font_candidates if Path(f).exists()), "")
+        if fontfile:
+            safe_font = fontfile.replace("\\", "/").replace("'", "")
+            variants.append(
+                ("titled",
+                 f"{base},drawtext=fontfile='{safe_font.replace(':', '\\:')}':{text_args}"))
+            variants.append(
+                ("titled",
+                 f"{base},drawtext=fontfile='{safe_font}':{text_args}"))
+        variants.append(
+            ("titled", f"{base},drawtext=font='Arial Bold':{text_args}"))
+        variants.append(
+            ("titled", f"{base},drawtext=font='DejaVu Sans Bold':{text_args}"))
+    variants.append(("plain", base))
+    return variants
+
+
 def build_thumbnail(
     image_path: Path,
     title: str,
@@ -212,48 +260,31 @@ def build_thumbnail(
 ) -> Path:
     """1280x720 thumbnail: scene image, darkened, with the title on it.
 
-    Falls back to a plain (textless) thumbnail if this FFmpeg build has no
-    drawtext filter — a missing text overlay must never fail a whole video.
+    Tries several drawtext spellings because font handling varies by FFmpeg
+    build and OS; falls back to a plain (textless) thumbnail rather than
+    failing the whole video over a text overlay.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    base_vf = "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720," \
-              "eq=brightness=-0.12:saturation=1.15"
-
-    if _ffmpeg_has_filter("drawtext"):
-        words = title.split()
-        wrapped = " ".join(words[:8]) if len(words) > 8 else title
-        wrapped = _esc(wrapped[:80])
-
-        # Font that exists on most systems; ffmpeg falls back to a default if absent.
-        font_candidates = [
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "/Library/Fonts/Arial Bold.ttf",
-            "C:/Windows/Fonts/arialbd.ttf",
-        ]
-        fontfile = next((f for f in font_candidates if Path(f).exists()), "")
-        font_arg = f"fontfile={_esc(fontfile)}:" if fontfile else ""
-
-        vf = (
-            f"{base_vf},"
-            f"drawtext={font_arg}text='{wrapped}':"
-            f"fontsize=64:fontcolor=white:borderw=5:bordercolor=black@0.9:"
-            f"x=(w-text_w)/2:y=h-text_h-90"
-        )
-    else:
-        print("  [thumbnail] this FFmpeg build has no drawtext — using a plain thumbnail.")
-        vf = base_vf
-
-    run(
-        [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-i", str(image_path),
-            "-vf", vf,
-            "-frames:v", "1",
-            str(out_path),
-        ],
-        "thumbnail",
-    )
-    return out_path
+    errors: list[str] = []
+    for label, vf in _thumbnail_filters(title):
+        try:
+            run(
+                [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-i", str(image_path),
+                    "-vf", vf,
+                    "-frames:v", "1",
+                    str(out_path),
+                ],
+                "thumbnail",
+            )
+            if label == "plain":
+                print("  [thumbnail] titled text unavailable — using a plain thumbnail.")
+            return out_path
+        except AssemblyError as exc:
+            errors.append(str(exc))
+            continue
+    raise AssemblyError(errors[0] if errors else "thumbnail failed with no details")
 
 
 def write_metadata(script, out_path: Path, cfg: Config) -> Path:
