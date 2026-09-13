@@ -137,7 +137,7 @@ class GeminiProvider:
         self.api_key = api_key
         self.model = model
 
-    def _try_model(self, model: str, payload: dict) -> tuple[dict | None, int, str]:
+    def _try_model(self, model: str, payload: dict, tag: str = "script") -> tuple[dict | None, int, str]:
         """One model, with retries. Returns (result, last_status, last_error)."""
         last_status = 0
         last_error = ""
@@ -160,21 +160,21 @@ class GeminiProvider:
 
             if response.status_code in self.RETRYABLE and attempt < self.MAX_RETRIES:
                 delay = min(2 ** attempt + random.uniform(0, 1), self.MAX_DELAY)
-                print(f"  [script] {model}: HTTP {response.status_code}, retry in "
+                print(f"  [{tag}] {model}: HTTP {response.status_code}, retry in "
                       f"{delay:.0f}s ({attempt}/{self.MAX_RETRIES})")
                 time.sleep(delay)
 
         return None, last_status, last_error
 
-    def _post(self, payload: dict) -> dict:
+    def _post(self, payload: dict, tag: str = "script") -> dict:
         chain = [self.model] + [m for m in self.FALLBACK_MODELS if m != self.model]
         last_status, last_error = 0, ""
 
         for index, model in enumerate(chain):
-            result, status, error = self._try_model(model, payload)
+            result, status, error = self._try_model(model, payload, tag)
             if result is not None:
                 if index > 0:
-                    print(f"  [script] using fallback model {model}")
+                    print(f"  [{tag}] using fallback model {model}")
                 return result
 
             last_status, last_error = status, error
@@ -187,10 +187,10 @@ class GeminiProvider:
                     f"Gemini rejected the request (HTTP {status}){hint}: {last_error}"
                 )
             if status == 404:
-                print(f"  [script] {model} is not available (404); trying the next model.")
+                print(f"  [{tag}] {model} is not available (404); trying the next model.")
                 continue
             if index + 1 < len(chain):
-                print(f"  [script] {model} gave up (HTTP {status}); trying a fallback model.")
+                print(f"  [{tag}] {model} gave up (HTTP {status}); trying a fallback model.")
 
         if last_status == 404:
             raise RuntimeError(
@@ -202,6 +202,22 @@ class GeminiProvider:
             f"(last HTTP {last_status}). This is free-tier saturation — wait a few "
             f"minutes and re-run; nothing was lost. {last_error}"
         )
+
+    def generate_text(self, prompt: str, temperature: float = 0.7,
+                      tag: str = "gemini", json_mode: bool = False) -> str:
+        """Raw text completion using the retry + fallback chain. Raises RuntimeError."""
+        config: dict = {"temperature": temperature}
+        if json_mode:
+            config["responseMimeType"] = "application/json"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": config,
+        }
+        data = self._post(payload, tag=tag)
+        try:
+            return data["candidates"][0]["content"]["parts"][0]["text"]
+        except (KeyError, IndexError) as exc:
+            raise RuntimeError(f"Unexpected Gemini response shape: {str(data)[:400]}") from exc
 
     @staticmethod
     def _save_debug(cfg: Config, raw: str) -> None:

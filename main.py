@@ -224,6 +224,9 @@ def cmd_generate(cfg, args) -> int:
         try:
             print("  1/5 script")
             script = provider.generate(cfg, args.topic)
+            from factcheck import check_script
+
+            fact_report = check_script(script, cfg)
             from cta import next_cta
 
             cta_voice, cta_overlay_text, cta_num = next_cta(cfg)
@@ -247,6 +250,7 @@ def cmd_generate(cfg, args) -> int:
                         "description": script.description,
                         "tags": script.tags,
                         "provider": script.provider,
+                        "factcheck": fact_report,
                         "scenes": [
                             {"narration": s.narration, "image_prompt": s.image_prompt}
                             for s in script.scenes
@@ -581,6 +585,154 @@ def cmd_batch(cfg, args) -> int:
 # --------------------------------------------------------------------------
 # bot — render videos from your phone via Telegram
 # --------------------------------------------------------------------------
+def _notify_telegram(cfg, text: str) -> None:
+    """Best-effort Telegram DM. Never raises — the schedule must survive it."""
+    if not (cfg.telegram_enabled and cfg.telegram_token and cfg.telegram_owner):
+        return
+    try:
+        from bot import PhoneBot
+        PhoneBot(cfg).send_message(cfg.telegram_owner, text)
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [schedule] telegram notify failed: {exc}")
+
+
+def _next_slot(times: list[str], now):
+    """Next run time: the upcoming HH:MM today, else the first one tomorrow."""
+    from datetime import timedelta
+    if not times:
+        return now
+    cands = [now.replace(hour=int(t[:2]), minute=int(t[3:]), second=0, microsecond=0)
+             for t in times]
+    upcoming = [c for c in cands if c > now]
+    if upcoming:
+        return min(upcoming)
+    return min(cands) + timedelta(days=1)
+
+
+def cmd_topics(cfg, args) -> int:
+    """View and refill the topic backlog."""
+    from topics import load_backlog, pop_topic, save_backlog, top_up_backlog
+
+    path = cfg.topics_backlog_file
+    if args.add:
+        topics = load_backlog(path)
+        if args.add.strip().lower() in {t.lower() for t in topics}:
+            print("already in backlog.")
+        else:
+            topics.append(args.add.strip())
+            save_backlog(path, topics)
+            print(f"added ({len(topics)} in backlog).")
+        return 0
+    if args.pop:
+        topic = pop_topic(path)
+        print(topic if topic else "(backlog empty)")
+        return 0
+    if args.topup:
+        added, total = top_up_backlog(cfg)
+        if added:
+            print(f"added {len(added)} topics ({total} in backlog):")
+            for topic in added:
+                print(f"  + {topic}")
+        else:
+            print(f"backlog unchanged ({total}/{cfg.topics_backlog_target}).")
+        return 0
+    topics = load_backlog(path)
+    print(f"backlog: {path} ({len(topics)}/{cfg.topics_backlog_target})")
+    for number, topic in enumerate(topics, 1):
+        print(f"  {number}. {topic}")
+    if not topics:
+        print("empty — run: python main.py topics --topup")
+    return 0
+
+
+def cmd_schedule(cfg, args) -> int:
+    """Render videos unattended: N per day, topics from the backlog."""
+    import time as _time
+    from datetime import datetime, timedelta
+
+    from topics import pop_topic, top_up_backlog
+
+    print(BANNER)
+    per_day = args.per_day or cfg.schedule_per_day
+    per_day = max(1, min(24, per_day))
+    raw_times = args.at.split(",") if args.at else cfg.schedule_times
+    times: list[str] = []
+    for raw in raw_times:
+        import re
+        match = re.fullmatch(r"\s*([01]?\d|2[0-3]):([0-5]\d)\s*", raw.strip())
+        if match:
+            times.append(f"{int(match.group(1)):02d}:{match.group(2)}")
+        elif raw.strip():
+            print(f"  ignoring bad time {raw.strip()!r} (use HH:MM).")
+    times = sorted(set(times))
+    backlog = cfg.topics_backlog_file
+
+    def fire() -> None:
+        topic = pop_topic(backlog)
+        if topic is None and args.topup:
+            added, _ = top_up_backlog(cfg)
+            if added:
+                topic = pop_topic(backlog)
+        if topic is None:
+            topic = cfg.topic
+            print("  backlog empty and top-up unavailable — using channel topic")
+        else:
+            print(f"  topic from backlog: {topic}")
+        gen_args = argparse.Namespace(
+            topic=topic, count=1, seconds=args.seconds, format=args.format,
+            images_per_scene=args.images_per_scene, no_subs=args.no_subs,
+            keep_work=args.keep_work, keep_going=True, verbose=args.verbose,
+        )
+        before = {job.id for job in Queue(cfg.state_file).jobs}
+        try:
+            cmd_generate(cfg, gen_args)
+        except SystemExit as exc:
+            print(f"  run ended early (exit {exc.code})")
+        except Exception as exc:  # noqa: BLE001 - the schedule never dies on one video
+            print(f"  \u274c failed: {exc}")
+        new = [j for j in Queue(cfg.state_file).jobs if j.id not in before]
+        if new and new[-1].status == "generated":
+            _notify_telegram(cfg, f"\u2705 scheduled video done: {new[-1].title}")
+        else:
+            detail = ((new[-1].error or "")[:100] if new else "") or "unknown"
+            _notify_telegram(cfg, f"\u274c scheduled video failed: {detail}")
+
+    if args.once:
+        fire()
+        return 0
+    if times:
+        print(f"Schedule: {len(times)}x daily at {', '.join(times)} (backlog: {backlog})")
+        next_run = _next_slot(times, datetime.now())
+    else:
+        print(f"Schedule: {per_day}x daily, evenly spaced (backlog: {backlog})")
+        next_run = datetime.now()
+    print("Ctrl+C stops the scheduler.\n")
+    idle_ticks = 0
+    try:
+        while True:
+            now = datetime.now()
+            if now >= next_run:
+                print(f"\n===== scheduled run at {now:%H:%M} =====")
+                try:
+                    fire()
+                except Exception as exc:  # noqa: BLE001
+                    print(f"  \u274c run crashed: {exc}")
+                if times:
+                    next_run = _next_slot(times, datetime.now() + timedelta(seconds=60))
+                else:
+                    next_run = datetime.now() + timedelta(hours=24 / per_day)
+                print(f"  next run: {next_run:%a %H:%M}")
+                idle_ticks = 0
+            else:
+                _time.sleep(min(60, max(1, (next_run - now).total_seconds())))
+                idle_ticks += 1
+                if idle_ticks % 60 == 0:
+                    print(f"  [schedule] idle, next run {next_run:%a %H:%M}")
+    except KeyboardInterrupt:
+        print("\nscheduler stopped.")
+        return 0
+
+
 def cmd_bot(cfg, args) -> int:
     """Poll Telegram for topics; render each; send back the finished video."""
     print(BANNER)
@@ -670,6 +822,28 @@ def main() -> int:
     p.add_argument("--keep-work", action="store_true")
     p.add_argument("--verbose", action="store_true")
 
+    p = sub.add_parser("topics", help="view/refill the topic backlog")
+    p.add_argument("--topup", action="store_true",
+                   help="ask Gemini to refill the backlog")
+    p.add_argument("--add", default=None, metavar="TEXT",
+                   help="append one topic by hand")
+    p.add_argument("--pop", action="store_true",
+                   help="print and remove the first topic")
+    p = sub.add_parser("schedule", help="render videos unattended every day")
+    p.add_argument("--per-day", type=int, default=None,
+                   help="videos per day (default: schedule.per_day)")
+    p.add_argument("--at", default=None, metavar="HH:MM,...",
+                   help='fixed clock times, e.g. "08:00,20:00"')
+    p.add_argument("--seconds", type=int, default=None)
+    p.add_argument("--format", default=None)
+    p.add_argument("--images-per-scene", type=int, default=None)
+    p.add_argument("--no-subs", action="store_true")
+    p.add_argument("--keep-work", action="store_true")
+    p.add_argument("--verbose", action="store_true")
+    p.add_argument("--once", action="store_true",
+                   help="render one backlog topic now and exit")
+    p.add_argument("--no-topup", dest="topup", action="store_false", default=True,
+                   help="never auto-refill the backlog")
     p = sub.add_parser("bot", help="render videos from your phone via Telegram")
     p.add_argument("--seconds", type=int, help="target length for bot renders")
     p.add_argument("--format", choices=["landscape", "portrait"],
@@ -701,6 +875,8 @@ def main() -> int:
         "preflight": cmd_preflight,
         "generate": cmd_generate,
         "batch": cmd_batch,
+        "topics": cmd_topics,
+        "schedule": cmd_schedule,
         "bot": cmd_bot,
         "package": cmd_package,
         "reburn": cmd_reburn,

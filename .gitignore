@@ -17,6 +17,7 @@ out/
 upload/
 state.json
 cta_state.json
+topics/backlog.txt
 state.corrupt.json
 *.mp4
 *.mkv

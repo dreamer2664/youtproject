@@ -110,6 +110,8 @@ python main.py generate --images-per-scene 3             # denser cuts
 python main.py generate --no-subs       # skip subtitles for one run
 python main.py batch --topics topics.txt  # render a whole list overnight
 python main.py batch --count 7          # 7 auto-variations of your topic
+python main.py topics --topup       # refill the topic backlog with Gemini ideas
+python main.py schedule --per-day 2 # render 2 videos/day unattended (Ctrl+C stops)
 python main.py bot                         # render videos from your phone via Telegram
 python main.py queue                    # what's in the queue
 python main.py package                  # build upload kits for generated videos

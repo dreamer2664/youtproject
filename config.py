@@ -122,6 +122,24 @@ DEFAULTS: dict[str, Any] = {
         ],
         "overlay_seconds": 3.5,
     },
+    "topics": {
+        # Self-refilling idea queue. The scheduler pops one topic per video;
+        # `python main.py topics --topup` asks Gemini to refill to target.
+        "backlog_file": "topics/backlog.txt",
+        "backlog_target": 24,
+    },
+    "factcheck": {
+        # Second Gemini pass over every script before the voiceover.
+        # Needs the free Gemini key; without one it skips silently and
+        # never blocks a render on failure.
+        "enabled": True,
+    },
+    "schedule": {
+        # Unattended daily rendering (`python main.py schedule`).
+        "per_day": 2,
+        # Fixed clock times, e.g. "08:00,20:00". Empty = evenly spaced.
+        "at": "",
+    },
     "paths": {
         "work_dir": "work",
         "out_dir": "out",
@@ -315,6 +333,42 @@ class Config:
             return max(1.0, min(10.0, float(self.data.get("cta", {}).get("overlay_seconds", 3.5))))
         except (ValueError, TypeError):
             return 3.5
+
+    # -- topics ----------------------------------------------------------
+    @property
+    def topics_backlog_file(self) -> Path:
+        return self.root / str(self.data.get("topics", {}).get("backlog_file") or "topics/backlog.txt")
+
+    @property
+    def topics_backlog_target(self) -> int:
+        try:
+            return max(1, min(100, int(self.data.get("topics", {}).get("backlog_target", 24))))
+        except (ValueError, TypeError):
+            return 24
+
+    # -- factcheck -------------------------------------------------------
+    @property
+    def factcheck_enabled(self) -> bool:
+        return bool(self.data.get("factcheck", {}).get("enabled", True))
+
+    # -- schedule --------------------------------------------------------
+    @property
+    def schedule_per_day(self) -> int:
+        try:
+            return max(1, min(24, int(self.data.get("schedule", {}).get("per_day", 2))))
+        except (ValueError, TypeError):
+            return 2
+
+    @property
+    def schedule_times(self) -> list[str]:
+        import re
+        out: list[str] = []
+        raw = str(self.data.get("schedule", {}).get("at") or "")
+        for piece in raw.split(","):
+            match = re.fullmatch(r"\s*([01]?\d|2[0-3]):([0-5]\d)\s*", piece)
+            if match:
+                out.append(f"{int(match.group(1)):02d}:{match.group(2)}")
+        return sorted(set(out))
 
     # -- telegram --------------------------------------------------------
     @property

@@ -124,6 +124,27 @@ cta:
     - "FOLLOW FOR MORE!"
   overlay_seconds: 3.5
 
+topics:
+  # Self-refilling idea queue. The scheduler pops one topic per video;
+  # `python main.py topics --topup` asks Gemini to refill the file to
+  # backlog_target (skips anything already there).
+  backlog_file: "topics/backlog.txt"
+  backlog_target: 24
+
+factcheck:
+  # Second Gemini pass over every script before the voiceover: fixes wrong
+  # dates/names/numbers, cuts unfixable claims. Needs the free Gemini key;
+  # without one it skips silently. Never blocks a render on failure.
+  enabled: true
+
+schedule:
+  # Unattended daily rendering: `python main.py schedule` pops backlog
+  # topics and renders forever (Ctrl+C stops). Telegram-notifies each
+  # finished video when the bot is configured.
+  per_day: 2
+  # Fixed clock times ("08:00,20:00"); empty = evenly spaced from launch.
+  at: ""
+
 ai:
   # Which script writer to use.
   #   "gemini"   -> best quality. Needs a FREE key from https://aistudio.google.com/apikey
