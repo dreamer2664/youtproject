@@ -112,7 +112,7 @@ DEFAULTS: dict[str, Any] = {
         ],
         "overlay_lines": [
             "FOLLOW FOR MORE!",
-        ]
+        ],
         "overlay_seconds": 3.5,
     },
     "paths": {
