@@ -69,9 +69,10 @@ DEFAULTS: dict[str, Any] = {
         # "turbo" is ~5x faster than "flux" and looks the same at Shorts
         # resolution under the Ken Burns zoom. Set "flux" for max quality.
         "image_model": "turbo",
-        # Parallel image downloads. 3 is polite and roughly 3x faster
-        # than 1; 4-6 on a fast connection if the queue still feels slow.
-        "image_workers": 3,
+        # Parallel image downloads. Keep at 1: anonymous Pollinations
+        # allows ~1 request per 15s (extra workers only earn 429s) and
+        # the request pacer serialises downloads anyway.
+        "image_workers": 1,
     },
     "telegram": {
         # Phone control: text the bot a topic, get back a finished video.
@@ -384,9 +385,9 @@ class Config:
     @property
     def image_workers(self) -> int:
         try:
-            return max(1, min(6, int(self.data["ai"].get("image_workers", 3))))
+            return max(1, min(6, int(self.data["ai"].get("image_workers", 1))))
         except (ValueError, TypeError):
-            return 3
+            return 1
 
     # -- paths -----------------------------------------------------------
     @property

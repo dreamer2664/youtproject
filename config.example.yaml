@@ -144,9 +144,11 @@ ai:
   # Pollinations model. "turbo" is ~5x faster than "flux" and looks the
   # same at Shorts resolution once the Ken Burns zoom is applied.
   image_model: "turbo"
-  # Parallel image downloads. 3 is polite and roughly 3x faster than 1;
-  # raise to 4-6 on a fast connection if the queue still feels slow.
-  image_workers: 3
+  # Parallel image downloads. Keep at 1: anonymous Pollinations allows
+  # ~1 request per 15s, so extra workers only earn 429s — the built-in
+  # pacer spaces requests out automatically. (A free Pollinations account
+  # raises the limit; a future update can take advantage of it.)
+  image_workers: 1
 
 paths:
   work_dir: "work"

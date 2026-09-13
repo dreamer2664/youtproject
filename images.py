@@ -12,7 +12,9 @@ sitting on one picture for 20 seconds.
 from __future__ import annotations
 
 import hashlib
+import random
 import re
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -41,6 +43,53 @@ SHOT_STYLES = [
 ]
 
 
+# Anonymous Pollinations allows roughly one request per 15 seconds — faster
+# than that and the API answers HTTP 429 (or, sneakier, HTTP 200 with a
+# placeholder image instead of yours). The pacer serialises request starts
+# across all worker threads, so no setting can trip the limiter.
+MIN_REQUEST_INTERVAL = 16.0
+_pace_lock = threading.Lock()
+_last_request_start = 0.0
+
+
+def _wait_for_slot() -> None:
+    """Block until MIN_REQUEST_INTERVAL has passed since the last request."""
+    global _last_request_start
+    with _pace_lock:
+        wait = MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_start)
+        if wait > 0:
+            if wait > 3:
+                print(f"  [image] pacing: next request in {wait:.0f}s (rate limit)")
+            time.sleep(wait)
+        _last_request_start = time.monotonic()
+
+
+# Known Pollinations rate-limit placeholder: HTTP 200 whose body is this
+# image instead of yours (pollinations/pollinations#7207). A matching MD5
+# is treated exactly like a 429 and retried with backoff.
+_RATE_LIMIT_PLACEHOLDER_MD5 = "2090a5dc21c32952cbf8496339752bd1"
+
+
+class _RateLimited(Exception):
+    """Pollinations said slow down. Carries an optional Retry-After (seconds)."""
+
+    def __init__(self, retry_after: float | None) -> None:
+        super().__init__("HTTP 429")
+        self.retry_after = retry_after
+
+
+def _retry_after_seconds(response) -> float | None:
+    """Parse a Retry-After response header (delta-seconds form)."""
+    headers = getattr(response, "headers", None) or {}
+    raw = headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        return max(1.0, float(str(raw).strip()))
+    except ValueError:
+        return None  # HTTP-date form — ignore, exponential backoff covers it
+
+
 def _safe_slug(text: str, limit: int = 40) -> str:
     slug = re.sub(r"-+", "-", "".join(c if c.isalnum() else "-" for c in text.lower()).strip("-"))
     return slug[:limit] or "image"
@@ -51,7 +100,7 @@ def generate_image(
     dest: Path,
     cfg: Config,
     seed: int | None = None,
-    attempts: int = 3,
+    attempts: int = 6,
 ) -> Path:
     """Download one AI image. Raises RuntimeError if every attempt fails."""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -72,18 +121,38 @@ def generate_image(
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
+            _wait_for_slot()
             response = requests.get(url, params=params, timeout=cfg.image_timeout)
+            if response.status_code == 429:
+                raise _RateLimited(_retry_after_seconds(response))
             if response.status_code != 200:
                 raise RuntimeError(f"HTTP {response.status_code}")
             body = response.content
             # Pollinations returns an error payload with a 200 on some failures.
             if len(body) < 2000 or not (body[:3] == b"\xff\xd8\xff" or body[:8] == b"\x89PNG\r\n\x1a\n"):
                 raise RuntimeError(f"response was not an image ({len(body)} bytes)")
+            if hashlib.md5(body).hexdigest() == _RATE_LIMIT_PLACEHOLDER_MD5:
+                # Stealth rate limit: HTTP 200 with a placeholder image.
+                raise _RateLimited(None)
+            if len(body) > 800_000:
+                print(f"  [image] warning: unusually large response "
+                      f"({len(body) // 1024} KB) — keeping it")
             dest.write_bytes(body)
             return dest
+        except _RateLimited as exc:
+            last_error = exc
+            if attempt == attempts:
+                break
+            delay = exc.retry_after or min(120.0, 15.0 * 2 ** (attempt - 1))
+            delay *= random.uniform(0.8, 1.2)
+            print(f"  [image] rate-limited, retry in {delay:.0f}s "
+                  f"(attempt {attempt}/{attempts})")
+            time.sleep(delay)
         except Exception as exc:  # noqa: BLE001 - retry anything
             last_error = exc
             print(f"  [image] attempt {attempt}/{attempts} failed: {exc}")
+            if attempt == attempts:
+                break
             time.sleep(3 * attempt)
 
     raise RuntimeError(f"image generation failed after {attempts} attempts: {last_error}")

@@ -234,6 +234,10 @@ def cmd_generate(cfg, args) -> int:
             print(f"      title   : {script.title}")
             print(f"      scenes  : {len(script.scenes)}")
             print(f"      est. len: {script.estimated_seconds(130.0 * cfg.speech_rate_factor)}s (target {cfg.target_seconds}s)")
+            est_seconds = script.estimated_seconds(130.0 * cfg.speech_rate_factor)
+            if est_seconds < cfg.target_seconds * 0.7:
+                print(f"      warning   : script is short ({est_seconds:.0f}s vs {cfg.target_seconds}s target) —")
+                print("                    the fallback model undershoots; re-run later for a full-length video")
             if cta_voice:
                 print(f"      cta #{cta_num}    : {cta_voice[:62]}")
             (job_dir / "script.json").write_text(
