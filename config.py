@@ -283,8 +283,15 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
 
     data = DEFAULTS
     if cfg_path.exists():
-        with open(cfg_path, "r", encoding="utf-8") as handle:
-            user = yaml.safe_load(handle) or {}
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as handle:
+                user = yaml.safe_load(handle) or {}
+        except yaml.YAMLError as exc:
+            raise ValueError(
+                f"{cfg_path.name} has a syntax error: {exc}\n"
+                f"Usually a missing quote or wrong indentation — "
+                f"compare the flagged line with config.example.yaml."
+            ) from exc
         data = _deep_merge(DEFAULTS, user)
 
     fmt = str(data["video"].get("format", "landscape")).lower()

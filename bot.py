@@ -303,8 +303,10 @@ class PhoneBot:
     # -- main loop --------------------------------------------------------
     def run_forever(self) -> None:
         me = self._api("getMe")
-        print(f"  [bot] live as @{me.get('username')} — "
+        username = me.get("username") or "?"
+        print(f"  [bot] live as @{username} — "
               f"message it from the owner's Telegram account.")
+        print(f"  [bot] test it now: send /start to @{username} from your phone.")
         print("  [bot] Ctrl+C stops the bot "
               "(a running render is abandoned; its files stay in out/).")
         worker = threading.Thread(target=self._worker, daemon=True)
@@ -320,8 +322,14 @@ class PhoneBot:
         except TelegramError as exc:
             print(f"  [bot] couldn't drain pending updates ({exc}); continuing.")
 
-        print("  [bot] polling…")
+        print("  [bot] polling… (silence is normal — I'm waiting for your message)")
+        polling_since = time.time()
+        last_log = polling_since
         while True:
+            if time.time() - last_log > 300:
+                total = int((time.time() - polling_since) / 60)
+                print(f"  [bot] still polling ({total} min idle)…")
+                last_log = time.time()
             try:
                 updates = self._api(
                     "getUpdates", timeout=POLL_TIMEOUT,

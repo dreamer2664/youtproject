@@ -203,6 +203,15 @@ class GeminiProvider:
             f"minutes and re-run; nothing was lost. {last_error}"
         )
 
+    @staticmethod
+    def _save_debug(cfg: Config, raw: str) -> None:
+        """Keep the raw model output so a parse failure is diagnosable."""
+        try:
+            cfg.work_dir.mkdir(parents=True, exist_ok=True)
+            (cfg.work_dir / "gemini_last.txt").write_text(raw, encoding="utf-8")
+        except OSError:
+            pass
+
     def generate(self, cfg: Config, topic_override: str | None = None) -> Script:
         topic = topic_override or cfg.topic
         target = cfg.target_seconds
@@ -267,9 +276,31 @@ Return ONLY a JSON object in exactly this shape:
         try:
             text = data["candidates"][0]["content"]["parts"][0]["text"]
         except (KeyError, IndexError) as exc:
+            self._save_debug(cfg, json.dumps(data)[:4000])
             raise RuntimeError(f"Unexpected Gemini response shape: {str(data)[:400]}") from exc
 
-        script = normalise_script(extract_json(text), self.name)
+        def _parse(raw_text: str) -> Script:
+            return normalise_script(extract_json(raw_text), self.name)
+
+        try:
+            script = _parse(text)
+        except ValueError:
+            # Weak models sometimes fumble the shape once, then comply.
+            print("  [script] model returned no usable scenes — asking once more...")
+            data = self._post(payload)
+            try:
+                text = data["candidates"][0]["content"]["parts"][0]["text"]
+            except (KeyError, IndexError) as exc:
+                self._save_debug(cfg, json.dumps(data)[:4000])
+                raise RuntimeError(f"Unexpected Gemini response shape: {str(data)[:400]}") from exc
+            try:
+                script = _parse(text)
+            except ValueError as exc:
+                self._save_debug(cfg, text)
+                raise RuntimeError(
+                    "Gemini returned no usable scenes twice. Raw response saved to "
+                    f"{cfg.work_dir / 'gemini_last.txt'}. Snippet: {text[:200]!r}"
+                ) from exc
         if not script.description:
             script.description = f"{script.title}\n\n{topic}"
         if not script.tags:
