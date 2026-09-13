@@ -77,6 +77,50 @@ DEFAULTS: dict[str, Any] = {
         # talks to this account — everyone else is ignored.
         "owner_id": 0,
     },
+    "music": {
+        # Ducked music bed. Source: music.file > first audio in music/ >
+        # built-in royalty-free loop (cached in work/_fx).
+        "enabled": True,
+        "file": "",
+        "folder": "music",
+        # Bed loudness in dB. -24 is subtle, -18 is clearly present.
+        "level_db": -24,
+        # Dip the bed while the narrator speaks. Falls back to a static
+        # bed if this FFmpeg lacks sidechaincompress.
+        "duck": True,
+    },
+    "sfx": {
+        # Airy whoosh on every scene cut + soft pop on the end-card CTA.
+        "whoosh": True,
+        "whoosh_db": -12,
+        "cta_pop": True,
+    },
+    "progress_bar": {
+        # Retention bar that fills as the video plays (gold, bottom edge).
+        "enabled": True,
+        "color": "0xFFD700",
+        "height": 12,
+        "position": "bottom",  # top | bottom
+    },
+    "cta": {
+        # Rotating spoken + on-screen call to action. Each video takes the
+        # next line (counter in cta_state.json).
+        "enabled": True,
+        "lines": [
+            "Comment YES if you already knew this \u2014 and follow for part two.",
+            "Rate this one out of ten in the comments. Be honest. And follow for more.",
+            "Send this to the friend who needs to hear it \u2014 and follow for part two.",
+            "Which part shocked you the most? Tell me below \u2014 and follow for more.",
+            "Wrong answers only in the comments. Go. And follow for part two.",
+            "Comment STOP if you knew this before watching. Follow for more.",
+        ],
+        "overlay_lines": [
+            "COMMENT BELOW!",
+            "FOLLOW FOR PART 2!",
+            "TAG A FRIEND!",
+        ],
+        "overlay_seconds": 3.5,
+    },
     "paths": {
         "work_dir": "work",
         "out_dir": "out",
@@ -190,6 +234,86 @@ class Config:
     @property
     def thumb_height(self) -> int:
         return 720 if self.format == "landscape" else 1280
+
+    # -- music / sfx ---------------------------------------------------
+    @property
+    def music_enabled(self) -> bool:
+        return bool(self.data.get("music", {}).get("enabled", True))
+
+    @property
+    def music_file(self) -> str:
+        return str(self.data.get("music", {}).get("file") or "")
+
+    @property
+    def music_folder(self) -> str:
+        return str(self.data.get("music", {}).get("folder") or "music")
+
+    @property
+    def music_level_db(self) -> int:
+        try:
+            return int(self.data.get("music", {}).get("level_db", -24))
+        except (ValueError, TypeError):
+            return -24
+
+    @property
+    def music_duck(self) -> bool:
+        return bool(self.data.get("music", {}).get("duck", True))
+
+    @property
+    def sfx_whoosh(self) -> bool:
+        return bool(self.data.get("sfx", {}).get("whoosh", True))
+
+    @property
+    def sfx_whoosh_db(self) -> int:
+        try:
+            return int(self.data.get("sfx", {}).get("whoosh_db", -12))
+        except (ValueError, TypeError):
+            return -12
+
+    @property
+    def sfx_cta_pop(self) -> bool:
+        return bool(self.data.get("sfx", {}).get("cta_pop", True))
+
+    # -- progress bar --------------------------------------------------
+    @property
+    def progress_enabled(self) -> bool:
+        return bool(self.data.get("progress_bar", {}).get("enabled", True))
+
+    @property
+    def progress_color(self) -> str:
+        return str(self.data.get("progress_bar", {}).get("color") or "0xFFD700")
+
+    @property
+    def progress_height(self) -> int:
+        try:
+            return max(4, min(40, int(self.data.get("progress_bar", {}).get("height", 12))))
+        except (ValueError, TypeError):
+            return 12
+
+    @property
+    def progress_position(self) -> str:
+        pos = str(self.data.get("progress_bar", {}).get("position") or "bottom").lower()
+        return "top" if pos == "top" else "bottom"
+
+    # -- cta -----------------------------------------------------------
+    @property
+    def cta_enabled(self) -> bool:
+        return bool(self.data.get("cta", {}).get("enabled", True))
+
+    @property
+    def cta_lines(self) -> list[str]:
+        return [str(x) for x in (self.data.get("cta", {}).get("lines") or [])]
+
+    @property
+    def cta_overlay_lines(self) -> list[str]:
+        return [str(x) for x in (self.data.get("cta", {}).get("overlay_lines") or [])]
+
+    @property
+    def cta_overlay_seconds(self) -> float:
+        try:
+            return max(1.0, min(10.0, float(self.data.get("cta", {}).get("overlay_seconds", 3.5))))
+        except (ValueError, TypeError):
+            return 3.5
 
     # -- telegram --------------------------------------------------------
     @property

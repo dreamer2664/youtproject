@@ -16,6 +16,7 @@ work/
 out/
 upload/
 state.json
+cta_state.json
 state.corrupt.json
 *.mp4
 *.mkv

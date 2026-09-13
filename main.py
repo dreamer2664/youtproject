@@ -224,9 +224,18 @@ def cmd_generate(cfg, args) -> int:
         try:
             print("  1/5 script")
             script = provider.generate(cfg, args.topic)
+            from cta import next_cta
+
+            cta_voice, cta_overlay_text, cta_num = next_cta(cfg)
+            if cta_voice:
+                script.scenes[-1].narration = (
+                    f"{script.scenes[-1].narration} {cta_voice}"
+                )
             print(f"      title   : {script.title}")
             print(f"      scenes  : {len(script.scenes)}")
             print(f"      est. len: {script.estimated_seconds(130.0 * cfg.speech_rate_factor)}s (target {cfg.target_seconds}s)")
+            if cta_voice:
+                print(f"      cta #{cta_num}    : {cta_voice[:62]}")
             (job_dir / "script.json").write_text(
                 json.dumps(
                     {
@@ -307,8 +316,18 @@ def cmd_generate(cfg, args) -> int:
                     print("      subtitles : burn-in unavailable in this FFmpeg build —")
                     print("                    captions.srt is still included in the kit")
 
+            bounds: list[float] = []
+            running_bound = 0.0
+            for scene_len in durations[:-1]:
+                running_bound += scene_len
+                bounds.append(running_bound)
+            cta_card = (
+                (cta_overlay_text, cfg.cta_overlay_seconds)
+                if cta_voice else None
+            )
             assemble_video(segments, padded, out_path, cfg, work_dir=job_dir,
-                           burn_path=burn_path)
+                           burn_path=burn_path, scene_bounds=bounds,
+                           cta_overlay=cta_card)
             build_thumbnail(images_by_scene[0][0], script.title,
                             out_path.with_suffix(".jpg"), cfg)
             meta_path = write_metadata(
@@ -317,6 +336,7 @@ def cmd_generate(cfg, args) -> int:
                 subtitle_file=srt_path.name if srt_path else None,
                 karaoke_file=karaoke_name,
                 subtitles_burned_in=burned_in,
+                cta=cta_voice,
             )
 
             total = sum(durations)

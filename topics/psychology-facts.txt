@@ -1,0 +1,15 @@
+# Psychology facts — the recommended starter niche (see NICHE-GUIDE.md).
+# One topic per line, # = comment. Queue the whole pack with:
+#   python main.py batch --topics topics/psychology-facts.txt --seconds 35
+why your brain replays embarrassing moments at 3am
+the spotlight effect: nobody notices you as much as you think
+why we fall for people who ignore us, explained by psychology
+the Zeigarnik effect: why unfinished tasks haunt your mind
+why your brain deletes most of your childhood memories
+the Dunning-Kruger effect and why confident people are often wrong
+why you get a song stuck in your head for days (earworms)
+phantom vibration syndrome: why you feel your phone buzz when it didn't
+why we love true crime: the psychology of morbid curiosity
+the Baader-Meinhof effect: why you suddenly see everything everywhere
+why yawning is contagious (and what it says about empathy)
+revenge bedtime procrastination and the tired brain

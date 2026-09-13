@@ -358,13 +358,15 @@ class TemplateProvider:
             "Records from the time back it up. The witnesses all agreed.",
             f"So remember this. {topic} changed everything that came after.",
         ]
-        cta = "Follow for part two."
+        # When the rotating CTA is on, main.py appends this video's line —
+        # the template must not add its own or the ending repeats itself.
+        cta = "" if cfg.cta_enabled else "Follow for part two."
         shots = [
             "extreme close-up", "wide establishing shot", "dramatic low angle",
             "close-up detail", "aerial view", "medium shot from a new angle",
             "moody cinematic lighting", "high angle view",
         ]
-        picked = (core * 2)[: max(2, count - 1)] + [cta]
+        picked = [b for b in (core * 2)[: max(2, count - 1)] + [cta] if b]
         scenes = [
             Scene(
                 narration=beat,

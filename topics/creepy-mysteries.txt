@@ -1,0 +1,16 @@
+# Creepy mysteries & the unexplained — highest retention, slower growth.
+# One topic per line, # = comment. Queue the whole pack with:
+#   python main.py batch --topics topics/creepy-mysteries.txt --seconds 35
+# Tip: pair with a darker tone in config.yaml ("dark and dramatic").
+the Dyatlov Pass incident: nine hikers and no explanation
+the Wow! signal: the 72 seconds that broke SETI
+the dancing plague of 1518, when a town danced until it dropped
+the Max Headroom broadcast hijacking that was never solved
+Roanoke: the colony of 115 people who vanished overnight
+the Pollock twins and the strangest reincarnation case on record
+Hinterkaifeck: footprints in the snow that led nowhere
+the Somerton Man: a code, a suitcase, and no identity
+why every crew abandoned the Mary Celeste in perfect condition
+the Lead Masks case: two men, no injuries, no answers
+the Green Children of Woolpit who spoke no known language
+Room 1046: the man who waited for someone who killed him

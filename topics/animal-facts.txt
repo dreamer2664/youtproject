@@ -1,0 +1,15 @@
+# Mind-blowing animal facts — evergreen, image-friendly, family-safe.
+# One topic per line, # = comment. Queue the whole pack with:
+#   python main.py batch --topics topics/animal-facts.txt --seconds 35
+the immortal jellyfish, the only creature that can live forever
+the pistol shrimp: a claw that fires plasma hotter than the sun
+tardigrades: the animal that survived open space
+the mantis shrimp sees colors humans cannot even imagine
+axolotls can regrow their brain (and scientists don't know how)
+the lyrebird that perfectly imitates chainsaws and cameras
+ Greenland sharks that are older than the United States
+the honey badger's skin even lions cannot bite through
+octopuses have three hearts and blue blood
+the wood frog that freezes solid every winter and thaws alive
+crows hold funerals and remember human faces for years
+the peacock mantis shrimp punch that breaks aquarium glass
