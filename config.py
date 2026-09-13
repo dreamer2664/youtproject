@@ -103,22 +103,16 @@ DEFAULTS: dict[str, Any] = {
         "position": "bottom",  # top | bottom
     },
     "cta": {
-        # Rotating spoken + on-screen call to action. Each video takes the
-        # next line (counter in cta_state.json).
+        # Spoken + on-screen call to action. One gentle ask by default —
+        # add more lines to rotate comment-bait once you have an audience
+        # that answers (counter in cta_state.json).
         "enabled": True,
         "lines": [
-            "Comment YES if you already knew this \u2014 and follow for part two.",
-            "Rate this one out of ten in the comments. Be honest. And follow for more.",
-            "Send this to the friend who needs to hear it \u2014 and follow for part two.",
-            "Which part shocked you the most? Tell me below \u2014 and follow for more.",
-            "Wrong answers only in the comments. Go. And follow for part two.",
-            "Comment STOP if you knew this before watching. Follow for more.",
+            "Follow for more.",
         ],
         "overlay_lines": [
-            "COMMENT BELOW!",
-            "FOLLOW FOR PART 2!",
-            "TAG A FRIEND!",
-        ],
+            "FOLLOW FOR MORE!",
+        ]
         "overlay_seconds": 3.5,
     },
     "paths": {
