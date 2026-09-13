@@ -66,6 +66,12 @@ DEFAULTS: dict[str, Any] = {
         "image_provider": "pollinations",
         # Seconds to wait per image before giving up.
         "image_timeout": 90,
+        # "turbo" is ~5x faster than "flux" and looks the same at Shorts
+        # resolution under the Ken Burns zoom. Set "flux" for max quality.
+        "image_model": "turbo",
+        # Parallel image downloads. 3 is polite and roughly 3x faster
+        # than 1; 4-6 on a fast connection if the queue still feels slow.
+        "image_workers": 3,
     },
     "telegram": {
         # Phone control: text the bot a topic, get back a finished video.
@@ -370,6 +376,17 @@ class Config:
     @property
     def image_timeout(self) -> int:
         return int(self.data["ai"]["image_timeout"])
+
+    @property
+    def image_model(self) -> str:
+        return str(self.data["ai"].get("image_model") or "turbo")
+
+    @property
+    def image_workers(self) -> int:
+        try:
+            return max(1, min(6, int(self.data["ai"].get("image_workers", 3))))
+        except (ValueError, TypeError):
+            return 3
 
     # -- paths -----------------------------------------------------------
     @property

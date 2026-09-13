@@ -141,6 +141,12 @@ ai:
   image_provider: "pollinations"
   # Seconds to wait per image before giving up.
   image_timeout: 90
+  # Pollinations model. "turbo" is ~5x faster than "flux" and looks the
+  # same at Shorts resolution once the Ken Burns zoom is applied.
+  image_model: "turbo"
+  # Parallel image downloads. 3 is polite and roughly 3x faster than 1;
+  # raise to 4-6 on a fast connection if the queue still feels slow.
+  image_workers: 3
 
 paths:
   work_dir: "work"

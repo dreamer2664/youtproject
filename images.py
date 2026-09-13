@@ -4,7 +4,7 @@ Verified free and keyless: a plain GET to image.pollinations.ai returns a JPEG
 with no API key, no signup and no billing. There is no SLA, so every call is
 retried and failures are handled rather than fatal.
 
-Each narrated scene gets `video.images_per_scene` images (default 2), each
+Each narrated scene gets `video.images_per_scene` images (default 3), each
 framed as a different cinematic shot so the video cuts regularly instead of
 sitting on one picture for 20 seconds.
 """
@@ -66,7 +66,7 @@ def generate_image(
         "height": cfg.image_height,
         "seed": seed,
         "nologo": "true",
-        "model": "flux",
+        "model": cfg.image_model,
     }
 
     last_error: Exception | None = None
@@ -90,26 +90,49 @@ def generate_image(
 
 
 def generate_scene_images(script, cfg: Config, out_dir: Path) -> list[list[Path]]:
-    """Generate images_per_scene images per scene. Returns paths grouped by scene."""
-    out_dir.mkdir(parents=True, exist_ok=True)
-    grouped: list[list[Path]] = []
-    total = len(script.scenes)
-    per_scene = cfg.images_per_scene
+    """Generate images_per_scene images per scene. Returns paths grouped by scene.
 
+    Downloads run concurrently (ai.image_workers threads) — Pollinations
+    queues each request server-side, so 3 parallel requests finish roughly
+    3x faster than one-at-a-time. Results are re-sorted into scene/slot
+    order before returning, so callers see deterministic output.
+    """
+    import concurrent.futures
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    per_scene = cfg.images_per_scene
+    jobs: list[tuple[int, int, str, Path, int]] = []
     for index, scene in enumerate(script.scenes, start=1):
-        scene_paths: list[Path] = []
         for slot in range(per_scene):
             if per_scene > 1:
                 prompt = f"{scene.image_prompt}, {SHOT_STYLES[slot % len(SHOT_STYLES)]}"
-                tag = f"#{slot + 1}"
             else:
                 prompt = scene.image_prompt
-                tag = ""
             name = f"scene_{index:02d}_{slot + 1}of{per_scene}_{_safe_slug(prompt)}.jpg"
-            dest = out_dir / name
-            print(f"  [image] {index}/{total}{tag}: {scene.image_prompt[:60]}...")
-            generate_image(prompt, dest, cfg, seed=1000 + index * 100 + slot)
-            scene_paths.append(dest)
-        grouped.append(scene_paths)
+            jobs.append((index, slot, prompt, out_dir / name, 1000 + index * 100 + slot))
 
-    return grouped
+    total_scenes = len(script.scenes)
+    workers = min(cfg.image_workers, len(jobs))
+    print(f"  [image] generating {len(jobs)} images "
+          f"({workers} parallel, {cfg.image_model})...")
+    done = 0
+    results: dict[tuple[int, int], Path] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        future_to_job = {
+            pool.submit(generate_image, prompt, dest, cfg, seed): (index, slot)
+            for index, slot, prompt, dest, seed in jobs
+        }
+        try:
+            for future in concurrent.futures.as_completed(future_to_job):
+                index, slot = future_to_job[future]
+                results[(index, slot)] = future.result()  # raises on failure
+                done += 1
+                print(f"  [image] done {done}/{len(jobs)} "
+                      f"(scene {index}/{total_scenes} shot {slot + 1}/{per_scene})")
+        except BaseException:
+            for future in future_to_job:
+                future.cancel()
+            raise
+
+    return [[results[(index, slot)] for slot in range(per_scene)]
+            for index in range(1, total_scenes + 1)]
