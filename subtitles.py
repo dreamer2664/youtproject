@@ -16,6 +16,7 @@ Three outputs:
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -180,11 +181,32 @@ def esc_subs_path(path: Path) -> str:
 
 
 def system_fonts_dir() -> Path | None:
-    """Directory holding system fonts, for libass font lookup.
+    """Font directory for libass font lookup.
 
-    Needed on Windows, where fontconfig does not search C:\\Windows\\Fonts
-    by itself — without this, burn-in silently renders no text.
+    Prefers a project-local fonts/ dir holding just Arial: libass scans
+    every file in fontsdir, and pointing it at all of C:\\Windows\\Fonts
+    means hundreds of failed .fon probes plus slow init on every burn.
+    The local dir is populated from the Windows fonts on first use (the
+    user already owns that license; nothing is redistributed). Falls back
+    to C:\\Windows\\Fonts itself, or None off-Windows, where fontconfig
+    already handles lookup.
     """
+    local = Path(__file__).resolve().parent / "fonts"
+    try:
+        local.mkdir(parents=True, exist_ok=True)
+        if not any(local.iterdir()):
+            for name in ("arial.ttf", "arialbd.ttf"):
+                win_font = Path("C:/Windows/Fonts") / name
+                if win_font.exists():
+                    try:
+                        shutil.copy2(win_font, local / name)
+                    except OSError:
+                        pass
+        if any(entry.suffix.lower() in (".ttf", ".otf", ".ttc")
+               for entry in local.iterdir()):
+            return local
+    except OSError:
+        pass
     cand = Path("C:/Windows/Fonts")
     return cand if cand.is_dir() else None
 

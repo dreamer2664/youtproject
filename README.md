@@ -154,7 +154,8 @@ Text the bot a topic from your phone, get back the finished video:
 4. `python main.py bot` — leave your PC on; the bot polls from here, so no
    firewall or port setup is needed.
 
-Plain text = a topic to render. `/queue` shows progress. One video renders
+Plain text = a topic to render. `/queue` shows progress, `/send <id>`
+re-sends a finished video. One video renders
 at a time; extras queue up. The video arrives as a file (bit-exact, ready
 to upload) plus the caption and hashtags, and the full YouTube kit is also
 built on your PC. Only your account can use the bot.

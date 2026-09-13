@@ -19,10 +19,12 @@ new package to install and nothing to break on Windows.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import threading
 import time
 import traceback
+from pathlib import Path
 from queue import Queue as TQueue
 
 import requests
@@ -42,6 +44,7 @@ HELP_TEXT = """🎬 Send me any topic and I'll render a vertical video for it.
 Commands:
 /queue — what I'm working on right now
 /help — this message
+/send <id> — re-send a finished video
 
 One video renders at a time; extra topics queue up behind it.
 A video takes roughly 15–25 minutes. I'll send it here as a file
@@ -66,7 +69,7 @@ def slugify(title: str, fallback: str) -> str:
 def parse_incoming(text: str) -> tuple[str, str]:
     """Pure command parser (unit-tested). Returns (action, argument).
 
-    Actions: 'topic' (render this), 'queue', 'help', 'ignore'.
+    Actions: 'topic' (render this), 'queue', 'send', 'help', 'ignore'.
     """
     text = (text or "").strip()
     if not text:
@@ -79,6 +82,8 @@ def parse_incoming(text: str) -> tuple[str, str]:
     if low.startswith("/new"):
         topic = text[4:].strip()
         return ("topic", topic) if topic else ("help", "")
+    if low.startswith("/send"):
+        return ("send", text[5:].strip())
     if text.startswith("/"):
         return ("help", "")
     return ("topic", text[:200])
@@ -170,11 +175,14 @@ class PhoneBot:
         elif action == "queue":
             self.send_message(chat_id, "📋 Queue:\n" +
                               Queue(self.cfg.state_file).format_table())
+        elif action == "send":
+            self._send_existing(chat_id, arg)
         elif action == "ignore":
             self.send_message(chat_id, HELP_TEXT)
         else:
             position = self.jobs.qsize()
             self.jobs.put((chat_id, arg))
+            print(f"  [bot] queued: {arg}")
             if position == 0:
                 self.send_message(
                     chat_id, f"🎬 Making \"{arg}\" — I'll send the finished "
@@ -182,7 +190,31 @@ class PhoneBot:
             else:
                 self.send_message(
                     chat_id, f"📥 Queued #{position + 1}: \"{arg}\"")
-            print(f"  [bot] queued: {arg}")
+
+    def _send_existing(self, chat_id: int, job_ref: str) -> None:
+        """Deliver an already-made video (recovery + re-send)."""
+        job = Queue(self.cfg.state_file).get(job_ref.strip()) if job_ref.strip() else None
+        if job is None:
+            self.send_message(chat_id, f"No job matching '{job_ref.strip()}'. "
+                                      "/queue to list them.")
+            return
+        if job.status not in ("generated", "packaged"):
+            self.send_message(chat_id, f"Job {job.id} is '{job.status}' — "
+                                      "nothing to send yet.")
+            return
+        video = Path(job.video_file) if job.video_file else None
+        if video is None or not video.exists():
+            self.send_message(chat_id, f"Video file for {job.id} is missing on the PC.")
+            return
+        self.send_message(chat_id, f"\U0001F4E4 Sending \"{(job.title or job.topic)[:60]}\"…")
+        try:
+            self._deliver(chat_id, job.id, job.topic)
+        except Exception as exc:  # noqa: BLE001 - tell the user, keep polling
+            print(f"  [bot] re-send failed: {exc}")
+            try:
+                self.send_message(chat_id, f"\u274C couldn't send it: {exc}")
+            except TelegramError:
+                pass
 
     # -- rendering worker (one video at a time) ---------------------------
     def _heartbeat(self, chat_id: int, topic: str,
@@ -247,7 +279,16 @@ class PhoneBot:
         except Exception as exc:  # noqa: BLE001 - video still sendable
             print(f"  [bot] packaging failed (video is fine): {exc}")
 
-        self._deliver(chat_id, job.id, topic)
+        try:
+            self._deliver(chat_id, job.id, topic)
+        except Exception as exc:  # noqa: BLE001 - tell the user, keep polling
+            print(f"  [bot] delivery failed: {exc}")
+            traceback.print_exc()
+            try:
+                self.send_message(chat_id, f"\u274C video rendered fine, but I couldn't send it: {exc}\n"
+                                           f"It's packaged on your PC: upload/{job.id}/")
+            except TelegramError:
+                pass
 
     def _deliver(self, chat_id: int, job_id: str, topic: str) -> None:
         from package import build_platform_caption
@@ -258,7 +299,6 @@ class PhoneBot:
             self.send_message(chat_id, "❌ Finished, but I lost track of the "
                                       "job — check the PC queue.")
             return
-        import json
 
         meta_path = Path(job.meta_file)
         meta = json.loads(meta_path.read_text(encoding="utf-8")) \
@@ -328,7 +368,8 @@ class PhoneBot:
         while True:
             if time.time() - last_log > 300:
                 total = int((time.time() - polling_since) / 60)
-                print(f"  [bot] still polling ({total} min idle)…")
+                state = "rendering" if self.jobs.unfinished_tasks > 0 else "idle"
+                print(f"  [bot] still polling ({total} min, {state})…")
                 last_log = time.time()
             try:
                 updates = self._api(

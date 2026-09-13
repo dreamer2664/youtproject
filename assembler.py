@@ -27,6 +27,20 @@ class AssemblyError(RuntimeError):
     pass
 
 
+# Harmless per-run ffmpeg noise, hidden on success to keep the console
+# readable. Failures still print the raw tail (see run), so no signal is lost.
+_FFMPEG_NOISE = (
+    "deprecated pixel format",
+    "Error getting metadata for embedded font",
+    "No charmap autodetected",
+    "Error opening memory font",
+    "does not contain an image sequence pattern",
+    "Use a pattern such as %03d",
+    "Estimating duration from bitrate",
+    "Guessed Channel Layout",
+)
+
+
 def run(cmd: list[str], what: str) -> None:
     """Run a command, raising a readable error on failure."""
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -35,11 +49,24 @@ def run(cmd: list[str], what: str) -> None:
         raise AssemblyError(
             f"{what} failed (exit {result.returncode}):\n  " + "\n  ".join(tail)
         )
-    # Surface warnings (libass/font issues hide here) instead of swallowing them.
+    # Surface warnings (libass/font issues hide here) instead of swallowing
+    # them — minus known-harmless noise, capped so one chatty filter can't
+    # flood the console.
     err = (result.stderr or "").strip()
     if err:
+        shown = 0
+        hidden = 0
         for line in err.splitlines():
-            print(f"    [ffmpeg:{what}] {line[:200]}")
+            if any(snippet in line for snippet in _FFMPEG_NOISE):
+                hidden += 1
+                continue
+            if shown < 15:
+                print(f"    [ffmpeg:{what}] {line[:200]}")
+                shown += 1
+            else:
+                hidden += 1
+        if shown and hidden:
+            print(f"    [ffmpeg:{what}] …({hidden} routine lines hidden)")
 
 
 def ffprobe_duration(path: Path) -> float:

@@ -33,3 +33,6 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+
+# Local font copies for quiet libass lookups (auto-populated, never commit)
+fonts/
