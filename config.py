@@ -85,6 +85,12 @@ DEFAULTS: dict[str, Any] = {
         "provider": "gemini",
         "gemini_api_key": "",
         "gemini_model": "gemini-flash-latest",
+        # Free Groq keys (https://console.groq.com/keys) — script/topic/
+        # factcheck fallback after Gemini, with key rotation spreading the
+        # free-tier quota. Env: GROQ_API_KEYS (comma-separated) wins, else
+        # GROQ_API_KEY (single), else this list.
+        "groq_api_keys": [],
+        "groq_model": "qwen/qwen3.8-27b",
         # Primary image provider + ordered fallbacks (IMAGE_PROVIDERS).
         # Fallbacks missing their key are skipped automatically, never fatal.
         "image_provider": "pollinations",
@@ -493,6 +499,22 @@ class Config:
     @property
     def gemini_model(self) -> str:
         return str(self.data["ai"]["gemini_model"])
+
+    @property
+    def groq_api_keys(self) -> list[str]:
+        """All configured Groq keys; env wins over config.yaml (never crash)."""
+        env = (os.environ.get("GROQ_API_KEYS")
+               or os.environ.get("GROQ_API_KEY") or "").strip()
+        if env:
+            return [key.strip() for key in env.split(",") if key.strip()]
+        raw = self.data["ai"].get("groq_api_keys") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        return [str(key).strip() for key in raw if str(key).strip()]
+
+    @property
+    def groq_model(self) -> str:
+        return str(self.data["ai"].get("groq_model") or "qwen/qwen3.8-27b")
 
     @property
     def image_width(self) -> int:

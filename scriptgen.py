@@ -414,14 +414,14 @@ Return ONLY a JSON object in exactly this shape:
                 text = data["candidates"][0]["content"]["parts"][0]["text"]
             except (KeyError, IndexError) as exc:
                 self._save_debug(cfg, json.dumps(data)[:4000])
-                raise RuntimeError(f"Unexpected Gemini response shape: {str(data)[:400]}") from exc
+                raise RuntimeError(f"Unexpected {self.name} response shape: {str(data)[:400]}") from exc
             try:
                 script = _parse(text)
             except ValueError as exc:
                 self._save_debug(cfg, text)
                 raise RuntimeError(
-                    "Gemini returned no usable scenes twice. Raw response saved to "
-                    f"{cfg.work_dir / 'gemini_last.txt'}. Snippet: {text[:200]!r}"
+                    f"{self.name.capitalize()} returned no usable scenes twice. Raw response saved to "
+                    f"{cfg.work_dir / (self.name + '_last.txt')}. Snippet: {text[:200]!r}"
                 ) from exc
         words = script_words(script)
         if needs_expansion(words, word_budget):
@@ -595,14 +595,66 @@ class TemplateProvider:
         )
 
 
-def get_provider(cfg: Config) -> ScriptProvider:
-    """Return the configured provider, falling back to templates if unusable."""
-    if cfg.ai_provider == "template":
-        return TemplateProvider()
+class ChainedProvider:
+    """Try script providers in order; the first success wins (pure chain).
 
-    try:
-        return GeminiProvider(cfg.gemini_api_key, cfg.gemini_model)
-    except RuntimeError as exc:
-        print(f"[script] {exc}")
-        print("[script] falling back to the offline template provider.")
-        return TemplateProvider()
+    Covers both generate() (scripts) and generate_text() (factcheck, topics
+    top-ups). Providers lacking generate_text (template) are skipped for
+    text calls. Exhaustion raises RuntimeError listing every failure.
+    """
+
+    name = "chain"
+
+    def __init__(self, chain: list[tuple[str, object]]) -> None:
+        self.chain = [(label, provider) for label, provider in chain
+                      if provider is not None]
+        if not self.chain:
+            raise RuntimeError("no script provider available")
+
+    def _run(self, method: str, *args, **kwargs):
+        errors: list[str] = []
+        usable = [(label, provider) for label, provider in self.chain
+                  if hasattr(provider, method)]
+        if not usable:
+            raise RuntimeError(f"no script provider supports {method}()")
+        for index, (label, provider) in enumerate(usable):
+            try:
+                result = getattr(provider, method)(*args, **kwargs)
+                if index > 0:
+                    print(f"  [script] {label} covered after "
+                          f"{usable[index - 1][0]} failed")
+                return result
+            except Exception as exc:  # noqa: BLE001 - fall through, report all
+                errors.append(f"{label}: {exc}")
+                if index < len(usable) - 1:
+                    print(f"  [script] {label} failed — trying "
+                          f"{usable[index + 1][0]} ({str(exc)[:110]})")
+        raise RuntimeError("all script providers failed: " + " | ".join(errors))
+
+    def generate(self, cfg: Config, topic_override: str | None = None) -> Script:
+        return self._run("generate", cfg, topic_override)
+
+    def generate_text(self, prompt: str, temperature: float = 0.7,
+                      tag: str = "chain", json_mode: bool = False) -> str:
+        return self._run("generate_text", prompt, temperature=temperature,
+                         tag=tag, json_mode=json_mode)
+
+
+def get_provider(cfg: Config) -> ScriptProvider:
+    """Primary + fallbacks as a chain; template is always last, never fatal."""
+    primary = cfg.ai_provider
+    if primary not in ("gemini", "groq", "template"):
+        primary = "gemini"
+    order = [primary] + [name for name in ("gemini", "groq", "template")
+                         if name != primary]
+    chain: list[tuple[str, object]] = []
+    for name in order:
+        if name == "gemini" and cfg.gemini_api_key:
+            chain.append(("gemini", GeminiProvider(cfg.gemini_api_key, cfg.gemini_model)))
+        elif name == "groq" and cfg.groq_api_keys:
+            from groq import GroqProvider
+
+            chain.append(("groq", GroqProvider(cfg.groq_api_keys, cfg.groq_model)))
+        elif name == "template":
+            chain.append(("template", TemplateProvider()))
+    return ChainedProvider(chain)

@@ -38,8 +38,8 @@ def pop_topic(path: Path) -> str | None:
 
 
 def propose_topics(cfg: Config, count: int, existing: list[str]) -> list[str]:
-    """Ask Gemini for fresh, specific video topics. Raises RuntimeError."""
-    from scriptgen import GeminiProvider
+    """Ask the script chain for fresh, specific topics. Raises RuntimeError."""
+    from scriptgen import get_provider
 
     sample = "; ".join(existing[:12]) if existing else "none yet"
     prompt = f"""You programme a faceless YouTube Shorts channel about: {cfg.topic}
@@ -50,7 +50,7 @@ question that fills a 30-45 second Short — narrow and curiosity-driven.
 Do not repeat or resemble these existing topics: {sample}
 RULES: one topic per line; no numbering, no bullets, no quotes, no explanations;
 each under 120 characters; nothing offensive, nothing needing visuals of real people."""
-    provider = GeminiProvider(cfg.gemini_api_key, cfg.gemini_model)
+    provider = get_provider(cfg)  # script chain: primary -> gemini -> groq
     raw = provider.generate_text(prompt, temperature=1.0, tag="topics")
     return _clean(raw, existing)
 
@@ -76,8 +76,8 @@ def top_up_backlog(cfg: Config, path: Path | None = None,
     need = want - len(topics)
     if need <= 0:
         return [], len(topics)
-    if not cfg.gemini_api_key:
-        print("  [topics] no Gemini key — backlog left as is "
+    if not (cfg.gemini_api_key or cfg.groq_api_keys):
+        print("  [topics] no Gemini/Groq key — backlog left as is "
               "(add ideas by hand or run: python main.py topics --add \"...\")")
         return [], len(topics)
     try:

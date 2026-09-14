@@ -170,6 +170,13 @@ ai:
   # You can also set that ID explicitly here to skip straight to it.
   gemini_model: "gemini-flash-latest"
 
+  # Free Groq keys (https://console.groq.com/keys) — script/topic/factcheck
+  # fallback after Gemini, with key rotation spreading the free-tier quota.
+  # Several keys = several quotas. Env GROQ_API_KEYS (comma-separated) wins.
+  groq_api_keys:
+    - ""
+  groq_model: "qwen/qwen3.8-27b"
+
   # Images walk a provider chain until one delivers: the primary first,
   # then each fallback in order. Providers missing their key are skipped
   # automatically, never fatal. Image dimensions follow video.format

@@ -613,6 +613,75 @@ def t_gemini_429_fast_failover():
     assert run(200)[0] is not None  # sanity: 200 still returns immediately
 
 
+def t_groq_rotation():
+    from unittest.mock import Mock, patch
+
+    from groq import GroqProvider
+
+    def ok(text="hello"):
+        response = Mock(status_code=200)
+        response.json.return_value = {"choices": [{"message": {"content": text}}]}
+        return response
+
+    # 429 on key1 -> key2 tried immediately with its own Bearer header.
+    with patch("requests.post", side_effect=[Mock(status_code=429, text="slow"),
+                                             ok()]) as post:
+        result = GroqProvider(api_keys=["k1", "k2"])._complete(
+            "hi", temperature=0.0, json_mode=False, tag="t")
+    assert result == "hello" and post.call_count == 2
+    assert post.call_args_list[1].kwargs["headers"] == {"Authorization": "Bearer k2"}
+    # 401 -> key dropped for the run, next key still succeeds.
+    with patch("requests.post", side_effect=[Mock(status_code=401, text="bad"), ok()]) as post:
+        result = GroqProvider(api_keys=["bad", "good"])._complete(
+            "hi", temperature=0.0, json_mode=False, tag="t")
+    assert result == "hello" and post.call_count == 2
+    # 200-with-empty (dry backing pool, seen live) -> rotates like a failure.
+    empty = Mock(status_code=200)
+    empty.json.return_value = {"choices": [{"message": {"content": "  "}}]}
+    with patch("requests.post", side_effect=[empty, ok()]) as post:
+        result = GroqProvider(api_keys=["k1", "k2"])._complete(
+            "hi", temperature=0.0, json_mode=False, tag="t")
+    assert result == "hello" and post.call_count == 2
+    # 404 -> next model tried (qwen default, then 120b).
+    with patch("requests.post", side_effect=[Mock(status_code=404, text="gone"), ok()]) as post:
+        GroqProvider(api_keys=["k"])._complete("hi", temperature=0.0, json_mode=False, tag="t")
+    bodies = [call.kwargs["json"] for call in post.call_args_list]
+    assert [body["model"] for body in bodies] == ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
+    # gpt-oss gets hidden reasoning + JSON mode passes response_format through.
+    with patch("requests.post", return_value=ok()) as post:
+        GroqProvider(api_keys=["k"], model="openai/gpt-oss-120b")._complete(
+            "hi", temperature=0.0, json_mode=True, tag="t")
+    body = post.call_args.kwargs["json"]
+    assert body["reasoning_format"] == "hidden"
+    assert body["response_format"] == {"type": "json_object"}
+    # every key 429 on every model -> RuntimeError after the full sweep.
+    with patch("requests.post", return_value=Mock(status_code=429, text="slow")) as post:
+        try:
+            GroqProvider(api_keys=["k1", "k2"])._complete(
+                "hi", temperature=0.0, json_mode=False, tag="t")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("expected RuntimeError on full 429 sweep")
+    assert post.call_count == 4  # 2 models x 2 keys
+
+
+def t_script_chain_groq():
+    from scriptgen import ChainedProvider, get_provider
+
+    cfg = tmp_cfg()
+    assert [label for label, _ in get_provider(cfg).chain] == ["template"]
+    cfg.data["ai"]["groq_api_keys"] = ["k1", "k2"]
+    assert [label for label, _ in get_provider(cfg).chain] == ["groq", "template"]
+    cfg.data["ai"]["gemini_api_key"] = "g"
+    assert [label for label, _ in get_provider(cfg).chain] == ["gemini", "groq", "template"]
+    cfg.data["ai"]["provider"] = "groq"
+    assert [label for label, _ in get_provider(cfg).chain] == ["groq", "gemini", "template"]
+    cfg.data["ai"]["provider"] = "nonsense"  # garbage primary -> gemini first
+    assert [label for label, _ in get_provider(cfg).chain] == ["gemini", "groq", "template"]
+    assert isinstance(get_provider(cfg), ChainedProvider)
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -639,6 +708,8 @@ def main() -> int:
         ("image_chain", t_image_chain),
         ("image_builders", t_image_builders),
         ("autopost_builders", t_autopost_builders),
+        ("groq_rotation", t_groq_rotation),
+        ("script_chain_groq", t_script_chain_groq),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:

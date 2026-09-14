@@ -15,8 +15,8 @@ def check_script(script, cfg: Config) -> dict:
     """Verify/fix scene narrations in place. Returns a JSON-safe report."""
     if not cfg.factcheck_enabled:
         return {"checked": False, "reason": "disabled"}
-    if not cfg.gemini_api_key:
-        print("      factcheck : skipped (no Gemini key)")
+    if not (cfg.gemini_api_key or cfg.groq_api_keys):
+        print("      factcheck : skipped (no Gemini/Groq key)")
         return {"checked": False, "reason": "no key"}
     try:
         return _check(script, cfg)
@@ -26,7 +26,7 @@ def check_script(script, cfg: Config) -> dict:
 
 
 def _check(script, cfg: Config) -> dict:
-    from scriptgen import GeminiProvider
+    from scriptgen import get_provider
 
     numbered = "\n".join(f"[{i}] {s.narration}" for i, s in enumerate(script.scenes, 1))
     prompt = f"""You are a meticulous fact-checker for a short-form video channel.
@@ -43,7 +43,7 @@ NARRATION:
 
 Return ONLY a JSON object in exactly this shape:
 {{"scenes": [{{"narration": "...", "changed": false, "note": "..."}}]}}"""
-    provider = GeminiProvider(cfg.gemini_api_key, cfg.gemini_model)
+    provider = get_provider(cfg)  # script chain: primary -> gemini -> groq
     raw = provider.generate_text(prompt, temperature=0.2, tag="factcheck", json_mode=True)
     data = extract_json(raw)
     fixed = data.get("scenes")
