@@ -6,12 +6,18 @@ Approach:
      Ken Burns zoom (pre-upscaled first, which is what stops zoompan jitter).
   3. Concatenate segments, concatenate narration with matching gaps, mux.
   4. Build a thumbnail from the first scene image with the title on it.
+
+The final mux is self-healing: if the full mix (burned subtitles + progress
+bar + end-card text + audio candy) crashes an FFmpeg build, it retries with
+progressively simpler mixes until one works, so a filter quirk can only cost
+a garnish, never the whole video.
 """
 
 from __future__ import annotations
 
 import json
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -24,7 +30,13 @@ MIN_SCENE_SECONDS = 1.0
 
 
 class AssemblyError(RuntimeError):
-    pass
+    """An ffmpeg/ffprobe step failed. Carries the command + full stderr for
+    debug logs; str(exc) stays the short human-readable version."""
+
+    def __init__(self, message: str = "", *, cmd=None, stderr: str = "") -> None:
+        super().__init__(message)
+        self.cmd: list[str] = list(cmd or [])
+        self.stderr_full: str = stderr or ""
 
 
 # Harmless per-run ffmpeg noise, hidden on success to keep the console
@@ -51,7 +63,9 @@ def run(cmd: list[str], what: str) -> None:
     if result.returncode != 0:
         tail = (result.stderr or "").strip().splitlines()[-12:]
         raise AssemblyError(
-            f"{what} failed (exit {result.returncode}):\n  " + "\n  ".join(tail)
+            f"{what} failed (exit {result.returncode}):\n  " + "\n  ".join(tail),
+            cmd=cmd,
+            stderr=result.stderr or "",
         )
     # Surface warnings (libass/font issues hide here) instead of swallowing
     # them — minus known-harmless noise, capped so one chatty filter can't
@@ -185,41 +199,30 @@ def build_segments(
     return segments, padded_audio, scene_durations
 
 
-def assemble_video(
-    segments: list[Path],
-    padded_audio: list[Path],
+def _build_mux_cmd(
+    *,
+    concat_txt: Path,
+    audio_txt: Path,
     out_path: Path,
     cfg: Config,
-    work_dir: Path | None = None,
-    burn_path: Path | None = None,
-    scene_bounds: list[float] | None = None,
-    cta_overlay: tuple[str, float] | None = None,
-) -> Path:
-    """Concatenate segments, build the audio track, mux to the final MP4.
+    total_seconds: float,
+    cuts: list[float],
+    assets: dict[str, Path],
+    music_track: Path | None,
+    burn_path: Path | None,
+    cta_overlay: tuple[str, float] | None,
+    with_burn: bool,
+    with_progress: bool,
+    with_cta: bool,
+    with_candy: bool,
+) -> list[str]:
+    """Build the final-mux ffmpeg command WITHOUT running it.
 
-    When burn_path is given (.ass karaoke captions or .srt), subtitles are
-    burned into the picture (requires a libass-enabled FFmpeg — the caller
-    checks for the subtitles filter).
-
-    scene_bounds are scene-boundary times in seconds (whooshes land here);
-    cta_overlay is (text, seconds_on_screen) for the end-card CTA + pop.
+    The with_* flags switch garnishes off for the fallback ladder (see
+    assemble_video). All-True produces the full mix, byte-identical to what
+    the mux always built. Pure constructor: touches no disk, runs nothing,
+    so it is unit-testable without FFmpeg.
     """
-    if work_dir is None:
-        work_dir = out_path.parent
-    work_dir.mkdir(parents=True, exist_ok=True)
-    concat_txt = work_dir / "concat.txt"
-    concat_txt.write_text(
-        "".join(f"file {shlex.quote(str(p))}\n" for p in segments), encoding="utf-8"
-    )
-    audio_txt = work_dir / "audio.txt"
-    audio_txt.write_text(
-        "".join(f"file {shlex.quote(str(p))}\n" for p in padded_audio), encoding="utf-8"
-    )
-
-    total_seconds = ffprobe_duration(segments[0])
-    for seg in segments[1:]:
-        total_seconds += ffprobe_duration(seg)
-
     cmd = [
         "ffmpeg", "-y", "-loglevel", "warning",
         "-f", "concat", "-safe", "0", "-i", str(concat_txt),
@@ -227,32 +230,28 @@ def assemble_video(
     ]
 
     # -- audio candy: music bed, cut whooshes, CTA pop -------------------
-    from audiofx import ensure_assets, resolve_music
-
-    cuts = [b for b in (scene_bounds or []) if 0.3 < b < total_seconds - 0.3]
-    want_music = cfg.music_enabled
-    want_whoosh = cfg.sfx_whoosh and bool(cuts)
-    want_pop = cfg.sfx_cta_pop and cta_overlay is not None
-    assets: dict[str, Path] = {}
-    if want_music or want_whoosh or want_pop:
-        assets = ensure_assets(cfg.work_dir / "_fx")
+    use_music = with_candy and music_track is not None
+    use_whoosh = with_candy and cfg.sfx_whoosh and bool(cuts) and "whoosh" in assets
+    # The pop marks the end-card landing — no card, no pop.
+    use_pop = (with_candy and with_cta and cta_overlay is not None
+               and cfg.sfx_cta_pop and "pop" in assets)
 
     music_idx: int | None = None
     whoosh_idx: list[int] = []
     pop_idx: int | None = None
     next_idx = 2
-    if want_music:
-        track = resolve_music(cfg, assets["music_loop"])
+    if use_music:
+        assert music_track is not None
         cmd += ["-stream_loop", "-1", "-t", f"{total_seconds:.3f}",
-                "-i", str(track)]
+                "-i", str(music_track)]
         music_idx = next_idx
         next_idx += 1
-    if want_whoosh:
+    if use_whoosh:
         for _ in cuts:
             cmd += ["-i", str(assets["whoosh"])]
             whoosh_idx.append(next_idx)
             next_idx += 1
-    if want_pop:
+    if use_pop:
         cmd += ["-i", str(assets["pop"])]
         pop_idx = next_idx
         next_idx += 1
@@ -309,18 +308,18 @@ def assemble_video(
 
     # -- picture: subtitles burn + progress bar + CTA end-card -----------
     vf_parts: list[str] = []
-    if burn_path is not None:
+    if burn_path is not None and with_burn:
         from subtitles import filter_args
 
         vf_parts.append(filter_args(burn_path, cfg.format))
-    if cfg.progress_enabled:
+    if cfg.progress_enabled and with_progress:
         bar_h = cfg.progress_height
         bar_y = 0 if cfg.progress_position == "top" else f"ih-{bar_h}"
         vf_parts.append(
             f"drawbox=x=0:y={bar_y}:w='iw*t/{total_seconds:.3f}':h={bar_h}"
             f":c={cfg.progress_color}:t=fill"
         )
-    if cta_overlay is not None and _ffmpeg_has_filter("drawtext"):
+    if cta_overlay is not None and with_cta and _ffmpeg_has_filter("drawtext"):
         font_arg = _drawtext_font_arg()
         if font_arg is not None:
             cta_text, cta_secs = cta_overlay
@@ -350,8 +349,120 @@ def assemble_video(
         # (each scene's audio is padded to its exact length).
         str(out_path),
     ]
-    run(cmd, "final mux")
-    return out_path
+    return cmd
+
+
+def _save_mux_debug(path: Path, label: str, cmd: list[str], exc: AssemblyError) -> None:
+    """Append a failed mux attempt (command + full stderr) to the debug log."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(f"===== {label} =====\n")
+            handle.write(shlex.join(cmd) + "\n\n")
+            handle.write((exc.stderr_full or str(exc)).strip() + "\n\n")
+    except OSError:
+        pass
+
+
+def assemble_video(
+    segments: list[Path],
+    padded_audio: list[Path],
+    out_path: Path,
+    cfg: Config,
+    work_dir: Path | None = None,
+    burn_path: Path | None = None,
+    scene_bounds: list[float] | None = None,
+    cta_overlay: tuple[str, float] | None = None,
+) -> Path:
+    """Concatenate segments, build the audio track, mux to the final MP4.
+
+    When burn_path is given (.ass karaoke captions or .srt), subtitles are
+    burned into the picture (requires a libass-enabled FFmpeg — the caller
+    checks for the subtitles filter).
+
+    scene_bounds are scene-boundary times in seconds (whooshes land here);
+    cta_overlay is (text, seconds_on_screen) for the end-card CTA + pop.
+
+    Self-healing: some FFmpeg builds crash on specific filters (seen: a
+    Windows build segfaulting on font handling). If the full mix fails, the
+    mux is retried with garnishes stripped one by one — end-card text,
+    progress bar, burned subtitles, audio candy — until one works. A filter
+    quirk can only cost a garnish, never the video. Failed attempts are
+    logged to work/mux_debug_<id>.log (kept, unlike the per-job work dir).
+    """
+    if work_dir is None:
+        work_dir = out_path.parent
+    work_dir.mkdir(parents=True, exist_ok=True)
+    concat_txt = work_dir / "concat.txt"
+    concat_txt.write_text(
+        "".join(f"file {shlex.quote(str(p))}\n" for p in segments), encoding="utf-8"
+    )
+    audio_txt = work_dir / "audio.txt"
+    audio_txt.write_text(
+        "".join(f"file {shlex.quote(str(p))}\n" for p in padded_audio), encoding="utf-8"
+    )
+
+    total_seconds = ffprobe_duration(segments[0])
+    for seg in segments[1:]:
+        total_seconds += ffprobe_duration(seg)
+
+    from audiofx import ensure_assets, resolve_music
+
+    cuts = [b for b in (scene_bounds or []) if 0.3 < b < total_seconds - 0.3]
+    want_music = cfg.music_enabled
+    want_whoosh = cfg.sfx_whoosh and bool(cuts)
+    want_pop = cfg.sfx_cta_pop and cta_overlay is not None
+    assets: dict[str, Path] = {}
+    if want_music or want_whoosh or want_pop:
+        assets = ensure_assets(cfg.work_dir / "_fx")
+    music_track = resolve_music(cfg, assets["music_loop"]) if want_music else None
+
+    rungs = [
+        ("full mix", dict(with_burn=True, with_progress=True, with_cta=True, with_candy=True)),
+        ("without the end-card text", dict(with_burn=True, with_progress=True, with_cta=False, with_candy=True)),
+        ("without end-card and progress bar", dict(with_burn=True, with_progress=False, with_cta=False, with_candy=True)),
+        ("without burned subtitles", dict(with_burn=False, with_progress=False, with_cta=False, with_candy=True)),
+        ("plain video + narration", dict(with_burn=False, with_progress=False, with_cta=False, with_candy=False)),
+    ]
+    # Build every command up front and drop duplicates: when a feature is
+    # already off in the config, its rung is identical to an earlier one and
+    # re-running ffmpeg would be pure waste.
+    plan: list[tuple[str, list[str]]] = []
+    for label, flags in rungs:
+        cmd = _build_mux_cmd(
+            concat_txt=concat_txt, audio_txt=audio_txt, out_path=out_path,
+            cfg=cfg, total_seconds=total_seconds, cuts=cuts,
+            assets=assets, music_track=music_track,
+            burn_path=burn_path, cta_overlay=cta_overlay, **flags,
+        )
+        if all(cmd != built for _, built in plan):
+            plan.append((label, cmd))
+
+    debug_path = cfg.work_dir / f"mux_debug_{out_path.stem}.log"
+    try:
+        debug_path.unlink(missing_ok=True)  # fresh log per render
+    except OSError:
+        pass
+
+    last_exc: AssemblyError | None = None
+    for index, (label, cmd) in enumerate(plan):
+        try:
+            run(cmd, "final mux")
+        except AssemblyError as exc:
+            last_exc = exc
+            _save_mux_debug(debug_path, label, cmd, exc)
+            if index < len(plan) - 1:
+                first = str(exc).splitlines()[0][:110] if str(exc) else "unknown error"
+                print(f"      mux       : {label} failed ({first}) — retrying simpler...")
+                continue
+            print(f"      mux       : even the plain mix failed — full log in {debug_path.name}")
+            raise
+        if index > 0:
+            print(f"      mux       : full mix crashes this FFmpeg build — finished {label}.")
+            print(f"                  video is complete otherwise; tech details in {debug_path.name}")
+        return out_path
+    assert last_exc is not None, "mux ladder ended without trying anything"
+    raise last_exc
 
 
 def _ffmpeg_has_filter(name: str) -> bool:
@@ -384,7 +495,12 @@ def _drawtext_font_arg() -> str | None:
         for name in ("arialbd.ttf", "arial.ttf"):
             candidate = fonts_dir / name
             if candidate.exists():
-                return f"fontfile='{str(candidate).replace(':', chr(92) + ':')}'"
+                # Forward slashes: inside a filter argument a backslash is an
+                # escape character, so C:\\Users\\... would arrive mangled
+                # (this exact bug once segfaulted a Windows FFmpeg build).
+                # Same normalisation as subtitles.esc_subs_path.
+                safe = str(candidate).replace("\\", "/").replace("'", "")
+                return f"fontfile='{safe.replace(':', chr(92) + ':')}'"
     try:
         out = subprocess.run(
             ["fc-list", ":", "family"],
@@ -399,6 +515,52 @@ def _drawtext_font_arg() -> str | None:
         if family.lower() in families:
             return f"font='{family} Bold'"
     return None
+
+
+def drawtext_selftest(cfg: Config) -> bool | None:
+    """Render one test frame with the end-card drawtext filter.
+
+    None = drawtext/usable-font missing on this machine (the CTA overlay
+    will be skipped anyway, so there is nothing to test). True = the
+    overlay renders visibly. False = it errors or crashes — preflight
+    warns, and the mux ladder routes around it at render time.
+    """
+    if not _ffmpeg_has_filter("drawtext"):
+        return None
+    font_arg = _drawtext_font_arg()
+    if font_arg is None:
+        return None
+    test_dir = cfg.work_dir / ".dt_test"
+    try:
+        test_dir.mkdir(parents=True, exist_ok=True)
+        bg = test_dir / "bg.jpg"
+        res = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+             "-i", f"color=c=black:s={cfg.width}x{cfg.height}:d=1",
+             "-frames:v", "1", str(bg)],
+            capture_output=True,
+        )
+        if res.returncode != 0 or not bg.exists():
+            return False
+        plain = test_dir / "plain.png"
+        marked = test_dir / "marked.png"
+        cta_fs = 54 if cfg.format == "portrait" else 44
+        overlay = (f"drawtext={font_arg}:text='TEST':fontsize={cta_fs}"
+                   f":fontcolor=white:borderw=3:bordercolor=black"
+                   f":x=(w-text_w)/2:y=h-320")
+        for out, extra in ((plain, []), (marked, ["-vf", overlay])):
+            res = subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-loop", "1",
+                 "-i", str(bg), *extra, "-frames:v", "1", str(out)],
+                capture_output=True,
+            )
+            if res.returncode != 0 or not out.exists():
+                return False
+        return plain.read_bytes() != marked.read_bytes()
+    except OSError:
+        return False
+    finally:
+        shutil.rmtree(test_dir, ignore_errors=True)
 
 
 def _thumbnail_filters(title: str, cfg: Config) -> list[tuple[str, str]]:
@@ -502,7 +664,6 @@ def write_metadata(
         "title": script.title,
         "description": script.description,
         "tags": (script.tags + cfg.default_tags)[:30],
-        "categoryId": cfg.category_id,
         "language": cfg.language,
         "format": cfg.format,
         "width": cfg.width,

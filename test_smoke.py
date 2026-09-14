@@ -346,6 +346,57 @@ def t_generate_rejects_bad_count():
         raise AssertionError("--count 0 should exit(1)")
 
 
+def t_mux_builder():
+    """The final-mux command builder: full mix has every garnish, the
+    minimal mix is narration-only, and the CTA pop follows the end-card
+    (no card -> no pop). Offline: builds commands, runs nothing."""
+    from assembler import _build_mux_cmd, _drawtext_font_arg, _ffmpeg_has_filter
+
+    cfg = tmp_cfg()
+    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    base = dict(
+        concat_txt=tmp / "concat.txt", audio_txt=tmp / "audio.txt",
+        out_path=tmp / "out.mp4", cfg=cfg, total_seconds=10.0, cuts=[5.0],
+        assets={"music_loop": tmp / "m.wav", "whoosh": tmp / "w.wav",
+                "pop": tmp / "p.wav"},
+        music_track=tmp / "m.wav", burn_path=tmp / "t.ass",
+        cta_overlay=("FOLLOW FOR MORE!", 3.5),
+    )
+    full = _build_mux_cmd(
+        **base, with_burn=True, with_progress=True, with_cta=True,
+        with_candy=True)
+    vf = full[full.index("-vf") + 1]
+    assert "subtitles=" in vf and "drawbox" in vf, vf
+    if _ffmpeg_has_filter("drawtext") and _drawtext_font_arg() is not None:
+        assert "drawtext" in vf, vf
+    graph = full[full.index("-filter_complex") + 1]
+    assert "amerge" in graph, graph
+    assert full.count("-i") == 5  # video + narration + music + whoosh + pop
+
+    nocta = _build_mux_cmd(**base, with_burn=True, with_progress=True,
+                           with_cta=False, with_candy=True)
+    assert nocta.count("-i") == 4  # pop dropped with the card
+    assert "drawtext" not in nocta[nocta.index("-vf") + 1]
+
+    mini = _build_mux_cmd(**base, with_burn=False, with_progress=False,
+                          with_cta=False, with_candy=False)
+    assert "-vf" not in mini
+    mgraph = mini[mini.index("-filter_complex") + 1]
+    assert mgraph.startswith("[1:a]volume=1.0,afade"), mgraph
+    assert "amerge" not in mgraph
+    assert mini[-1] == str(tmp / "out.mp4")
+
+
+def t_gemini_fallback_order():
+    from scriptgen import GeminiProvider
+
+    # Empirically verified 2026-09-14: the rolling alias saturated (503)
+    # and the 2.5/3.0 pinned IDs 404'd on v1beta, while 3.1-flash-lite
+    # answered. Keep it first; reorder only on fresh evidence.
+    assert GeminiProvider.FALLBACK_MODELS[0] == "gemini-3.1-flash-lite"
+    assert len(set(GeminiProvider.FALLBACK_MODELS)) == len(GeminiProvider.FALLBACK_MODELS)
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -364,6 +415,8 @@ def main() -> int:
         ("audiofx", t_audiofx),
         ("queue", t_queue),
         ("generate_rejects_bad_count", t_generate_rejects_bad_count),
+        ("mux_builder", t_mux_builder),
+        ("gemini_fallback_order", t_gemini_fallback_order),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:

@@ -125,14 +125,15 @@ class GeminiProvider:
     MAX_RETRIES = 6
     MAX_DELAY = 45.0
     # Tried, in order, if the configured model keeps failing (5xx saturation
-    # or 404 renames — Google retires model IDs regularly). Pinned stable IDs
-    # first (verified on the free tier), rolling aliases last. The user's
-    # configured model is always tried before any of these.
+    # or 404 renames — Google retires model IDs regularly). ORDER IS
+    # EMPIRICAL: on 2026-09-14 the rolling alias saturated (503) and the
+    # 2.5/3.0 pinned IDs 404'd on v1beta, while 3.1-flash-lite answered —
+    # so it leads. The user's configured model is always tried first.
     FALLBACK_MODELS = [
+        "gemini-3.1-flash-lite",
         "gemini-2.5-flash",
         "gemini-3-flash",
         "gemini-2.5-flash-lite",
-        "gemini-3.1-flash-lite",
         "gemini-flash-lite-latest",
     ]
 
@@ -205,7 +206,7 @@ class GeminiProvider:
             raise RuntimeError(
                 "No Gemini model in the fallback chain exists (Google may have "
                 "renamed them again). Set ai.gemini_model to a current free-tier "
-                f"ID such as 'gemini-2.5-flash'. Last error: {last_error}"
+                f"ID such as 'gemini-3.1-flash-lite'. Last error: {last_error}"
             )
         raise RuntimeError(
             f"Gemini unavailable after trying {len(chain)} model(s) with retries "

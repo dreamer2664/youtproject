@@ -113,7 +113,7 @@ def cmd_preflight(cfg, args) -> int:
         f"style {cfg.style}, subtitles {'on' if cfg.subtitles_enabled else 'off'}"
     )
     if shutil.which("ffmpeg"):
-        from assembler import _ffmpeg_has_filter
+        from assembler import _ffmpeg_has_filter, drawtext_selftest
 
         if _ffmpeg_has_filter("subtitles"):
             ok("subtitle burn-in available")
@@ -129,6 +129,16 @@ def cmd_preflight(cfg, args) -> int:
             warn(
                 "subtitle burn-in unavailable in this FFmpeg build",
                 "captions.srt will still be included in every kit for manual upload",
+            )
+
+        drawtext_ok = drawtext_selftest(cfg)
+        if drawtext_ok is True:
+            ok("end-card text overlay available")
+        elif drawtext_ok is False:
+            warn(
+                "end-card text overlay fails on this FFmpeg build",
+                "videos will render without the end-card text "
+                "(the spoken CTA is unaffected)",
             )
 
     # 6. phone control (only when enabled)
