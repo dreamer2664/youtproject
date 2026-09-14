@@ -257,6 +257,9 @@ def cmd_generate(cfg, args) -> int:
             if est_seconds < cfg.target_seconds * 0.7:
                 print(f"      warning   : script is short ({est_seconds:.0f}s vs {cfg.target_seconds}s target) —")
                 print("                    the fallback model undershoots; re-run later for a full-length video")
+            elif est_seconds > cfg.target_seconds * 1.3:
+                print(f"      warning   : script is long ({est_seconds:.0f}s vs {cfg.target_seconds}s target) —")
+                print("                    pacing will feel slow; consider --seconds or regenerating")
             if cta_voice:
                 print(f"      cta #{cta_num}    : {cta_voice[:62]}")
             (job_dir / "script.json").write_text(
@@ -1007,4 +1010,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\n\nStopped by you (Ctrl+C). Partial files stay in work/ — re-run to start fresh.")
+        sys.exit(130)

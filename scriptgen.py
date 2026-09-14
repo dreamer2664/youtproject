@@ -166,6 +166,35 @@ Previous script JSON:
 Return ONLY the full rewritten JSON object in the same shape."""
 
 
+# Above this fraction of the word budget, Gemini gets one tightening pass
+# instead of shipping a rambling video (observed: 404 words against 169).
+MAX_WORDS_FRACTION = 1.30
+
+
+def needs_shortening(words: int, budget: int,
+                     fraction: float = MAX_WORDS_FRACTION) -> bool:
+    """True when a script overshoots its target badly (pure, tested)."""
+    if budget <= 0:
+        return False
+    return words > int(budget * fraction)
+
+
+def build_shorten_prompt(previous_json: str, words: int, budget: int,
+                         per_scene: int, cta_enabled: bool) -> str:
+    """Second-chance prompt: same story, but tight (pure, tested)."""
+    return f"""The script below is {words} words but the video needs {budget} words at most
+(about {per_scene} words per scene). Tighten it: keep the same story, facts,
+title, and scene count, but cut filler, merge rambling sentences, and drop the
+weakest detail in every scene. Keep sentences under 12 words and the same
+high-energy tone.
+{end_rule(cta_enabled)}
+
+Previous script JSON:
+{previous_json}
+
+Return ONLY the full rewritten JSON object in the same shape."""
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -218,6 +247,13 @@ class GeminiProvider:
             # A bad key will never work. Stop immediately, on every model.
             if response.status_code in (400, 401, 403):
                 return None, last_status, last_error
+
+            # 429s on the free tier rarely clear within a run (usually a
+            # saturated model or spent quota, not a blip) — fail over to the
+            # next model after 3 tries instead of burning all 6 (~60s saved
+            # per saturated model per run).
+            if response.status_code == 429 and attempt >= 3:
+                break
 
             if response.status_code in self.RETRYABLE and attempt < self.MAX_RETRIES:
                 delay = min(2 ** attempt + random.uniform(0, 1), self.MAX_DELAY)
@@ -302,6 +338,8 @@ class GeminiProvider:
         scene_count = max(3, min(12, round(target / scene_len)))
         word_budget = int(target * wpm / 60)
         per_scene = max(15, word_budget // scene_count)
+        ceiling = int(word_budget * 1.25)
+        per_scene_max = max(20, ceiling // scene_count)
         art_brief = style_spec(cfg.style)["brief"]
 
         prompt = f"""You are a script writer for a high-retention vertical video channel (TikTok, YouTube Shorts, Instagram Reels).
@@ -316,10 +354,10 @@ Pick ONE specific, genuinely interesting story or fact within the topic.
 Write {scene_count} scenes of narration that together take about {target} seconds
 when read aloud fast (roughly {word_budget} words total).
 
-LENGTH IS A HARD REQUIREMENT: the narration must total at least {word_budget} words
-(about {per_scene} words per scene). Short scripts are rejected — count the words
-in each scene before returning, and expand thin scenes with concrete detail
-instead of wrapping up early.
+LENGTH IS A HARD REQUIREMENT: the narration must total {word_budget}-{ceiling} words
+(about {per_scene} words per scene, never more than {per_scene_max}). Scripts outside
+this range are rejected — count the words in each scene before returning: expand
+thin scenes with concrete detail, cut filler if running long.
 
 RETENTION RULES — follow all of them:
 - COLD OPEN: the first sentence must hook in under 3 seconds. A shocking payoff,
@@ -417,6 +455,38 @@ Return ONLY a JSON object in exactly this shape:
                     print("  [script] expansion added no words — keeping original")
             except (ValueError, RuntimeError) as exc:
                 print(f"  [script] expansion failed ({exc}) — keeping original")
+        if needs_shortening(words, word_budget):
+            # Mirror of the above: cap rambling scripts (observed: 404 words
+            # against 169). The tightened script is kept only if it is both
+            # shorter AND still above 70% of budget — a rewrite that
+            # overcorrects into a short script is worse than the original.
+            print(f"  [script] too long ({words}/{word_budget} words) — "
+                  f"asking the model to tighten...")
+            try:
+                tightened_raw = self.generate_text(
+                    build_shorten_prompt(
+                        json.dumps({
+                            "title": script.title,
+                            "description": script.description,
+                            "tags": script.tags,
+                            "scenes": [
+                                {"narration": s.narration,
+                                 "image_prompt": s.image_prompt}
+                                for s in script.scenes
+                            ],
+                        }),
+                        words, word_budget, per_scene, cfg.cta_enabled),
+                    temperature=0.7, tag="script", json_mode=True)
+                tightened = normalise_script(extract_json(tightened_raw), self.name)
+                tight_words = script_words(tightened)
+                if tight_words < words and tight_words >= int(word_budget * 0.7):
+                    script = tightened
+                    words = tight_words
+                    print(f"  [script] tightened to {words} words")
+                else:
+                    print("  [script] tightening missed — keeping original")
+            except (ValueError, RuntimeError) as exc:
+                print(f"  [script] tightening failed ({exc}) — keeping original")
         if not script.description:
             script.description = f"{script.title}\n\n{topic}"
         if not script.tags:

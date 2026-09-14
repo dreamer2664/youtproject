@@ -199,7 +199,7 @@ Shorts, long-form and art styles without touching the config.
 | `main.py` | CLI |
 | `config.py` | Config loading, env overrides |
 | `scriptgen.py` | Gemini + offline template script writers |
-| `images.py` | Image generation: Pollinations → Gemini → Hugging Face fallbacks |
+| `images.py` | Image generation: Pollinations → Gemini fallback |
 | `voiceover.py` | edge-tts voiceover + word timings |
 | `subtitles.py` | Karaoke ASS + SRT writer, burn-in styling |
 | `assembler.py` | FFmpeg: sub-segments, burn-in, mux, thumbnails |

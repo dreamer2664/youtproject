@@ -174,8 +174,8 @@ ai:
   # then each fallback in order. Providers missing their key are skipped
   # automatically, never fatal. Image dimensions follow video.format
   # automatically (landscape 1280x720, portrait 720x1280).
-  image_provider: "pollinations"   # or "gemini" / "huggingface"
-  image_fallbacks: ["gemini", "huggingface"]
+  image_provider: "pollinations"   # or "gemini"
+  image_fallbacks: ["gemini"]
   # Seconds to wait per image before giving up.
   image_timeout: 90
   # Pollinations model. "flux" is free and unlimited (recommended).
@@ -187,9 +187,6 @@ ai:
   # Or export POLLINATIONS_TOKEN.
   pollinations_token: ""
   # The "gemini" fallback reuses gemini_api_key above — no extra signup.
-  # Free token from https://huggingface.co/settings/tokens (read role is
-  # enough) — enables the "huggingface" fallback. Or export HF_TOKEN.
-  huggingface_token: ""
   # Parallel image downloads. The built-in pacer spaces request starts
   # (~1/15s anonymous Pollinations, ~1/5s with token), so extra workers
   # only overlap download time. Keep at 1.

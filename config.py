@@ -25,7 +25,10 @@ STYLES = ("photoreal", "cartoon", "stickman")
 
 # Image providers for images.py. The chain is ai.image_provider plus
 # ai.image_fallbacks; providers without their key are skipped, never fatal.
-IMAGE_PROVIDERS = ("pollinations", "gemini", "huggingface")
+# (Hugging Face was removed Sep 2026: they retired serverless image
+# inference — api-inference DNS is dead and the router answers "model
+# deprecated / not supported" for the FLUX/SDXL lanes.)
+IMAGE_PROVIDERS = ("pollinations", "gemini")
 
 # Buffer autopost targets (autopost.py). Order in config = posting order.
 BUFFER_SERVICES = ("youtube", "tiktok", "instagram")
@@ -83,10 +86,9 @@ DEFAULTS: dict[str, Any] = {
         "gemini_api_key": "",
         "gemini_model": "gemini-flash-latest",
         # Primary image provider + ordered fallbacks (IMAGE_PROVIDERS).
-        # Fallbacks missing their key are skipped automatically — e.g. with
-        # just a Gemini key, "huggingface" is noted and skipped, never fatal.
+        # Fallbacks missing their key are skipped automatically, never fatal.
         "image_provider": "pollinations",
-        "image_fallbacks": ["gemini", "huggingface"],
+        "image_fallbacks": ["gemini"],
         # Seconds to wait per image before giving up.
         "image_timeout": 90,
         # Pollinations model. "flux" is free and unlimited (recommended);
@@ -97,10 +99,6 @@ DEFAULTS: dict[str, Any] = {
         # anonymous ~1 req/15s limit to ~1 req/5s and removes the watermark.
         # Or export POLLINATIONS_TOKEN.
         "pollinations_token": "",
-        # Free token from https://huggingface.co/settings/tokens (read role
-        # is enough) — enables the Hugging Face image fallback.
-        # Or export HF_TOKEN.
-        "huggingface_token": "",
         # Parallel image downloads. The built-in pacer spaces request starts
         # (~1/15s anonymous Pollinations, ~1/5s with token), so extra workers
         # only overlap download time. Keep at 1.
@@ -541,11 +539,6 @@ class Config:
     def pollinations_token(self) -> str:
         return (os.environ.get("POLLINATIONS_TOKEN")
                 or str(self.data["ai"].get("pollinations_token") or "")).strip()
-
-    @property
-    def huggingface_token(self) -> str:
-        return (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
-                or str(self.data["ai"].get("huggingface_token") or "")).strip()
 
     @property
     def buffer_api_key(self) -> str:

@@ -235,6 +235,15 @@ def t_script_length_repair():
     prompt_off = build_expansion_prompt("{}", 71, 169, 28, False)
     assert "call to action" in prompt_off
 
+    from scriptgen import build_shorten_prompt, needs_shortening
+
+    # Overshoot guard: the real 404/169-word blowout fires, 200/169 passes.
+    assert needs_shortening(404, 169) is True
+    assert needs_shortening(200, 169) is False
+    assert needs_shortening(0, 0) is False
+    short = build_shorten_prompt("{}", 404, 169, 28, True)
+    assert "404 words" in short and "169" in short and "Tighten" in short
+
 
 def t_script_no_double_cta():
     from scriptgen import TemplateProvider, end_rule
@@ -438,12 +447,12 @@ def t_image_chain():
 
     cfg = tmp_cfg()
     assert cfg.image_provider == "pollinations"
-    assert cfg.image_fallbacks == ["gemini", "huggingface"]
+    assert cfg.image_fallbacks == ["gemini"]
     assert cfg.image_model == "flux"
-    assert resolve_chain(cfg) == ["pollinations", "gemini", "huggingface"]
+    assert resolve_chain(cfg) == ["pollinations", "gemini"]
     assert provider_ready("pollinations", cfg) == (True, "anonymous")
     assert provider_ready("gemini", cfg)[0] is False
-    assert provider_ready("huggingface", cfg)[0] is False
+    assert provider_ready("huggingface", cfg) == (False, "unknown provider")
     assert "skipped" in describe_chain(cfg)
     cfg.data["ai"]["image_provider"] = "nonsense"  # garbage -> pollinations
     assert cfg.image_provider == "pollinations"
@@ -454,15 +463,12 @@ def t_image_chain():
     cfg.data["ai"]["gemini_api_key"] = "k"
     assert provider_ready("gemini", cfg)[0] is True
     assert "skipped" not in describe_chain(cfg)  # both usable now
-    cfg.data["ai"]["image_fallbacks"] = ["huggingface"]
-    assert describe_chain(cfg) == "gemini → huggingface (no Hugging Face token — skipped)"
 
 
 def t_image_builders():
     import base64
 
-    from images import (gemini_extract, gemini_payload, huggingface_payload,
-                        huggingface_size, pollinations_request)
+    from images import gemini_extract, gemini_payload, pollinations_request
 
     cfg = tmp_cfg()
     url, params, headers = pollinations_request("a cat", cfg, 7)
@@ -490,10 +496,6 @@ def t_image_builders():
         gemini_extract({"promptFeedback": {"blockReason": "SAFETY"}})
     except ValueError as exc:
         assert "SAFETY" in str(exc)
-    width, height = huggingface_size(cfg)  # portrait default
-    assert (width, height) == (576, 1024), (width, height)
-    hp = huggingface_payload("a cat", cfg, 9)
-    assert hp["parameters"]["seed"] == 9 and hp["parameters"]["width"] == 576
 
 
 def t_autopost_builders():
@@ -579,6 +581,31 @@ def t_autopost_builders():
         sign_upload_params({"a": 1, "b": 2}, "s")  # sorted before hashing
 
 
+def t_gemini_429_fast_failover():
+    from unittest.mock import Mock, patch
+
+    from scriptgen import GeminiProvider
+
+    def run(status):
+        with patch("requests.post", return_value=Mock(status_code=status, text="x")), \
+                patch("time.sleep", return_value=None):
+            provider = GeminiProvider(api_key="k")
+            result, last_status, _ = provider._try_model("m", {}, tag="t")
+        return result, last_status
+
+    # 429: fail over after 3 tries, not 6 (free-tier 429s rarely clear fast).
+    with patch("requests.post", return_value=Mock(status_code=429, text="x")) as post, \
+            patch("time.sleep", return_value=None):
+        result, status, _ = GeminiProvider(api_key="k")._try_model("m", {}, tag="t")
+    assert result is None and status == 429 and post.call_count == 3
+    # 503: still gets the full 6-try patience (transient, often clears).
+    with patch("requests.post", return_value=Mock(status_code=503, text="x")) as post, \
+            patch("time.sleep", return_value=None):
+        result, status, _ = GeminiProvider(api_key="k")._try_model("m", {}, tag="t")
+    assert result is None and status == 503 and post.call_count == 6
+    assert run(200)[0] is not None  # sanity: 200 still returns immediately
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -601,6 +628,7 @@ def main() -> int:
         ("generate_rejects_bad_count", t_generate_rejects_bad_count),
         ("mux_builder", t_mux_builder),
         ("gemini_fallback_order", t_gemini_fallback_order),
+        ("gemini_429_fast_failover", t_gemini_429_fast_failover),
         ("image_chain", t_image_chain),
         ("image_builders", t_image_builders),
         ("autopost_builders", t_autopost_builders),

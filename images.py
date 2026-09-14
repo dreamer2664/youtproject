@@ -3,7 +3,7 @@
 Primary: Pollinations (free, keyless anonymous tier; an optional free token
 raises the rate limit and removes the watermark). Fallbacks, tried in order
 when the primary fails an image: Gemini image generation (same free Gemini
-key as the scripts — no new signup) and Hugging Face Inference (free token).
+key as the scripts — no new signup).
 
 There is no SLA on any provider, so every call is retried, failures fall
 through to the next provider, and a total failure raises rather than
@@ -34,9 +34,6 @@ ENDPOINT = "https://image.pollinations.ai/prompt/{prompt}"
 GEMINI_IMAGE_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 # Current lane first, legacy lane as backup (404 advances, like text models).
 GEMINI_IMAGE_MODELS = ["gemini-3.1-flash-image-preview", "gemini-2.5-flash-image"]
-
-HF_URL = "https://api-inference.huggingface.co/models/{model}"
-HF_IMAGE_MODELS = ["black-forest-labs/FLUX.1-schnell", "stabilityai/sdxl-turbo"]
 
 # Cycled through when a scene needs several images. All framings are
 # subject-agnostic on purpose — they must make sense appended to any prompt.
@@ -150,9 +147,6 @@ def provider_ready(name: str, cfg: Config) -> tuple[bool, str]:
     if name == "gemini":
         return (bool(cfg.gemini_api_key),
                 "key present" if cfg.gemini_api_key else "no Gemini key")
-    if name == "huggingface":
-        return (bool(cfg.huggingface_token),
-                "token present" if cfg.huggingface_token else "no Hugging Face token")
     return False, "unknown provider"
 
 
@@ -375,91 +369,9 @@ def _gemini_fetch(prompt: str, dest: Path, cfg: Config, seed: int, attempts: int
     raise RuntimeError(f"gemini image failed: {last_error}")
 
 
-# --- Hugging Face --------------------------------------------------------
-
-def huggingface_size(cfg: Config) -> tuple[int, int]:
-    """Target size capped at 1024px, multiples of 8 (diffusion-friendly)."""
-    width, height = cfg.image_width, cfg.image_height
-    scale = min(1.0, 1024.0 / max(width, height))
-    width = max(256, int(round(width * scale)) // 8 * 8)
-    height = max(256, int(round(height * scale)) // 8 * 8)
-    return width, height
-
-
-def huggingface_payload(prompt: str, cfg: Config, seed: int) -> dict:
-    """Pure builder: Inference API body for one image."""
-    width, height = huggingface_size(cfg)
-    return {"inputs": prompt[:1000],
-            "parameters": {"width": width, "height": height, "seed": seed}}
-
-
-def _huggingface_fetch(prompt: str, dest: Path, cfg: Config, seed: int, attempts: int) -> Path:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    headers = {"Authorization": f"Bearer {cfg.huggingface_token}"}
-    payload = huggingface_payload(prompt, cfg, seed)
-    last_error = "unknown"
-    loading_waits = 0
-    for model in HF_IMAGE_MODELS:
-        attempt = 1
-        while attempt <= attempts:
-            try:
-                response = requests.post(HF_URL.format(model=model),
-                                         headers=headers, json=payload,
-                                         timeout=cfg.image_timeout)
-            except Exception as exc:
-                last_error = str(exc)[:160]
-                attempt += 1
-                if attempt <= attempts:
-                    time.sleep(3 * attempt)
-                continue
-            body = response.content or b""
-            if response.status_code == 200 and (
-                    body[:3] == b"\xff\xd8\xff" or body[:8] == b"\x89PNG\r\n\x1a\n"):
-                if len(body) < 2000:
-                    last_error = "response too small"
-                    attempt += 1
-                    continue
-                dest.write_bytes(body)
-                return dest
-            if response.status_code in (404, 410):
-                last_error = f"{model}: HTTP {response.status_code}"
-                break  # unknown/retired model id — try the next one
-            if response.status_code == 503 and loading_waits < 4:
-                # Cold start: the model loads on demand; the API tells us
-                # how long to wait. This does not consume an attempt.
-                try:
-                    wait = float(response.json().get("estimated_time", 20))
-                except (ValueError, AttributeError):
-                    wait = 20.0
-                wait = min(max(wait, 5.0), 60.0)
-                print(f"  [image] huggingface {model} is cold-starting — "
-                      f"waiting {wait:.0f}s")
-                time.sleep(wait)
-                loading_waits += 1
-                continue
-            if response.status_code in (429, 500, 502, 503, 504):
-                last_error = f"{model}: HTTP {response.status_code}: {response.text[:120]}"
-                attempt += 1
-                if attempt <= attempts:
-                    delay = min(2 ** attempt + random.uniform(0, 1), 30.0)
-                    print(f"  [image] huggingface {model}: HTTP {response.status_code}, "
-                          f"retry in {delay:.0f}s")
-                    time.sleep(delay)
-                continue
-            if response.status_code == 200:  # JSON error with HTTP 200
-                last_error = f"{model}: {body[:140]!r}"
-                attempt += 1
-                continue
-            # Other 4xx = bad token/permissions — retrying is pointless.
-            raise RuntimeError(f"huggingface rejected (HTTP {response.status_code}): "
-                               f"{response.text[:160]}")
-    raise RuntimeError(f"huggingface image failed: {last_error}")
-
-
 _FETCH = {
     "pollinations": _pollinations_fetch,
     "gemini": _gemini_fetch,
-    "huggingface": _huggingface_fetch,
 }
 
 
