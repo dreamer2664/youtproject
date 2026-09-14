@@ -131,6 +131,41 @@ def end_rule(cta_enabled: bool) -> str:
             "  (e.g. \"Follow for part two.\").")
 
 
+def script_words(script: Script) -> int:
+    """Total narration words across all scenes (pure, tested)."""
+    return sum(len(scene.narration.split()) for scene in script.scenes)
+
+
+# Below this fraction of the word budget, Gemini gets one expansion pass
+# instead of shipping a short video. 0.85 with a single retry: a model that
+# writes 84% gets fixed; a model that writes 20% gets one honest rescue
+# attempt, then the run keeps the original and main.py warns as before.
+MIN_WORDS_FRACTION = 0.85
+
+
+def needs_expansion(words: int, budget: int,
+                    fraction: float = MIN_WORDS_FRACTION) -> bool:
+    """True when a script is too short to hit its target (pure, tested)."""
+    if budget <= 0:
+        return False
+    return words < int(budget * fraction)
+
+
+def build_expansion_prompt(previous_json: str, words: int, budget: int,
+                           per_scene: int, cta_enabled: bool) -> str:
+    """Second-chance prompt: same story, but long enough (pure, tested)."""
+    return f"""The script below is {words} words but the video needs at least {budget} words
+of narration (about {per_scene} words per scene). Rewrite it LONGER: keep the
+same story, facts, title, and scene count, but expand every thin scene with
+concrete detail. Keep sentences under 12 words and the same high-energy tone.
+{end_rule(cta_enabled)}
+
+Previous script JSON:
+{previous_json}
+
+Return ONLY the full rewritten JSON object in the same shape."""
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -266,6 +301,7 @@ class GeminiProvider:
         scene_len = 10 if cfg.format == "portrait" else 20
         scene_count = max(3, min(12, round(target / scene_len)))
         word_budget = int(target * wpm / 60)
+        per_scene = max(15, word_budget // scene_count)
         art_brief = style_spec(cfg.style)["brief"]
 
         prompt = f"""You are a script writer for a high-retention vertical video channel (TikTok, YouTube Shorts, Instagram Reels).
@@ -279,6 +315,11 @@ TARGET VIDEO LENGTH: about {target} seconds
 Pick ONE specific, genuinely interesting story or fact within the topic.
 Write {scene_count} scenes of narration that together take about {target} seconds
 when read aloud fast (roughly {word_budget} words total).
+
+LENGTH IS A HARD REQUIREMENT: the narration must total at least {word_budget} words
+(about {per_scene} words per scene). Short scripts are rejected — count the words
+in each scene before returning, and expand thin scenes with concrete detail
+instead of wrapping up early.
 
 RETENTION RULES — follow all of them:
 - COLD OPEN: the first sentence must hook in under 3 seconds. A shocking payoff,
@@ -344,6 +385,38 @@ Return ONLY a JSON object in exactly this shape:
                     "Gemini returned no usable scenes twice. Raw response saved to "
                     f"{cfg.work_dir / 'gemini_last.txt'}. Snippet: {text[:200]!r}"
                 ) from exc
+        words = script_words(script)
+        if needs_expansion(words, word_budget):
+            # Small/loaded models often undershoot the budget (the observed
+            # case: 71 words against 169). One expansion pass on the same
+            # model that just answered; failures keep the original and the
+            # short-video warning in main.py still applies.
+            print(f"  [script] too short ({words}/{word_budget} words) — "
+                  f"asking the model to expand...")
+            try:
+                expanded_raw = self.generate_text(
+                    build_expansion_prompt(
+                        json.dumps({
+                            "title": script.title,
+                            "description": script.description,
+                            "tags": script.tags,
+                            "scenes": [
+                                {"narration": s.narration,
+                                 "image_prompt": s.image_prompt}
+                                for s in script.scenes
+                            ],
+                        }),
+                        words, word_budget, per_scene, cfg.cta_enabled),
+                    temperature=0.7, tag="script", json_mode=True)
+                expanded = normalise_script(extract_json(expanded_raw), self.name)
+                if script_words(expanded) > words:
+                    script = expanded
+                    words = script_words(script)
+                    print(f"  [script] expanded to {words} words")
+                else:
+                    print("  [script] expansion added no words — keeping original")
+            except (ValueError, RuntimeError) as exc:
+                print(f"  [script] expansion failed ({exc}) — keeping original")
         if not script.description:
             script.description = f"{script.title}\n\n{topic}"
         if not script.tags:
@@ -390,16 +463,30 @@ class TemplateProvider:
         scene_len = 10 if cfg.format == "portrait" else 20
         count = max(3, min(8, round(cfg.target_seconds / scene_len)))
 
-        # Fast-paced even offline: cold open, short sentences, a twist,
-        # an open loop, and a punchy CTA last.
+        # Fast-paced even offline: cold open, short sentences, a twist, an
+        # open loop, and a payoff. Beats run ~25 words each so the offline
+        # path lands near the target length instead of a 25-second short.
         core = [
-            f"Stop scrolling. Nobody knows this about {topic}.",
-            f"Here is the part they always skip. {topic} started with one strange decision.",
-            "The details sound fake. Every single one is documented.",
-            "But here is the twist nobody talks about. Everything flips right here.",
-            f"Think that is wild? The last fact about {topic} tops all of it.",
-            "Records from the time back it up. The witnesses all agreed.",
-            f"So remember this. {topic} changed everything that came after.",
+            f"Stop scrolling. Nobody knows this about {topic}. The real story "
+            "is stranger than anything heard. Listen close, because this gets "
+            "wild fast. Do not blink.",
+            f"Here is the part they always skip. {topic} started with one "
+            "strange decision. Nobody understood it then. That single choice "
+            "changed everything after.",
+            "The details sound fake. Every one is documented and checked twice. "
+            "Witnesses who were there confirmed it. Truth beats fiction every "
+            "time. Believe it.",
+            "But here is the twist nobody talks about. Everything flips right "
+            "here. What looked like luck was something else entirely. Nobody "
+            "saw it coming. Watch closely.",
+            f"Think that is wild? The last fact about {topic} tops it all. "
+            "Almost nobody has heard it. Stay until the very end for the payoff.",
+            "Records from the time back it up. Witnesses agreed on every detail. "
+            "The papers printed it twice. This really happened, start to finish. "
+            "History kept the receipts.",
+            f"So remember this. {topic} changed everything after. The world "
+            "still feels it today. That is the untold story nobody taught you. "
+            "Pass it on.",
         ]
         # When the rotating CTA is on, main.py appends this video's line —
         # the template must not add its own or the ending repeats itself.

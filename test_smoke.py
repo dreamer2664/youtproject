@@ -218,6 +218,24 @@ def t_subtitles():
 # --------------------------------------------------------------------------
 # cta / topics / bot parser
 # --------------------------------------------------------------------------
+def t_script_length_repair():
+    from scriptgen import (TemplateProvider, build_expansion_prompt,
+                           needs_expansion, script_words)
+
+    # Word counting across scenes.
+    cfg = tmp_cfg()
+    assert script_words(TemplateProvider().generate(cfg, "x")) >= 130
+    # Expansion trigger: the real 71/169-word undershoot fires, 160/169 passes.
+    assert needs_expansion(71, 169) is True
+    assert needs_expansion(160, 169) is False
+    assert needs_expansion(0, 0) is False
+    # Expansion prompt carries the numbers and the CTA contract.
+    prompt = build_expansion_prompt("{}", 71, 169, 28, True)
+    assert "71 words" in prompt and "169" in prompt and "Do NOT" in prompt
+    prompt_off = build_expansion_prompt("{}", 71, 169, 28, False)
+    assert "call to action" in prompt_off
+
+
 def t_script_no_double_cta():
     from scriptgen import TemplateProvider, end_rule
 
@@ -574,6 +592,7 @@ def main() -> int:
         ("subtitles", t_subtitles),
         ("cta_rotation", t_cta_rotation),
         ("script_no_double_cta", t_script_no_double_cta),
+        ("script_length_repair", t_script_length_repair),
         ("topics_clean", t_topics_clean),
         ("bot_parser", t_bot_parser),
         ("package", t_package),
