@@ -27,6 +27,9 @@ STYLES = ("photoreal", "cartoon", "stickman")
 # ai.image_fallbacks; providers without their key are skipped, never fatal.
 IMAGE_PROVIDERS = ("pollinations", "gemini", "huggingface")
 
+# Buffer autopost targets (autopost.py). Order in config = posting order.
+BUFFER_SERVICES = ("youtube", "tiktok", "instagram")
+
 DEFAULTS: dict[str, Any] = {
     "channel": {
         "topic": "unusual true stories from maritime history",
@@ -102,6 +105,21 @@ DEFAULTS: dict[str, Any] = {
         # (~1/15s anonymous Pollinations, ~1/5s with token), so extra workers
         # only overlap download time. Keep at 1.
         "image_workers": 1,
+    },
+    "buffer": {
+        # Free key from https://publish.buffer.com/settings/api — enables
+        # `python main.py autopost`. Or export BUFFER_API_KEY.
+        "api_key": "",
+        # Connected channels to post to (order = posting order).
+        "channels": ["youtube", "tiktok"],
+        # YouTube upload defaults.
+        "youtube_privacy": "public",
+        "youtube_category_id": "27",
+        "made_for_kids": False,
+        # Free Cloudinary unsigned upload (no card): cloud name + preset.
+        # Or export CLOUDINARY_CLOUD_NAME / CLOUDINARY_UPLOAD_PRESET.
+        "cloud_name": "",
+        "upload_preset": "",
     },
     "telegram": {
         # Phone control: text the bot a topic, get back a finished video.
@@ -523,6 +541,43 @@ class Config:
     def huggingface_token(self) -> str:
         return (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
                 or str(self.data["ai"].get("huggingface_token") or "")).strip()
+
+    @property
+    def buffer_api_key(self) -> str:
+        return (os.environ.get("BUFFER_API_KEY")
+                or str(self.data["buffer"].get("api_key") or "")).strip()
+
+    @property
+    def buffer_channels(self) -> list[str]:
+        """Wanted autopost services; junk dropped, empty -> default pair."""
+        raw = self.data["buffer"].get("channels") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        out = [str(name).lower() for name in raw if str(name).lower() in BUFFER_SERVICES]
+        return out or ["youtube", "tiktok"]
+
+    @property
+    def youtube_privacy(self) -> str:
+        value = str(self.data["buffer"].get("youtube_privacy", "public")).lower()
+        return value if value in ("public", "unlisted", "private") else "public"
+
+    @property
+    def youtube_category_id(self) -> str:
+        return str(self.data["buffer"].get("youtube_category_id") or "27")
+
+    @property
+    def buffer_made_for_kids(self) -> bool:
+        return bool(self.data["buffer"].get("made_for_kids", False))
+
+    @property
+    def cloudinary_cloud_name(self) -> str:
+        return (os.environ.get("CLOUDINARY_CLOUD_NAME")
+                or str(self.data["buffer"].get("cloud_name") or "")).strip()
+
+    @property
+    def cloudinary_preset(self) -> str:
+        return (os.environ.get("CLOUDINARY_UPLOAD_PRESET")
+                or str(self.data["buffer"].get("upload_preset") or "")).strip()
 
     @property
     def image_workers(self) -> int:

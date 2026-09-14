@@ -798,6 +798,74 @@ def cmd_queue(cfg, args) -> int:
     return 0
 
 
+def cmd_autopost(cfg, args) -> int:
+    from autopost import (BufferClient, BufferError, build_post_input,
+                          match_channels, newest_video, read_sidecar,
+                          resolve_mode, upload_video)
+
+    from config import BUFFER_SERVICES
+
+    if not cfg.buffer_api_key:
+        die("no Buffer API key. Get one free at https://publish.buffer.com/settings/api "
+            "and set buffer.api_key (or export BUFFER_API_KEY).")
+    video = Path(args.file) if args.file else newest_video(cfg.out_dir)
+    if video is None:
+        die(f"no .mp4 in {cfg.out_dir} — generate one first.")
+    if not video.exists():
+        die(f"video not found: {video}")
+    try:
+        mode, due_at, save_draft = resolve_mode(
+            publish=args.publish, schedule=args.schedule, at=args.at)
+    except BufferError as exc:
+        die(str(exc))
+    if args.channels:
+        wanted = [name.strip().lower() for name in args.channels.split(",")]
+        junk = [name for name in wanted if name not in BUFFER_SERVICES]
+        if junk:
+            die(f"unknown channel(s) {junk} — want: {', '.join(BUFFER_SERVICES)}")
+    else:
+        wanted = cfg.buffer_channels
+    print(f"Autoposting {video.name} ({video.stat().st_size // 1024} KB) "
+          f"to {', '.join(wanted)}...")
+    try:
+        if args.video_url:
+            video_url = args.video_url
+            print(f"  [autopost] using provided video URL")
+        else:
+            if not (cfg.cloudinary_cloud_name and cfg.cloudinary_preset):
+                die("no video host configured. Set buffer.cloud_name + "
+                    "buffer.upload_preset (free Cloudinary unsigned preset — "
+                    "see config.example.yaml) or pass --video-url.")
+            print(f"  [autopost] uploading to Cloudinary...")
+            video_url = upload_video(video, cfg.cloudinary_cloud_name,
+                                     cfg.cloudinary_preset)
+            print(f"  [autopost] hosted: {video_url}")
+        client = BufferClient(cfg.buffer_api_key)
+        orgs = client.organizations()
+        if not orgs:
+            raise BufferError("no organizations on this Buffer account")
+        picked = match_channels(client.channels(orgs[0]["id"]), wanted)
+        meta = read_sidecar(video)
+        title = args.title or meta.get("title") or video.stem
+        description = args.desc or meta.get("description") or ""
+        tags = meta.get("tags") or []
+        for channel in picked:
+            post = build_post_input(
+                channel["id"], channel["service"], video_url, title,
+                description, tags, cfg, save_to_draft=save_draft,
+                mode=mode, due_at=due_at)
+            created = client.create_post(post)
+            when = f" due {created['dueAt']}" if created.get("dueAt") else ""
+            print(f"  ✅ {channel['service']} ({channel['name']}): "
+                  f"{created['status']} id={created['id']}{when}")
+    except BufferError as exc:
+        print(f"\n❌ autopost failed: {exc}")
+        return 1
+    if save_draft:
+        print("\nDrafts saved — review & release them in your Buffer dashboard.")
+    return 0
+
+
 def cmd_voices(cfg, args) -> int:
     from voiceover import list_voices
 
@@ -895,6 +963,16 @@ def main() -> int:
     p = sub.add_parser("voices", help="list available voiceover voices")
     p.add_argument("--lang", default="en-", help="voice prefix filter, e.g. en-, it-, de-")
 
+    p = sub.add_parser("autopost", help="post a finished video via Buffer")
+    p.add_argument("file", nargs="?", help="video to post (default: newest .mp4 in out/)")
+    p.add_argument("--channels", help="comma list, e.g. youtube,tiktok (default: config)")
+    p.add_argument("--title", help="override the sidecar title")
+    p.add_argument("--desc", help="override the sidecar description")
+    p.add_argument("--video-url", help="skip Cloudinary, use this public mp4 URL")
+    p.add_argument("--publish", action="store_true", help="post immediately (default: draft)")
+    p.add_argument("--schedule", action="store_true", help="add to Buffer queue slots")
+    p.add_argument("--at", help="schedule ISO time, e.g. 2026-09-15T18:00")
+
     args = parser.parse_args()
     try:
         cfg = load_config(args.config)
@@ -913,6 +991,7 @@ def main() -> int:
         "published": cmd_published,
         "queue": cmd_queue,
         "voices": cmd_voices,
+        "autopost": cmd_autopost,
     }
     return handlers[args.command](cfg, args)
 

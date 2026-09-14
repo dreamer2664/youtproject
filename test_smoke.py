@@ -460,6 +460,80 @@ def t_image_builders():
     assert hp["parameters"]["seed"] == 9 and hp["parameters"]["width"] == 576
 
 
+def t_autopost_builders():
+    from autopost import (BufferError, build_post_input, cloudinary_upload_url,
+                          hashtags, match_channels, newest_video, read_sidecar,
+                          resolve_mode)
+
+    cfg = tmp_cfg()
+    assert cfg.buffer_channels == ["youtube", "tiktok"]
+    assert cfg.youtube_privacy == "public"
+    cfg.data["buffer"]["channels"] = ["TikTok", "bogus", "instagram"]
+    assert cfg.buffer_channels == ["tiktok", "instagram"]
+    cfg.data["buffer"]["youtube_privacy"] = "nonsense"
+    assert cfg.youtube_privacy == "public"
+
+    assert hashtags(["vienna woods", "fun-fact"]) == "#viennawoods #funfact"
+    assert cloudinary_upload_url("demo") == \
+        "https://api.cloudinary.com/v1_1/demo/video/upload"
+
+    yt = build_post_input("ch1", "youtube", "https://x/v.mp4", "T" * 150,
+                          "Desc", ["a b"], cfg)
+    assert yt["metadata"]["youtube"]["title"] == "T" * 100
+    assert yt["metadata"]["youtube"]["isAiGenerated"] is True
+    assert yt["metadata"]["youtube"]["privacy"] == "public"
+    assert yt["assets"] == [{"video": {"url": "https://x/v.mp4"}}]
+    assert yt["saveToDraft"] is True and yt["aiAssisted"] is True
+
+    tt = build_post_input("ch2", "tiktok", "https://x/v.mp4", "Hi", "",
+                          ["a b"], cfg)
+    assert tt["metadata"]["tiktok"] == {"title": "Hi #ab", "isAiGenerated": True}
+
+    ig = build_post_input("ch3", "instagram", "https://x/v.mp4", "Hi", "D",
+                          [], cfg)
+    assert ig["metadata"]["instagram"]["type"] == "reel"
+
+    try:
+        build_post_input("ch", "myspace", "https://x/v.mp4", "t", "", [], cfg)
+    except BufferError:
+        pass
+    else:
+        raise AssertionError("unknown service should raise")
+
+    channels = [{"service": "youtube", "isDisconnected": False, "id": "y"},
+                {"service": "tiktok", "isDisconnected": True, "id": "t"}]
+    assert [c["id"] for c in match_channels(channels, ["youtube"])] == ["y"]
+    try:
+        match_channels(channels, ["tiktok"])
+    except BufferError as exc:
+        assert "tiktok" in str(exc)
+    else:
+        raise AssertionError("disconnected channel should raise")
+
+    assert resolve_mode() == ("addToQueue", None, True)
+    assert resolve_mode(publish=True) == ("shareNow", None, False)
+    assert resolve_mode(schedule=True) == ("addToQueue", None, False)
+    mode, due, draft = resolve_mode(at="2999-01-01T12:00")
+    assert mode == "customScheduled" and draft is False and due.startswith("2999")
+    for bad in ("yesterday", "2000-01-01T00:00"):
+        try:
+            resolve_mode(at=bad)
+        except BufferError:
+            pass
+        else:
+            raise AssertionError(f"bad --at should raise: {bad}")
+
+    import tempfile
+    from pathlib import Path as _Path
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpdir = _Path(tmp)
+        (tmpdir / "a.mp4").write_bytes(b"0")
+        (tmpdir / "a.json").write_text('{"title": "TT", "tags": ["x"]}')
+        assert read_sidecar(tmpdir / "a.mp4")["title"] == "TT"
+        assert newest_video(tmpdir).name == "a.mp4"
+        assert newest_video(tmpdir / "empty") is None
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -482,6 +556,7 @@ def main() -> int:
         ("gemini_fallback_order", t_gemini_fallback_order),
         ("image_chain", t_image_chain),
         ("image_builders", t_image_builders),
+        ("autopost_builders", t_autopost_builders),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:

@@ -214,3 +214,29 @@ telegram:
   # 2. Message @userinfobot on Telegram -> paste your numeric user id here.
   #    The bot ONLY talks to this account — everyone else is ignored.
   owner_id: 0
+
+buffer:
+  # Autopost (free): `python main.py autopost` uploads the finished mp4 and
+  # creates one Buffer post per channel below. Drafts by default; add
+  # --publish / --schedule / --at to release. Proven with TikTok + YouTube.
+  # Get a key free at https://publish.buffer.com/settings/api
+  # (or export BUFFER_API_KEY instead of writing it in this file).
+  api_key: ""
+  # Which connected channels to post to (order = posting order).
+  channels: ["youtube", "tiktok"]
+  # YouTube upload defaults.
+  youtube_privacy: "public"     # public | unlisted | private
+  youtube_category_id: "27"     # 27 = Education, 28 = Science & Technology
+  made_for_kids: false
+
+  # Video hosting: Buffer only accepts videos by public URL, so autopost
+  # uploads the mp4 first. Free Cloudinary account (no card required):
+  #   1. Sign up at https://cloudinary.com/users/register_free
+  #   2. Dashboard top bar -> copy your "Cloud name" below (or export
+  #      CLOUDINARY_CLOUD_NAME).
+  #   3. Settings (gear) -> Upload -> Upload presets -> Add upload preset:
+  #      name it (e.g. shorts), set Signing Mode to UNSIGNED, Save.
+  #      Paste the preset name below (or export CLOUDINARY_UPLOAD_PRESET).
+  # Or skip hosting entirely by passing --video-url to autopost.
+  cloud_name: ""
+  upload_preset: ""
