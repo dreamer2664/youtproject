@@ -224,7 +224,7 @@ def t_script_length_repair():
 
     # Word counting across scenes.
     cfg = tmp_cfg()
-    assert script_words(TemplateProvider().generate(cfg, "x")) >= 130
+    assert script_words(TemplateProvider().generate(cfg, "x")) >= 150
     # Expansion trigger: the real 71/169-word undershoot fires, 160/169 passes.
     assert needs_expansion(71, 169) is True
     assert needs_expansion(160, 169) is False

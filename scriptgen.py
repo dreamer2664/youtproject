@@ -469,24 +469,25 @@ class TemplateProvider:
         core = [
             f"Stop scrolling. Nobody knows this about {topic}. The real story "
             "is stranger than anything heard. Listen close, because this gets "
-            "wild fast. Do not blink.",
+            "wild fast. Do not blink. Stay with me.",
             f"Here is the part they always skip. {topic} started with one "
-            "strange decision. Nobody understood it then. That single choice "
-            "changed everything after.",
+            "strange decision. Nobody understood it then. Nobody predicted it. "
+            "That single choice changed everything after.",
             "The details sound fake. Every one is documented and checked twice. "
             "Witnesses who were there confirmed it. Truth beats fiction every "
-            "time. Believe it.",
+            "time. Believe it. Check the archives.",
             "But here is the twist nobody talks about. Everything flips right "
             "here. What looked like luck was something else entirely. Nobody "
-            "saw it coming. Watch closely.",
+            "saw it coming. Watch closely. Rewind that twice.",
             f"Think that is wild? The last fact about {topic} tops it all. "
-            "Almost nobody has heard it. Stay until the very end for the payoff.",
+            "Almost nobody has heard it. Stay until the very end for the payoff. "
+            "You will see why.",
             "Records from the time back it up. Witnesses agreed on every detail. "
             "The papers printed it twice. This really happened, start to finish. "
-            "History kept the receipts.",
+            "History kept the receipts. Case closed.",
             f"So remember this. {topic} changed everything after. The world "
             "still feels it today. That is the untold story nobody taught you. "
-            "Pass it on.",
+            "Pass it on. Tell a friend.",
         ]
         # When the rotating CTA is on, main.py appends this video's line —
         # the template must not add its own or the ending repeats itself.
@@ -499,7 +500,10 @@ class TemplateProvider:
         # 900-char prompt budget. Photoreal gets its cinematic lead-in
         # here instead, since stylize() adds nothing for photoreal.
         prefix = "" if cfg.style != "photoreal" else "cinematic photorealistic, "
-        picked = [b for b in (core * 2)[: max(2, count - 1)] + [cta] if b]
+        # CTA on: main.py appends the line to the last scene, so all `count`
+        # beats are used. CTA off: the last slot carries the self-contained CTA.
+        slots = count if cfg.cta_enabled else max(2, count - 1)
+        picked = [b for b in (core * 2)[:slots] + [cta] if b]
         scenes = [
             Scene(
                 narration=beat,
