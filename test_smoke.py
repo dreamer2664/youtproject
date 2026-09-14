@@ -218,6 +218,24 @@ def t_subtitles():
 # --------------------------------------------------------------------------
 # cta / topics / bot parser
 # --------------------------------------------------------------------------
+def t_script_no_double_cta():
+    from scriptgen import TemplateProvider, end_rule
+
+    # Gemini prompt rule mirrors main.py: the rotating CTA is appended at
+    # render time, so the script must not add its own (else the ending is
+    # "...follow for more facts. Follow for more.").
+    assert "Do NOT" in end_rule(True) and "automatically" in end_rule(True)
+    assert "call to action" in end_rule(False)
+    # Template provider honors the same contract on both branches.
+    cfg = tmp_cfg()
+    cfg.data["cta"]["enabled"] = True
+    script = TemplateProvider().generate(cfg, "test topic")
+    assert "follow" not in script.scenes[-1].narration.lower()
+    cfg.data["cta"]["enabled"] = False
+    script = TemplateProvider().generate(cfg, "test topic")
+    assert script.scenes[-1].narration == "Follow for part two."
+
+
 def t_cta_rotation():
     from cta import commit_cta, next_cta
 
@@ -555,6 +573,7 @@ def main() -> int:
         ("factcheck_never_blocks", t_factcheck_never_blocks),
         ("subtitles", t_subtitles),
         ("cta_rotation", t_cta_rotation),
+        ("script_no_double_cta", t_script_no_double_cta),
         ("topics_clean", t_topics_clean),
         ("bot_parser", t_bot_parser),
         ("package", t_package),

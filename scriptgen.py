@@ -115,6 +115,22 @@ def normalise_script(raw: dict, provider: str) -> Script:
 # --------------------------------------------------------------------------
 # Gemini
 # --------------------------------------------------------------------------
+def end_rule(cta_enabled: bool) -> str:
+    """Closing-line rule for the script prompt (pure, tested).
+
+    Mirrors main.py: when the rotating CTA is on, the render appends that
+    line to the narration — so the script must end on the payoff with NO
+    follow/subscribe call of its own, or the ending repeats itself
+    ("...follow for more facts. Follow for more."). CTA off keeps the old
+    self-contained rule, exactly like TemplateProvider.
+    """
+    if cta_enabled:
+        return ("- END with a punchy payoff line. Do NOT add any follow, subscribe, "
+                "like, or call-to-action line — the outro CTA is added automatically.")
+    return ("- END with a punchy payoff line plus a call to action of 5 words or less\n"
+            "  (e.g. \"Follow for part two.\").")
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -272,8 +288,7 @@ RETENTION RULES — follow all of them:
 - One PATTERN INTERRUPT around the middle: a twist ("but here's what nobody
   tells you..."), a rhetorical question, or a contrarian turn.
 - One OPEN LOOP before the payoff ("...and the last one is the wildest").
-- END with a punchy payoff line plus a call to action of 5 words or less
-  (e.g. "Follow for part two.").
+{end_rule(cfg.cta_enabled)}
 - narration: plain spoken prose for a voiceover. No stage directions, no quotes
   inside the text, no markdown, no emoji.
 - image_prompt: a detailed visual description for an AI image generator matching
