@@ -288,6 +288,28 @@ def t_topics_clean():
     assert cleaned == ["First idea!", "second idea"]  # deduped case-insensitively
 
 
+def t_topics_norepeat():
+    from topics import (_clean, is_same_topic, load_backlog, normalize,
+                        pop_fresh_topic, save_backlog)
+
+    assert normalize("The Secret Language of Trees!") == "the secret language of trees"
+    assert normalize("X (variation 1 of 3: blah)") == "x"
+    assert is_same_topic("the secret language of trees", "Secret Language of Trees!")
+    assert is_same_topic("why cats stare at walls", "Why cats stare at walls?")
+    assert not is_same_topic("why cats stare at walls", "why cats hate water")
+    assert not is_same_topic("the ship", "the shop")  # short: exact only
+    tmp = Path(tempfile.mkdtemp(prefix="youttest_")) / "backlog.txt"
+    save_backlog(tmp, ["The secret language of trees", "Why octopuses have three hearts"])
+    used = ["secret language of trees!"]
+    assert pop_fresh_topic(tmp, used) == "Why octopuses have three hearts"
+    assert load_backlog(tmp) == []  # stale dupe dropped, fresh popped
+    assert pop_fresh_topic(tmp, used) is None
+    # top-up cleaning also filters history look-alikes, not just exact dupes.
+    cleaned = _clean("Secret language of trees\nBrand new idea\n",
+                     ["the secret language of trees"])
+    assert cleaned == ["Brand new idea"]
+
+
 def t_bot_parser():
     from bot import parse_incoming
 
@@ -722,6 +744,7 @@ def main() -> int:
         ("script_no_double_cta", t_script_no_double_cta),
         ("script_length_repair", t_script_length_repair),
         ("topics_clean", t_topics_clean),
+        ("topics_norepeat", t_topics_norepeat),
         ("bot_parser", t_bot_parser),
         ("package", t_package),
         ("audiofx", t_audiofx),

@@ -197,6 +197,19 @@ def cmd_preflight(cfg, args) -> int:
 # --------------------------------------------------------------------------
 # generate
 # --------------------------------------------------------------------------
+def _pick_fresh_topic(cfg, used: list[str]) -> tuple[str, str]:
+    """Next backlog topic the channel hasn't covered; channel topic last resort."""
+    from topics import load_backlog, pop_fresh_topic, top_up_backlog
+
+    path = cfg.topics_backlog_file
+    if len(load_backlog(path)) < cfg.topics_backlog_target:
+        top_up_backlog(cfg, used=used)
+    topic = pop_fresh_topic(path, used)
+    if topic is not None:
+        return topic, "from backlog"
+    return cfg.topic, "channel topic (backlog dry)"
+
+
 def cmd_generate(cfg, args) -> int:
     print(BANNER)
     if args.seconds is not None:
@@ -222,11 +235,21 @@ def cmd_generate(cfg, args) -> int:
     if count < 1:
         die(f"--count must be at least 1 (got {count}).")
 
+    from topics import is_same_topic
+
+    used = [job.topic for job in queue.jobs]
     for number in range(1, count + 1):
-        topic = args.topic or cfg.topic
-        if count > 1:
-            topic = f"{topic} (variation {number} of {count}: choose a different specific story each time)"
-        source = "--topic override" if args.topic else "from config.yaml"
+        if args.topic:
+            topic, source = args.topic, "--topic override"
+            if any(is_same_topic(topic, old) for old in used):
+                print("  heads-up: a past video already covers this — "
+                      "rendering anyway (--topic is explicit).")
+        else:
+            topic, source = _pick_fresh_topic(cfg, used)
+            if count > 1 and source != "from backlog":
+                topic = (f"{topic} (variation {number} of {count}: choose a "
+                         f"different specific story each time)")
+        used.append(topic)
         print(f"[{number}/{count}] topic: {topic}  ({source})")
 
         job = queue.add(topic)
@@ -560,7 +583,7 @@ def cmd_batch(cfg, args) -> int:
             die(f"no topics in {topics_path} (one per line, # = comment).")
     count = args.count or (len(topics) if topics else 3)
     if not topics:
-        topics = [cfg.topic] * count
+        topics = [None] * count  # type: ignore[list-item] - auto-pick below
     topics = topics[:count]
 
     gen_args = argparse.Namespace(
@@ -571,24 +594,25 @@ def cmd_batch(cfg, args) -> int:
     )
     results: list[tuple[str, str, str]] = []  # topic, status, detail
     for number, topic in enumerate(topics, start=1):
-        print(f"\n===== batch {number}/{len(topics)}: {topic} =====")
+        print(f"\n===== batch {number}/{len(topics)}: {topic or 'auto-pick from backlog'} =====")
         before = {job.id for job in Queue(cfg.state_file).jobs}
         gen_args.topic = topic
         try:
             cmd_generate(cfg, gen_args)
         except SystemExit as exc:
-            results.append((topic, "failed", f"exit {exc.code}"))
+            results.append((topic or "auto", "failed", f"exit {exc.code}"))
             break
         except Exception as exc:  # noqa: BLE001 - batch never dies on one video
             print(f"  \u274c failed: {exc}")
-            results.append((topic, "failed", str(exc)[:120]))
+            results.append((topic or "auto", "failed", str(exc)[:120]))
             continue
         new = [j for j in Queue(cfg.state_file).jobs if j.id not in before]
         if not new:
-            results.append((topic, "failed", "no job was created"))
+            results.append((topic or "auto", "failed", "no job was created"))
         else:
             job = new[-1]
-            results.append((topic, job.status, job.title or job.error[:100]))
+            results.append((job.topic or topic or "auto", job.status,
+                            job.title or job.error[:100]))
         if number < len(topics) and args.sleep > 0:
             print(f"  sleeping {args.sleep}s before the next video...")
             time.sleep(args.sleep)
@@ -672,7 +696,7 @@ def cmd_schedule(cfg, args) -> int:
     import time as _time
     from datetime import datetime, timedelta
 
-    from topics import pop_topic, top_up_backlog
+    from topics import load_backlog, pop_fresh_topic, top_up_backlog
 
     print(BANNER)
     per_day = args.per_day or cfg.schedule_per_day
@@ -690,14 +714,13 @@ def cmd_schedule(cfg, args) -> int:
     backlog = cfg.topics_backlog_file
 
     def fire() -> None:
-        topic = pop_topic(backlog)
-        if topic is None and args.topup:
-            added, _ = top_up_backlog(cfg)
-            if added:
-                topic = pop_topic(backlog)
+        used = [job.topic for job in Queue(cfg.state_file).jobs]
+        if args.topup and len(load_backlog(backlog)) < cfg.topics_backlog_target:
+            top_up_backlog(cfg, used=used)
+        topic = pop_fresh_topic(backlog, used)
         if topic is None:
             topic = cfg.topic
-            print("  backlog empty and top-up unavailable — using channel topic")
+            print("  backlog dry — using channel topic")
         else:
             print(f"  topic from backlog: {topic}")
         gen_args = argparse.Namespace(
