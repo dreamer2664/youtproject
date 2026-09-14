@@ -635,18 +635,43 @@ def t_groq_rotation():
         result = GroqProvider(api_keys=["bad", "good"])._complete(
             "hi", temperature=0.0, json_mode=False, tag="t")
     assert result == "hello" and post.call_count == 2
-    # 200-with-empty (dry backing pool, seen live) -> rotates like a failure.
+    # 200-with-empty (dry backing pool, seen live) -> next model at once.
     empty = Mock(status_code=200)
     empty.json.return_value = {"choices": [{"message": {"content": "  "}}]}
     with patch("requests.post", side_effect=[empty, ok()]) as post:
         result = GroqProvider(api_keys=["k1", "k2"])._complete(
             "hi", temperature=0.0, json_mode=False, tag="t")
     assert result == "hello" and post.call_count == 2
+    assert post.call_args_list[1].kwargs["json"]["model"] == "openai/gpt-oss-120b"
     # 404 -> next model tried (qwen default, then 120b).
     with patch("requests.post", side_effect=[Mock(status_code=404, text="gone"), ok()]) as post:
         GroqProvider(api_keys=["k"])._complete("hi", temperature=0.0, json_mode=False, tag="t")
     bodies = [call.kwargs["json"] for call in post.call_args_list]
     assert [body["model"] for body in bodies] == ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
+    # Org-level 429 names the organization: every key shares that fate,
+    # so remaining keys are skipped and the next model pool is tried.
+    org_429 = Mock(status_code=429, text="Rate limit reached for model `m` "
+                                        "in organization `org_x` on tokens per minute (TPM)")
+    with patch("requests.post", side_effect=[org_429, ok()]) as post:
+        result = GroqProvider(api_keys=["k1", "k2", "k3"])._complete(
+            "hi", temperature=0.0, json_mode=False, tag="t")
+    assert result == "hello" and post.call_count == 2
+    second = post.call_args_list[1]
+    assert second.kwargs["json"]["model"] == "openai/gpt-oss-120b"
+    assert second.kwargs["headers"] == {"Authorization": "Bearer k1"}
+    # 5xx is server-side: no key will fix it, next model at once.
+    with patch("requests.post", side_effect=[Mock(status_code=500, text="err"), ok()]) as post:
+        GroqProvider(api_keys=["k1", "k2"])._complete(
+            "hi", temperature=0.0, json_mode=False, tag="t")
+    assert [call.kwargs["json"]["model"] for call in post.call_args_list] == [
+        "qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
+    # Two hung requests in a row: next model, not every key x 60 s.
+    from requests.exceptions import Timeout
+    with patch("requests.post", side_effect=[Timeout(), Timeout(), ok()]) as post:
+        result = GroqProvider(api_keys=["k1", "k2", "k3"])._complete(
+            "hi", temperature=0.0, json_mode=False, tag="t")
+    assert result == "hello" and post.call_count == 3
+    assert post.call_args_list[2].kwargs["json"]["model"] == "openai/gpt-oss-120b"
     # gpt-oss gets hidden reasoning + JSON mode passes response_format through.
     with patch("requests.post", return_value=ok()) as post:
         GroqProvider(api_keys=["k"], model="openai/gpt-oss-120b")._complete(

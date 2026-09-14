@@ -7,10 +7,13 @@ unchanged, which keeps the two LLM paths from drifting apart. _post
 translates Groq's OpenAI-shaped reply into the Gemini shape generate()
 expects (documented hack, contained to one method).
 
-Key rotation is the point: on 429 the next key is tried immediately
-(different key = fresh quota), rejected keys (401/403) are dropped for
-the run, and retired model IDs (404) advance to the next model.
-Exhaustion raises RuntimeError so the script chain moves on.
+Key rotation is the point, but it is quota-aware: Groq's TPM quota is
+shared per organization, so a 429 naming the organization skips the
+remaining keys and jumps to the next model pool at once (rotating keys
+there only burns seconds). Per-key 429s still rotate; rejected keys
+(401/403) are dropped for the run; retired model IDs (404), server
+errors (5xx), empty replies, and two consecutive hangs all advance to
+the next model. Exhaustion raises RuntimeError so the chain moves on.
 """
 
 from __future__ import annotations
@@ -93,7 +96,7 @@ class GroqProvider(GeminiProvider):
                 # Reasoning model: hide the chain-of-thought or `content`
                 # comes back empty (verified live Sep 2026).
                 body["reasoning_format"] = "hidden"
-            tried = tried_429 = 0
+            tried = down = 0
             index = 0
             while index < len(keys):
                 key = keys[index]
@@ -102,12 +105,20 @@ class GroqProvider(GeminiProvider):
                         URL,
                         headers={"Authorization": f"Bearer {key}"},
                         json=body,
-                        timeout=180,
+                        timeout=60,
                     )
                 except Exception as exc:
-                    last_error = str(exc)[:200]
+                    # Hung route / DNS: one spare key, then next model —
+                    # waiting out every key at 60 s each is never worth it.
+                    last_error = f"{model} unreachable ({str(exc)[:120]})"
+                    down += 1
+                    if down >= 2:
+                        print(f"  [{tag}] groq {model} unreachable twice; "
+                              f"trying next model.")
+                        break
                     index += 1
                     continue
+                down = 0
                 if response.status_code == 200:
                     try:
                         text = response.json()["choices"][0]["message"]["content"]
@@ -115,11 +126,12 @@ class GroqProvider(GeminiProvider):
                         raise RuntimeError(
                             f"unexpected Groq reply shape: {response.text[:200]}")
                     # A dry backing pool can come back 200-with-empty (seen
-                    # live on compound-mini): rotate, don't return poison.
+                    # live): a pool-wide symptom, so jump pools at once.
                     if not text or not str(text).strip():
                         last_error = f"{model} returned empty content"
-                        index += 1
-                        continue
+                        print(f"  [{tag}] groq {model} returned empty content; "
+                              f"trying next model.")
+                        break
                     return text
                 last_error = f"HTTP {response.status_code}: {response.text[:160]}"
                 if response.status_code in (401, 403):
@@ -130,13 +142,23 @@ class GroqProvider(GeminiProvider):
                 if response.status_code == 404:
                     print(f"  [{tag}] groq {model} unavailable (404); trying next model.")
                     break
-                # 429/5xx: next key immediately (a different key usually has
-                # fresh quota; a different model often sits on another lane).
-                tried += 1
-                tried_429 += response.status_code == 429
-                index += 1
+                if response.status_code == 429:
+                    # Org-shared TPM quota (the "organization ..." reply):
+                    # every key shares this fate, so jump pools at once.
+                    # Any other 429 is per-key: rotate immediately.
+                    if "organization" in response.text:
+                        print(f"  [{tag}] groq {model} org quota dry; "
+                              f"trying next model.")
+                        break
+                    tried += 1
+                    index += 1
+                    continue
+                # 5xx/odd: server-side, no key will fix it — next model.
+                print(f"  [{tag}] groq {model} HTTP {response.status_code}; "
+                      f"trying next model.")
+                break
             else:
-                if tried and tried_429 == tried:
+                if tried:
                     print(f"  [{tag}] all {tried} groq key(s) rate-limited on "
                           f"{model}; trying next model.")
         raise RuntimeError(
