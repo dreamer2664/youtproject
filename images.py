@@ -1,8 +1,13 @@
-"""AI image generation via Pollinations.
+"""AI image generation with automatic provider fallbacks.
 
-Verified free and keyless: a plain GET to image.pollinations.ai returns a JPEG
-with no API key, no signup and no billing. There is no SLA, so every call is
-retried and failures are handled rather than fatal.
+Primary: Pollinations (free, keyless anonymous tier; an optional free token
+raises the rate limit and removes the watermark). Fallbacks, tried in order
+when the primary fails an image: Gemini image generation (same free Gemini
+key as the scripts — no new signup) and Hugging Face Inference (free token).
+
+There is no SLA on any provider, so every call is retried, failures fall
+through to the next provider, and a total failure raises rather than
+producing a silent broken video.
 
 Each narrated scene gets `video.images_per_scene` images (default 3), each
 framed as a different cinematic shot so the video cuts regularly instead of
@@ -11,6 +16,7 @@ sitting on one picture for 20 seconds.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import random
 import re
@@ -21,9 +27,16 @@ from pathlib import Path
 
 import requests
 
-from config import Config
+from config import IMAGE_PROVIDERS as PROVIDERS, Config
 
 ENDPOINT = "https://image.pollinations.ai/prompt/{prompt}"
+
+GEMINI_IMAGE_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+# Current lane first, legacy lane as backup (404 advances, like text models).
+GEMINI_IMAGE_MODELS = ["gemini-3.1-flash-image-preview", "gemini-2.5-flash-image"]
+
+HF_URL = "https://api-inference.huggingface.co/models/{model}"
+HF_IMAGE_MODELS = ["black-forest-labs/FLUX.1-schnell", "stabilityai/sdxl-turbo"]
 
 # Cycled through when a scene needs several images. All framings are
 # subject-agnostic on purpose — they must make sense appended to any prompt.
@@ -119,20 +132,58 @@ def stylize(prompt: str, style: str) -> str:
     return f"{direction}, {prompt}" if direction else prompt
 
 
+# --- provider chain ------------------------------------------------------
+
+def resolve_chain(cfg: Config) -> list[str]:
+    """Primary + fallbacks, de-duplicated, order preserved."""
+    chain = [cfg.image_provider]
+    for name in cfg.image_fallbacks:
+        if name not in chain:
+            chain.append(name)
+    return chain
+
+
+def provider_ready(name: str, cfg: Config) -> tuple[bool, str]:
+    """(usable, human reason) for one provider."""
+    if name == "pollinations":
+        return True, "token" if cfg.pollinations_token else "anonymous"
+    if name == "gemini":
+        return (bool(cfg.gemini_api_key),
+                "key present" if cfg.gemini_api_key else "no Gemini key")
+    if name == "huggingface":
+        return (bool(cfg.huggingface_token),
+                "token present" if cfg.huggingface_token else "no Hugging Face token")
+    return False, "unknown provider"
+
+
+def describe_chain(cfg: Config) -> str:
+    """One-line summary of the provider chain, for preflight and run headers."""
+    parts = []
+    for name in resolve_chain(cfg):
+        ok, reason = provider_ready(name, cfg)
+        if name == "pollinations":
+            parts.append(f"pollinations ({cfg.image_model}, {reason})")
+        else:
+            parts.append(name if ok else f"{name} ({reason} — skipped)")
+    return " → ".join(parts)
+
+
 # Anonymous Pollinations allows roughly one request per 15 seconds — faster
 # than that and the API answers HTTP 429 (or, sneakier, HTTP 200 with a
 # placeholder image instead of yours). The pacer serialises request starts
-# across all worker threads, so no setting can trip the limiter.
+# across all worker threads, so no setting can trip the limiter. A free
+# registered token (auth.pollinations.ai) raises the allowance to ~1 req/5s.
 MIN_REQUEST_INTERVAL = 16.0
+MIN_REQUEST_INTERVAL_TOKEN = 6.0
 _pace_lock = threading.Lock()
 _last_request_start = 0.0
 
 
-def _wait_for_slot() -> None:
-    """Block until MIN_REQUEST_INTERVAL has passed since the last request."""
+def _wait_for_slot(interval: float = MIN_REQUEST_INTERVAL) -> None:
+    """Block until `interval` seconds passed since the last request start."""
     global _last_request_start
     with _pace_lock:
-        wait = MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_start)
+        wait = interval - (time.monotonic() - _last_request_start)
         if wait > 0:
             if wait > 3:
                 print(f"  [image] pacing: next request in {wait:.0f}s (rate limit)")
@@ -171,19 +222,10 @@ def _safe_slug(text: str, limit: int = 40) -> str:
     return slug[:limit] or "image"
 
 
-def generate_image(
-    prompt: str,
-    dest: Path,
-    cfg: Config,
-    seed: int | None = None,
-    attempts: int = 6,
-) -> Path:
-    """Download one AI image. Raises RuntimeError if every attempt fails."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
+# --- Pollinations --------------------------------------------------------
 
-    if seed is None:
-        seed = int(hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:8], 16) % 100000
-
+def pollinations_request(prompt: str, cfg: Config, seed: int) -> tuple[str, dict, dict]:
+    """Pure builder: (url, params, headers) for one Pollinations image."""
     quoted = urllib.parse.quote(prompt[:900])
     url = ENDPOINT.format(prompt=quoted)
     params = {
@@ -193,12 +235,28 @@ def generate_image(
         "nologo": "true",
         "model": cfg.image_model,
     }
+    headers = {"Authorization": f"Bearer {cfg.pollinations_token}"} if cfg.pollinations_token else {}
+    return url, params, headers
+
+
+def _pollinations_fetch(
+    prompt: str,
+    dest: Path,
+    cfg: Config,
+    seed: int,
+    attempts: int = 6,
+) -> Path:
+    """Download one AI image from Pollinations. Raises on total failure."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    url, params, headers = pollinations_request(prompt, cfg, seed)
+    interval = MIN_REQUEST_INTERVAL_TOKEN if cfg.pollinations_token else MIN_REQUEST_INTERVAL
 
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
         try:
-            _wait_for_slot()
-            response = requests.get(url, params=params, timeout=cfg.image_timeout)
+            _wait_for_slot(interval)
+            response = requests.get(url, params=params, headers=headers or None,
+                                    timeout=cfg.image_timeout)
             if response.status_code == 429:
                 raise _RateLimited(_retry_after_seconds(response))
             if response.status_code != 200:
@@ -235,17 +293,231 @@ def generate_image(
     raise RuntimeError(f"image generation failed after {attempts} attempts: {last_error}")
 
 
+# --- Gemini images -------------------------------------------------------
+
+def gemini_payload(prompt: str) -> dict:
+    """Pure builder: generateContent body requesting IMAGE + TEXT output."""
+    return {
+        "contents": [{"parts": [{"text": prompt[:2000]}]}],
+        "generationConfig": {"responseModalities": ["IMAGE", "TEXT"]},
+    }
+
+
+def gemini_extract(data: dict) -> bytes:
+    """Pull image bytes out of a generateContent response. Raises ValueError."""
+    blocked = (data.get("promptFeedback") or {}).get("blockReason")
+    if blocked:
+        raise ValueError(f"prompt blocked ({blocked})")
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        raise ValueError(f"unexpected response shape: {str(data)[:200]}")
+    for part in parts or []:
+        inline = part.get("inlineData") or part.get("inline_data") or {}
+        encoded = inline.get("data")
+        if encoded:
+            try:
+                raw = base64.b64decode(encoded)
+            except Exception:
+                continue
+            if len(raw) >= 2000 and (raw[:3] == b"\xff\xd8\xff"
+                                     or raw[:8] == b"\x89PNG\r\n\x1a\n"):
+                return raw
+            raise ValueError(f"inline data was not an image ({len(raw)} bytes)")
+    texts = " ".join(str(part.get("text") or "") for part in parts or [])[:160]
+    raise ValueError(f"no image in response ({texts or 'empty response'})")
+
+
+def _gemini_fetch(prompt: str, dest: Path, cfg: Config, seed: int, attempts: int) -> Path:
+    # NOTE: seed is unused — the Gemini image API takes no seed. Kept for
+    # signature parity with the other providers.
+    del seed
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    key = cfg.gemini_api_key
+    last_error = "unknown"
+    for model in GEMINI_IMAGE_MODELS:
+        for attempt in range(1, attempts + 1):
+            try:
+                response = requests.post(
+                    GEMINI_IMAGE_URL.format(model=model),
+                    params={"key": key},
+                    json=gemini_payload(prompt),
+                    timeout=cfg.image_timeout,
+                )
+            except Exception as exc:
+                last_error = str(exc)[:160]
+                if attempt < attempts:
+                    time.sleep(3 * attempt)
+                continue
+            if response.status_code == 200:
+                try:
+                    dest.write_bytes(gemini_extract(response.json()))
+                    return dest
+                except ValueError as exc:
+                    # Parsed fine but unusable (block/refusal) — the next
+                    # model has different tuning, so it may still pass.
+                    last_error = str(exc)[:200]
+                    break
+            elif response.status_code == 404:
+                last_error = f"{model}: HTTP 404"
+                break  # retired model id — try the next one
+            elif response.status_code in (429, 500, 502, 503, 504):
+                last_error = f"{model}: HTTP {response.status_code}"
+                if attempt < attempts:
+                    delay = min(2 ** attempt + random.uniform(0, 1), 30.0)
+                    print(f"  [image] gemini {model}: HTTP {response.status_code}, "
+                          f"retry in {delay:.0f}s")
+                    time.sleep(delay)
+            else:
+                # Other 4xx = key/permissions — retrying is pointless.
+                raise RuntimeError(f"gemini images rejected "
+                                   f"(HTTP {response.status_code}): {response.text[:160]}")
+    raise RuntimeError(f"gemini image failed: {last_error}")
+
+
+# --- Hugging Face --------------------------------------------------------
+
+def huggingface_size(cfg: Config) -> tuple[int, int]:
+    """Target size capped at 1024px, multiples of 8 (diffusion-friendly)."""
+    width, height = cfg.image_width, cfg.image_height
+    scale = min(1.0, 1024.0 / max(width, height))
+    width = max(256, int(round(width * scale)) // 8 * 8)
+    height = max(256, int(round(height * scale)) // 8 * 8)
+    return width, height
+
+
+def huggingface_payload(prompt: str, cfg: Config, seed: int) -> dict:
+    """Pure builder: Inference API body for one image."""
+    width, height = huggingface_size(cfg)
+    return {"inputs": prompt[:1000],
+            "parameters": {"width": width, "height": height, "seed": seed}}
+
+
+def _huggingface_fetch(prompt: str, dest: Path, cfg: Config, seed: int, attempts: int) -> Path:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    headers = {"Authorization": f"Bearer {cfg.huggingface_token}"}
+    payload = huggingface_payload(prompt, cfg, seed)
+    last_error = "unknown"
+    loading_waits = 0
+    for model in HF_IMAGE_MODELS:
+        attempt = 1
+        while attempt <= attempts:
+            try:
+                response = requests.post(HF_URL.format(model=model),
+                                         headers=headers, json=payload,
+                                         timeout=cfg.image_timeout)
+            except Exception as exc:
+                last_error = str(exc)[:160]
+                attempt += 1
+                if attempt <= attempts:
+                    time.sleep(3 * attempt)
+                continue
+            body = response.content or b""
+            if response.status_code == 200 and (
+                    body[:3] == b"\xff\xd8\xff" or body[:8] == b"\x89PNG\r\n\x1a\n"):
+                if len(body) < 2000:
+                    last_error = "response too small"
+                    attempt += 1
+                    continue
+                dest.write_bytes(body)
+                return dest
+            if response.status_code in (404, 410):
+                last_error = f"{model}: HTTP {response.status_code}"
+                break  # unknown/retired model id — try the next one
+            if response.status_code == 503 and loading_waits < 4:
+                # Cold start: the model loads on demand; the API tells us
+                # how long to wait. This does not consume an attempt.
+                try:
+                    wait = float(response.json().get("estimated_time", 20))
+                except (ValueError, AttributeError):
+                    wait = 20.0
+                wait = min(max(wait, 5.0), 60.0)
+                print(f"  [image] huggingface {model} is cold-starting — "
+                      f"waiting {wait:.0f}s")
+                time.sleep(wait)
+                loading_waits += 1
+                continue
+            if response.status_code in (429, 500, 502, 503, 504):
+                last_error = f"{model}: HTTP {response.status_code}: {response.text[:120]}"
+                attempt += 1
+                if attempt <= attempts:
+                    delay = min(2 ** attempt + random.uniform(0, 1), 30.0)
+                    print(f"  [image] huggingface {model}: HTTP {response.status_code}, "
+                          f"retry in {delay:.0f}s")
+                    time.sleep(delay)
+                continue
+            if response.status_code == 200:  # JSON error with HTTP 200
+                last_error = f"{model}: {body[:140]!r}"
+                attempt += 1
+                continue
+            # Other 4xx = bad token/permissions — retrying is pointless.
+            raise RuntimeError(f"huggingface rejected (HTTP {response.status_code}): "
+                               f"{response.text[:160]}")
+    raise RuntimeError(f"huggingface image failed: {last_error}")
+
+
+_FETCH = {
+    "pollinations": _pollinations_fetch,
+    "gemini": _gemini_fetch,
+    "huggingface": _huggingface_fetch,
+}
+
+
+# --- chain driver --------------------------------------------------------
+
+def generate_image(
+    prompt: str,
+    dest: Path,
+    cfg: Config,
+    seed: int | None = None,
+    attempts: int = 6,
+) -> Path:
+    """Generate one image, walking the provider chain until one delivers.
+
+    Providers missing their key are skipped silently; each failure prints a
+    note and the next provider is tried. The first usable provider gets the
+    full `attempts` budget, later ones get 3 quick tries each.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if seed is None:
+        seed = int(hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:8], 16) % 100000
+    chain = [name for name in resolve_chain(cfg) if provider_ready(name, cfg)[0]]
+    skipped = [name for name in resolve_chain(cfg) if not provider_ready(name, cfg)[0]]
+    if not chain:
+        reasons = "; ".join(f"{name}: {provider_ready(name, cfg)[1]}"
+                            for name in resolve_chain(cfg))
+        raise RuntimeError(f"no image provider usable ({reasons})")
+    failures: list[str] = []
+    for index, name in enumerate(chain):
+        tries = attempts if index == 0 else 3
+        try:
+            _FETCH[name](prompt, dest, cfg, seed, tries)
+            if index > 0:
+                print(f"  [image] {name} covered after {chain[index - 1]} failed")
+            return dest
+        except Exception as exc:
+            failures.append(f"{name}: {exc}")
+            if index < len(chain) - 1:
+                print(f"  [image] {name} failed — trying {chain[index + 1]} "
+                      f"({str(exc)[:110]})")
+    if skipped:
+        failures.append(f"skipped ({', '.join(skipped)}: no key)")
+    raise RuntimeError("all image providers failed: " + " | ".join(failures))
+
+
 def generate_scene_images(script, cfg: Config, out_dir: Path) -> list[list[Path]]:
     """Generate images_per_scene images per scene. Returns paths grouped by scene.
 
-    Downloads run on ai.image_workers threads, but request *starts* are
-    serialised by the rate-limit pacer (~1 per 15s for anonymous use), so
-    extra workers only overlap download time — they don't multiply speed.
-    Results are re-sorted into scene/slot order before returning, so
+    Each image walks the provider chain (primary, then fallbacks) until one
+    provider delivers. Downloads run on ai.image_workers threads, but request
+    *starts* are serialised by the rate-limit pacer (~1 per 15s for anonymous
+    use), so extra workers only overlap download time — they don't multiply
+    speed. Results are re-sorted into scene/slot order before returning, so
     callers see deterministic output.
     """
     import concurrent.futures
 
+    print(f"  [image] providers: {describe_chain(cfg)}")
     out_dir.mkdir(parents=True, exist_ok=True)
     per_scene = cfg.images_per_scene
     shots = style_spec(cfg.style)["shots"]

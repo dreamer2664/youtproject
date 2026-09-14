@@ -112,6 +112,9 @@ def cmd_preflight(cfg, args) -> int:
         f"{cfg.target_seconds}s target, {cfg.images_per_scene} images/scene, "
         f"style {cfg.style}, subtitles {'on' if cfg.subtitles_enabled else 'off'}"
     )
+    from images import describe_chain
+
+    ok(f"images: {describe_chain(cfg)}")
     if shutil.which("ffmpeg"):
         from assembler import _ffmpeg_has_filter, drawtext_selftest
 

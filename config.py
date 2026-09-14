@@ -23,6 +23,10 @@ FORMATS: dict[str, tuple[int, int]] = {
 # Art directions (video.style). images.STYLES holds the prompt text for each.
 STYLES = ("photoreal", "cartoon", "stickman")
 
+# Image providers for images.py. The chain is ai.image_provider plus
+# ai.image_fallbacks; providers without their key are skipped, never fatal.
+IMAGE_PROVIDERS = ("pollinations", "gemini", "huggingface")
+
 DEFAULTS: dict[str, Any] = {
     "channel": {
         "topic": "unusual true stories from maritime history",
@@ -75,15 +79,28 @@ DEFAULTS: dict[str, Any] = {
         "provider": "gemini",
         "gemini_api_key": "",
         "gemini_model": "gemini-flash-latest",
+        # Primary image provider + ordered fallbacks (IMAGE_PROVIDERS).
+        # Fallbacks missing their key are skipped automatically — e.g. with
+        # just a Gemini key, "huggingface" is noted and skipped, never fatal.
         "image_provider": "pollinations",
+        "image_fallbacks": ["gemini", "huggingface"],
         # Seconds to wait per image before giving up.
         "image_timeout": 90,
-        # "turbo" is ~5x faster than "flux" and looks the same at Shorts
-        # resolution under the Ken Burns zoom. Set "flux" for max quality.
-        "image_model": "turbo",
-        # Parallel image downloads. Keep at 1: anonymous Pollinations
-        # allows ~1 request per 15s (extra workers only earn 429s) and
-        # the request pacer serialises downloads anyway.
+        # Pollinations model. "flux" is free and unlimited (recommended);
+        # "turbo" is faster but metered — anonymous turbo is throttled hard,
+        # so use it only with a pollinations_token set.
+        "image_model": "flux",
+        # Optional free token from https://auth.pollinations.ai — raises the
+        # anonymous ~1 req/15s limit to ~1 req/5s and removes the watermark.
+        # Or export POLLINATIONS_TOKEN.
+        "pollinations_token": "",
+        # Free token from https://huggingface.co/settings/tokens (read role
+        # is enough) — enables the Hugging Face image fallback.
+        # Or export HF_TOKEN.
+        "huggingface_token": "",
+        # Parallel image downloads. The built-in pacer spaces request starts
+        # (~1/15s anonymous Pollinations, ~1/5s with token), so extra workers
+        # only overlap download time. Keep at 1.
         "image_workers": 1,
     },
     "telegram": {
@@ -474,8 +491,38 @@ class Config:
             return 90
 
     @property
+    def image_provider(self) -> str:
+        """Primary image provider; garbage in -> 'pollinations', never crash."""
+        name = str(self.data["ai"].get("image_provider", "pollinations")).lower()
+        return name if name in IMAGE_PROVIDERS else "pollinations"
+
+    @property
+    def image_fallbacks(self) -> list[str]:
+        """Ordered fallback providers; junk names, dupes, primary dropped."""
+        raw = self.data["ai"].get("image_fallbacks") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        out: list[str] = []
+        for name in raw:
+            clean = str(name).lower()
+            if (clean in IMAGE_PROVIDERS and clean != self.image_provider
+                    and clean not in out):
+                out.append(clean)
+        return out
+
+    @property
     def image_model(self) -> str:
-        return str(self.data["ai"].get("image_model") or "turbo")
+        return str(self.data["ai"].get("image_model") or "flux")
+
+    @property
+    def pollinations_token(self) -> str:
+        return (os.environ.get("POLLINATIONS_TOKEN")
+                or str(self.data["ai"].get("pollinations_token") or "")).strip()
+
+    @property
+    def huggingface_token(self) -> str:
+        return (os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
+                or str(self.data["ai"].get("huggingface_token") or "")).strip()
 
     @property
     def image_workers(self) -> int:

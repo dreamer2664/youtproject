@@ -397,6 +397,69 @@ def t_gemini_fallback_order():
     assert len(set(GeminiProvider.FALLBACK_MODELS)) == len(GeminiProvider.FALLBACK_MODELS)
 
 
+def t_image_chain():
+    from images import describe_chain, provider_ready, resolve_chain
+
+    cfg = tmp_cfg()
+    assert cfg.image_provider == "pollinations"
+    assert cfg.image_fallbacks == ["gemini", "huggingface"]
+    assert cfg.image_model == "flux"
+    assert resolve_chain(cfg) == ["pollinations", "gemini", "huggingface"]
+    assert provider_ready("pollinations", cfg) == (True, "anonymous")
+    assert provider_ready("gemini", cfg)[0] is False
+    assert provider_ready("huggingface", cfg)[0] is False
+    assert "skipped" in describe_chain(cfg)
+    cfg.data["ai"]["image_provider"] = "nonsense"  # garbage -> pollinations
+    assert cfg.image_provider == "pollinations"
+    cfg.data["ai"]["image_provider"] = "gemini"
+    cfg.data["ai"]["image_fallbacks"] = ["gemini", "pollinations", "bogus", "pollinations"]
+    assert cfg.image_fallbacks == ["pollinations"]  # primary + dupes + junk dropped
+    assert resolve_chain(cfg) == ["gemini", "pollinations"]
+    cfg.data["ai"]["gemini_api_key"] = "k"
+    assert provider_ready("gemini", cfg)[0] is True
+    assert "skipped" not in describe_chain(cfg)  # both usable now
+    cfg.data["ai"]["image_fallbacks"] = ["huggingface"]
+    assert describe_chain(cfg) == "gemini → huggingface (no Hugging Face token — skipped)"
+
+
+def t_image_builders():
+    import base64
+
+    from images import (gemini_extract, gemini_payload, huggingface_payload,
+                        huggingface_size, pollinations_request)
+
+    cfg = tmp_cfg()
+    url, params, headers = pollinations_request("a cat", cfg, 7)
+    assert "image.pollinations.ai" in url and params["model"] == "flux"
+    assert params["seed"] == 7 and headers == {}
+    cfg.data["ai"]["pollinations_token"] = "tok123"
+    _, _, headers = pollinations_request("a cat", cfg, 7)
+    assert headers == {"Authorization": "Bearer tok123"}
+    payload = gemini_payload("a cat")
+    assert payload["generationConfig"]["responseModalities"] == ["IMAGE", "TEXT"]
+    fake = {"candidates": [{"content": {"parts": [
+        {"inlineData": {"mimeType": "image/png",
+                        "data": base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"x" * 3000).decode()}}
+    ]}}]}
+    assert gemini_extract(fake)[:8] == b"\x89PNG\r\n\x1a\n"
+    for bad in ({"candidates": [{"content": {"parts": [{"text": "nope"}]}}]},
+                {"promptFeedback": {"blockReason": "SAFETY"}}, {}):
+        try:
+            gemini_extract(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"text-only/blocked/empty should raise: {bad}")
+    try:
+        gemini_extract({"promptFeedback": {"blockReason": "SAFETY"}})
+    except ValueError as exc:
+        assert "SAFETY" in str(exc)
+    width, height = huggingface_size(cfg)  # portrait default
+    assert (width, height) == (576, 1024), (width, height)
+    hp = huggingface_payload("a cat", cfg, 9)
+    assert hp["parameters"]["seed"] == 9 and hp["parameters"]["width"] == 576
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -417,6 +480,8 @@ def main() -> int:
         ("generate_rejects_bad_count", t_generate_rejects_bad_count),
         ("mux_builder", t_mux_builder),
         ("gemini_fallback_order", t_gemini_fallback_order),
+        ("image_chain", t_image_chain),
+        ("image_builders", t_image_builders),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:
