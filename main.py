@@ -110,7 +110,7 @@ def cmd_preflight(cfg, args) -> int:
     ok(
         f"default video: {cfg.format} {cfg.width}x{cfg.height}, "
         f"{cfg.target_seconds}s target, {cfg.images_per_scene} images/scene, "
-        f"subtitles {'on' if cfg.subtitles_enabled else 'off'}"
+        f"style {cfg.style}, subtitles {'on' if cfg.subtitles_enabled else 'off'}"
     )
     if shutil.which("ffmpeg"):
         from assembler import _ffmpeg_has_filter
@@ -199,11 +199,13 @@ def cmd_generate(cfg, args) -> int:
         cfg.data["video"]["images_per_scene"] = args.images_per_scene
     if args.no_subs:
         cfg.data["subtitles"]["enabled"] = False
+    if args.style is not None:
+        cfg.data["video"]["style"] = args.style
 
     print(
         f"Settings for this run: {cfg.format} {cfg.width}x{cfg.height}, "
         f"~{cfg.target_seconds}s, {cfg.images_per_scene} images/scene, "
-        f"subtitles {'on' if cfg.subtitles_enabled else 'off'}\n"
+        f"style {cfg.style}, subtitles {'on' if cfg.subtitles_enabled else 'off'}\n"
     )
 
     provider = get_provider(cfg)
@@ -223,13 +225,17 @@ def cmd_generate(cfg, args) -> int:
 
         try:
             print("  1/5 script")
-            script = provider.generate(cfg, args.topic)
+            # Pass the (possibly variation-decorated) topic, not the raw CLI
+            # value, so --count N really yields N different scripts.
+            script = provider.generate(cfg, topic)
             from factcheck import check_script
 
             fact_report = check_script(script, cfg)
-            from cta import next_cta
+            from cta import commit_cta, next_cta
 
-            cta_voice, cta_overlay_text, cta_num = next_cta(cfg)
+            # commit=False: the rotation counter only advances once this
+            # render succeeds (see commit_cta below), so failures waste no CTA.
+            cta_voice, cta_overlay_text, cta_num = next_cta(cfg, commit=False)
             if cta_voice:
                 script.scenes[-1].narration = (
                     f"{script.scenes[-1].narration} {cta_voice}"
@@ -356,6 +362,8 @@ def cmd_generate(cfg, args) -> int:
                 video_file=str(out_path),
                 meta_file=str(meta_path),
             )
+            if cta_voice:
+                commit_cta(cfg)  # rotation advances only on success
             print(f"  \u2705 {out_path.name}  {total:.0f}s  {size_mb:.1f} MB")
 
             if not args.keep_work:
@@ -545,6 +553,7 @@ def cmd_batch(cfg, args) -> int:
     gen_args = argparse.Namespace(
         topic=None, count=1, seconds=args.seconds, format=args.format,
         images_per_scene=args.images_per_scene, no_subs=args.no_subs,
+        style=args.style,
         keep_work=args.keep_work, keep_going=True, verbose=args.verbose,
     )
     results: list[tuple[str, str, str]] = []  # topic, status, detail
@@ -681,6 +690,7 @@ def cmd_schedule(cfg, args) -> int:
         gen_args = argparse.Namespace(
             topic=topic, count=1, seconds=args.seconds, format=args.format,
             images_per_scene=args.images_per_scene, no_subs=args.no_subs,
+            style=args.style,
             keep_work=args.keep_work, keep_going=True, verbose=args.verbose,
         )
         before = {job.id for job in Queue(cfg.state_file).jobs}
@@ -745,8 +755,11 @@ def cmd_bot(cfg, args) -> int:
     if not cfg.telegram_enabled:
         print("NOTE: telegram.enabled is false — starting anyway. "
               "Set it true to silence this.\n")
+    if args.style is not None:
+        cfg.data["video"]["style"] = args.style
     print(f"Video settings for bot renders: {cfg.format} {cfg.width}x{cfg.height}, "
-          f"~{cfg.target_seconds}s, {cfg.images_per_scene} images/scene.\n")
+          f"~{cfg.target_seconds}s, {cfg.images_per_scene} images/scene, "
+          f"style {cfg.style}.\n")
     from bot import PhoneBot
     try:
         PhoneBot(cfg, seconds=args.seconds, fmt=args.format).run_forever()
@@ -803,7 +816,10 @@ def main() -> int:
     p.add_argument("--format", choices=["landscape", "portrait"],
                    help="landscape = regular video, portrait = Shorts (1080x1920)")
     p.add_argument("--images-per-scene", type=int, dest="images_per_scene",
-                   help="pictures per narrated scene, 1-6 (default 2)")
+                   help="pictures per narrated scene, 1-6 (default 3)")
+    p.add_argument("--style", choices=["photoreal", "cartoon", "stickman"],
+                   help="art direction: photoreal (default), cartoon, or "
+                        "stickman whiteboard explainer")
     p.add_argument("--no-subs", action="store_true", help="skip subtitles for this run")
     p.add_argument("--keep-work", action="store_true", help="keep intermediate files")
     p.add_argument("--keep-going", action="store_true", help="continue after a failure")
@@ -818,6 +834,7 @@ def main() -> int:
     p.add_argument("--seconds", type=int, help="target length, e.g. 45 for a Short")
     p.add_argument("--format", choices=["landscape", "portrait"])
     p.add_argument("--images-per-scene", type=int, dest="images_per_scene")
+    p.add_argument("--style", choices=["photoreal", "cartoon", "stickman"])
     p.add_argument("--no-subs", action="store_true")
     p.add_argument("--keep-work", action="store_true")
     p.add_argument("--verbose", action="store_true")
@@ -835,8 +852,9 @@ def main() -> int:
     p.add_argument("--at", default=None, metavar="HH:MM,...",
                    help='fixed clock times, e.g. "08:00,20:00"')
     p.add_argument("--seconds", type=int, default=None)
-    p.add_argument("--format", default=None)
+    p.add_argument("--format", default=None, choices=["landscape", "portrait"])
     p.add_argument("--images-per-scene", type=int, default=None)
+    p.add_argument("--style", default=None, choices=["photoreal", "cartoon", "stickman"])
     p.add_argument("--no-subs", action="store_true")
     p.add_argument("--keep-work", action="store_true")
     p.add_argument("--verbose", action="store_true")
@@ -848,6 +866,8 @@ def main() -> int:
     p.add_argument("--seconds", type=int, help="target length for bot renders")
     p.add_argument("--format", choices=["landscape", "portrait"],
                    help="orientation for bot renders")
+    p.add_argument("--style", choices=["photoreal", "cartoon", "stickman"],
+                   help="art direction for bot renders")
 
     p = sub.add_parser("package", help="build upload-ready kits")
     p.add_argument("--id", help="package only the job with this id (prefix ok)")

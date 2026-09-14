@@ -20,25 +20,41 @@ def _state_path(cfg: Config) -> Path:
     return cfg.state_file.parent / STATE_NAME
 
 
-def next_cta(cfg: Config) -> tuple[str | None, str | None, int]:
+def _read_index(cfg: Config) -> int:
+    try:
+        return int(json.loads(_state_path(cfg).read_text(encoding="utf-8")).get("index", 0))
+    except (OSError, ValueError, AttributeError):
+        return 0
+
+
+def _write_index(cfg: Config, index: int) -> None:
+    try:
+        _state_path(cfg).write_text(json.dumps({"index": index}), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def next_cta(cfg: Config, commit: bool = True) -> tuple[str | None, str | None, int]:
     """Return (voice_line, overlay_text, number), or (None, None, 0) if off.
 
-    `number` is 1-based: the nth video to carry a CTA. The counter only
-    advances when a line is actually handed out.
+    `number` is 1-based: the nth video to carry a CTA. With commit=False the
+    counter is left alone — call commit_cta() once the video that carries
+    the line actually renders, so a failed run does not eat a CTA line.
     """
     lines = cfg.cta_lines
     if not cfg.cta_enabled or not lines:
         return None, None, 0
-    index = 0
-    try:
-        index = int(json.loads(_state_path(cfg).read_text(encoding="utf-8")).get("index", 0))
-    except (OSError, ValueError, AttributeError):
-        index = 0
+    index = _read_index(cfg)
     overlays = cfg.cta_overlay_lines or [DEFAULT_OVERLAY]
     voice = lines[index % len(lines)]
     overlay = overlays[index % len(overlays)]
-    try:
-        _state_path(cfg).write_text(json.dumps({"index": index + 1}), encoding="utf-8")
-    except OSError:
-        pass
+    if commit:
+        _write_index(cfg, index + 1)
     return voice, overlay, index + 1
+
+
+def commit_cta(cfg: Config) -> None:
+    """Advance the rotation counter (call after a CTA-carrying render succeeds)."""
+    if not cfg.cta_enabled or not cfg.cta_lines:
+        return
+    _write_index(cfg, _read_index(cfg) + 1)

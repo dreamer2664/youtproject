@@ -236,7 +236,7 @@ class PhoneBot:
         before = {job.id for job in Queue(self.cfg.state_file).jobs}
         gen_args = argparse.Namespace(
             topic=topic, count=1, seconds=self.seconds, format=self.fmt,
-            images_per_scene=None, no_subs=False, keep_work=False,
+            images_per_scene=None, no_subs=False, style=None, keep_work=False,
             keep_going=False, verbose=False,
         )
         stop = threading.Event()
