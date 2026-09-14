@@ -6,6 +6,7 @@ file, no quota and no audit. The only secret is the optional free Gemini key.
 
 from __future__ import annotations
 
+import copy
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,8 @@ DEFAULTS: dict[str, Any] = {
         "format": "portrait",
         "fps": 30,
         "zoom": 1.18,
+        # Reserved for future scene transitions. Scenes currently cut hard
+        # (with a whoosh SFX); this value is clamped, never fatal, if mis-typed.
         "transition": 0.5,
         # Images per narrated scene. 3 is the default; each extra image
         # costs one more (free) image generation but cuts much denser.
@@ -188,7 +191,11 @@ class Config:
 
     @property
     def target_seconds(self) -> int:
-        return int(self.data["channel"]["target_seconds"])
+        """Target length. Garbage in -> 65 (never crashes)."""
+        try:
+            return max(5, min(3600, int(self.data["channel"]["target_seconds"])))
+        except (ValueError, TypeError):
+            return 65
 
     @property
     def voice(self) -> str:
@@ -241,19 +248,34 @@ class Config:
 
     @property
     def fps(self) -> int:
-        return int(self.data["video"]["fps"])
+        """Frames per second. Garbage in -> 30 (never crashes)."""
+        try:
+            return max(1, min(60, int(self.data["video"]["fps"])))
+        except (ValueError, TypeError):
+            return 30
 
     @property
     def zoom(self) -> float:
-        return float(self.data["video"]["zoom"])
+        """Ken Burns zoom. Garbage in -> 1.18 (never crashes)."""
+        try:
+            return max(1.0, min(2.0, float(self.data["video"]["zoom"])))
+        except (ValueError, TypeError):
+            return 1.18
 
     @property
     def transition(self) -> float:
-        return float(self.data["video"]["transition"])
+        """Reserved transition length. Garbage in -> 0.5 (never crashes)."""
+        try:
+            return max(0.0, min(5.0, float(self.data["video"]["transition"])))
+        except (ValueError, TypeError):
+            return 0.5
 
     @property
     def images_per_scene(self) -> int:
-        return max(1, min(6, int(self.data["video"].get("images_per_scene", 2))))
+        try:
+            return max(1, min(6, int(self.data["video"].get("images_per_scene", 3))))
+        except (ValueError, TypeError):
+            return 3
 
     @property
     def style(self) -> str:
@@ -445,7 +467,11 @@ class Config:
 
     @property
     def image_timeout(self) -> int:
-        return int(self.data["ai"]["image_timeout"])
+        """Seconds to wait per image. Garbage in -> 90 (never crashes)."""
+        try:
+            return max(10, min(600, int(self.data["ai"]["image_timeout"])))
+        except (ValueError, TypeError):
+            return 90
 
     @property
     def image_model(self) -> str:
@@ -486,7 +512,10 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
     root = Path(path).resolve().parent if path else Path.cwd().resolve()
     cfg_path = Path(path) if path else root / "config.yaml"
 
-    data = DEFAULTS
+    # Deep copies throughout: Config instances must never share (or mutate)
+    # the module-level DEFAULTS, or one run's CLI overrides would leak into
+    # the next — especially in long-lived processes (schedule/bot).
+    data = copy.deepcopy(DEFAULTS)
     if cfg_path.exists():
         try:
             with open(cfg_path, "r", encoding="utf-8") as handle:
@@ -497,7 +526,7 @@ def load_config(path: str | os.PathLike | None = None) -> Config:
                 f"Usually a missing quote or wrong indentation — "
                 f"compare the flagged line with config.example.yaml."
             ) from exc
-        data = _deep_merge(DEFAULTS, user)
+        data = _deep_merge(copy.deepcopy(DEFAULTS), user)
 
     fmt = str(data["video"].get("format", "landscape")).lower()
     if fmt not in FORMATS:

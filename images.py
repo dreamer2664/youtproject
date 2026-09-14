@@ -202,7 +202,8 @@ def generate_image(
             if response.status_code == 429:
                 raise _RateLimited(_retry_after_seconds(response))
             if response.status_code != 200:
-                raise RuntimeError(f"HTTP {response.status_code}")
+                detail = (response.text or "").strip().replace("\n", " ")[:160]
+                raise RuntimeError(f"HTTP {response.status_code}" + (f": {detail}" if detail else ""))
             body = response.content
             # Pollinations returns an error payload with a 200 on some failures.
             if len(body) < 2000 or not (body[:3] == b"\xff\xd8\xff" or body[:8] == b"\x89PNG\r\n\x1a\n"):
@@ -237,10 +238,11 @@ def generate_image(
 def generate_scene_images(script, cfg: Config, out_dir: Path) -> list[list[Path]]:
     """Generate images_per_scene images per scene. Returns paths grouped by scene.
 
-    Downloads run concurrently (ai.image_workers threads) — Pollinations
-    queues each request server-side, so 3 parallel requests finish roughly
-    3x faster than one-at-a-time. Results are re-sorted into scene/slot
-    order before returning, so callers see deterministic output.
+    Downloads run on ai.image_workers threads, but request *starts* are
+    serialised by the rate-limit pacer (~1 per 15s for anonymous use), so
+    extra workers only overlap download time — they don't multiply speed.
+    Results are re-sorted into scene/slot order before returning, so
+    callers see deterministic output.
     """
     import concurrent.futures
 

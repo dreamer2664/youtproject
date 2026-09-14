@@ -124,9 +124,17 @@ class GeminiProvider:
     RETRYABLE = {429, 500, 502, 503, 504}
     MAX_RETRIES = 6
     MAX_DELAY = 45.0
-    # Tried, in order, if the configured model keeps failing with 5xx.
-    # These are the lighter models, which stay available when flash saturates.
-    FALLBACK_MODELS = ["gemini-flash-lite-latest", "gemini-3.1-flash-lite"]
+    # Tried, in order, if the configured model keeps failing (5xx saturation
+    # or 404 renames — Google retires model IDs regularly). Pinned stable IDs
+    # first (verified on the free tier), rolling aliases last. The user's
+    # configured model is always tried before any of these.
+    FALLBACK_MODELS = [
+        "gemini-2.5-flash",
+        "gemini-3-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-3.1-flash-lite",
+        "gemini-flash-lite-latest",
+    ]
 
     def __init__(self, api_key: str, model: str = "gemini-flash-latest") -> None:
         if not api_key:
@@ -195,8 +203,9 @@ class GeminiProvider:
 
         if last_status == 404:
             raise RuntimeError(
-                "No Gemini model in the fallback chain exists. Set ai.gemini_model to "
-                f"'gemini-flash-latest'. Last error: {last_error}"
+                "No Gemini model in the fallback chain exists (Google may have "
+                "renamed them again). Set ai.gemini_model to a current free-tier "
+                f"ID such as 'gemini-2.5-flash'. Last error: {last_error}"
             )
         raise RuntimeError(
             f"Gemini unavailable after trying {len(chain)} model(s) with retries "
@@ -379,20 +388,19 @@ class TemplateProvider:
         # When the rotating CTA is on, main.py appends this video's line —
         # the template must not add its own or the ending repeats itself.
         cta = "" if cfg.cta_enabled else "Follow for part two."
-        shots = [
-            "extreme close-up", "wide establishing shot", "dramatic low angle",
-            "close-up detail", "aerial view", "medium shot from a new angle",
-            "moody cinematic lighting", "high angle view",
-        ]
         spec = style_spec(cfg.style)
-        prefix = spec["direction"] or "cinematic photorealistic"
-        if cfg.style != "photoreal":
-            shots = spec["shots"]
+        shots = spec["shots"]
+        # No art-direction prefix here: images.stylize() prepends it at
+        # render time. Prefixing here too would duplicate it ("flat 2D
+        # vector cartoon, flat 2D vector cartoon, ...") and waste the
+        # 900-char prompt budget. Photoreal gets its cinematic lead-in
+        # here instead, since stylize() adds nothing for photoreal.
+        prefix = "" if cfg.style != "photoreal" else "cinematic photorealistic, "
         picked = [b for b in (core * 2)[: max(2, count - 1)] + [cta] if b]
         scenes = [
             Scene(
                 narration=beat,
-                image_prompt=f"{prefix}, {shots[i % len(shots)]} depicting {topic}",
+                image_prompt=f"{prefix}{shots[i % len(shots)]} depicting {topic}",
             )
             for i, beat in enumerate(picked)
         ]

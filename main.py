@@ -117,16 +117,6 @@ def cmd_preflight(cfg, args) -> int:
 
         if _ffmpeg_has_filter("subtitles"):
             ok("subtitle burn-in available")
-        else:
-            warn(
-                "subtitle burn-in unavailable in this FFmpeg build",
-                "captions.srt will still be included in every kit for manual upload",
-            )
-
-    if shutil.which("ffmpeg"):
-        from assembler import _ffmpeg_has_filter as _has_subs
-
-        if _has_subs("subtitles"):
             if _subtitle_render_test(cfg):
                 ok("subtitle render test passed (burned text is visible)")
             else:
@@ -135,6 +125,11 @@ def cmd_preflight(cfg, args) -> int:
                     "font lookup failed — videos will lack burned subs "
                     "(captions.srt still works)",
                 )
+        else:
+            warn(
+                "subtitle burn-in unavailable in this FFmpeg build",
+                "captions.srt will still be included in every kit for manual upload",
+            )
 
     # 6. phone control (only when enabled)
     if cfg.telegram_enabled:
@@ -211,6 +206,8 @@ def cmd_generate(cfg, args) -> int:
     provider = get_provider(cfg)
     queue = Queue(cfg.state_file)
     count = args.count
+    if count < 1:
+        die(f"--count must be at least 1 (got {count}).")
 
     for number in range(1, count + 1):
         topic = args.topic or cfg.topic
@@ -240,10 +237,10 @@ def cmd_generate(cfg, args) -> int:
                 script.scenes[-1].narration = (
                     f"{script.scenes[-1].narration} {cta_voice}"
                 )
+            est_seconds = script.estimated_seconds(130.0 * cfg.speech_rate_factor)
             print(f"      title   : {script.title}")
             print(f"      scenes  : {len(script.scenes)}")
-            print(f"      est. len: {script.estimated_seconds(130.0 * cfg.speech_rate_factor)}s (target {cfg.target_seconds}s)")
-            est_seconds = script.estimated_seconds(130.0 * cfg.speech_rate_factor)
+            print(f"      est. len: {est_seconds}s (target {cfg.target_seconds}s)")
             if est_seconds < cfg.target_seconds * 0.7:
                 print(f"      warning   : script is short ({est_seconds:.0f}s vs {cfg.target_seconds}s target) —")
                 print("                    the fallback model undershoots; re-run later for a full-length video")

@@ -206,6 +206,7 @@ Shorts, long-form and art styles without touching the config.
 | `package.py` | Upload kits + checklists + TikTok/Reels captions |
 | `jobqueue.py` | `state.json` job tracking |
 | `bot.py` | Telegram phone control (polls, renders, delivers) |
+| `test_smoke.py` | Offline self-tests: `python test_smoke.py` (no keys/network needed) |
 | `UPLOAD-GUIDE.md` | The manual-upload walkthrough |
 | `hooks/pre-commit` | Blocks credentials from being committed |
 
