@@ -70,6 +70,14 @@ video:
   # Override one run with:  python main.py generate --images-per-scene 2
   images_per_scene: 3
 
+  # Art direction — one flag flips the whole genre:
+  #   photoreal = cinematic documentary look (default)
+  #   cartoon   = flat 2D vector toon, bold outlines, vivid colors
+  #   stickman  = whiteboard stick-figure explainer (the viral TikTok look:
+  #               black stick figures + hand-drawn props on paper texture)
+  # Override one run with:  python main.py generate --style stickman
+  style: "photoreal"
+
 subtitles:
   # TikTok-style karaoke captions: big centered text with a word-by-word
   # yellow highlight, burned into the video. A captions.srt is ALSO

@@ -107,6 +107,8 @@ python main.py generate --topic "..."   # override the channel topic for one run
 python main.py generate --seconds 45    # target ~45 seconds
 python main.py generate --format portrait --seconds 45   # vertical Short
 python main.py generate --images-per-scene 3             # denser cuts
+python main.py generate --style stickman  # whiteboard stickman explainer look
+python main.py generate --style cartoon   # flat 2D vector toon look
 python main.py generate --no-subs       # skip subtitles for one run
 python main.py batch --topics topics.txt  # render a whole list overnight
 python main.py batch --count 7          # 7 auto-variations of your topic
@@ -178,14 +180,15 @@ Everything lives in `config.yaml`. The important keys:
 | `channel.category_id` | Prefilled into each video's checklist. |
 | `video.format` | `landscape` (1920x1080) or `portrait` (1080x1920 Shorts). |
 | `video.images_per_scene` | Pictures per narrated scene, 1–6. Higher = denser cuts. |
+| `video.style` | Art direction: `photoreal` (default), `cartoon`, or `stickman` whiteboard explainer. |
 | `subtitles.enabled` | Karaoke captions (word highlight) burned in. Leave on. |
 | `disclosure.append_to_description` | Adds the AI-disclosure footer to descriptions. Leave on. |
 | `ai.provider` | `gemini` (good scripts) or `template` (keyless fallback). |
 | `ai.gemini_model` | `gemini-flash-latest` tracks the current model automatically. |
 
 Every run setting has a CLI override too (`--seconds`, `--format`,
-`--images-per-scene`, `--no-subs`, `--topic`), so you can mix Shorts and
-long-form without touching the config.
+`--images-per-scene`, `--style`, `--no-subs`, `--topic`), so you can mix
+Shorts, long-form and art styles without touching the config.
 
 ---
 

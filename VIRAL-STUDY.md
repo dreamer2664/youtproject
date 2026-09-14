@@ -49,6 +49,10 @@ sentence-level cuts, mascot consistency. Nothing here requires paid AI video
 (Runway/Veo/Pika) — the diamonds prove that would be overkill.
 
 ## Upgrade plan (proposal — finalize after all 10 entries)
+- P0 ✅ SHIPPED: `video.style` config flag + `--style` CLI override
+  (`photoreal` default | `cartoon` | `stickman`). Image prompts, Gemini script
+  brief and per-style shot framings all flip with it (images.py STYLES).
+  Default stays photoreal, so existing channels are untouched.
 - P0 cartoon style switch: image prompts + script brief flip from "photorealistic,
   cinematic" to flat-vector cartoon / whiteboard-stickman look. One config flag,
   instant genre flip. (Cheapest win on this page.)

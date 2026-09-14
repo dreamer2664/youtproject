@@ -19,6 +19,9 @@ FORMATS: dict[str, tuple[int, int]] = {
     "portrait": (1080, 1920),
 }
 
+# Art directions (video.style). images.STYLES holds the prompt text for each.
+STYLES = ("photoreal", "cartoon", "stickman")
+
 DEFAULTS: dict[str, Any] = {
     "channel": {
         "topic": "unusual true stories from maritime history",
@@ -43,6 +46,12 @@ DEFAULTS: dict[str, Any] = {
         # Images per narrated scene. 3 is the default; each extra image
         # costs one more (free) image generation but cuts much denser.
         "images_per_scene": 3,
+        # Art direction for every generated image. One flag flips the genre:
+        #   photoreal = cinematic documentary look (default)
+        #   cartoon   = flat 2D vector toon
+        #   stickman  = whiteboard stick-figure explainer (viral TikTok look)
+        # One-off override:  python main.py generate --style stickman
+        "style": "photoreal",
     },
     "subtitles": {
         # Word-timed subtitles, burned into the video. A captions.srt is also
@@ -245,6 +254,12 @@ class Config:
     @property
     def images_per_scene(self) -> int:
         return max(1, min(6, int(self.data["video"].get("images_per_scene", 2))))
+
+    @property
+    def style(self) -> str:
+        """Art direction; garbage in -> 'photoreal' (never crashes)."""
+        name = str(self.data["video"].get("style", "photoreal")).lower()
+        return name if name in STYLES else "photoreal"
 
     @property
     def thumb_width(self) -> int:

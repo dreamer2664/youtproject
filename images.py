@@ -43,6 +43,82 @@ SHOT_STYLES = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Art direction (video.style). One config flag flips the whole genre:
+#   photoreal — cinematic documentary look (the default),
+#   cartoon   — flat 2D vector toon (mascot/brand friendly),
+#   stickman  — whiteboard stick-figure explainer (the viral TikTok look).
+# `direction` is PREPENDED to every final image prompt, so it steers any
+# script provider (Gemini or template) and survives Pollinations' 900-char
+# prompt cutoff. `brief` tells the Gemini script writer what to aim for in
+# its image_prompt fields. `shots` are the per-image framing variants —
+# camera-lens terms like "shallow depth of field" make no sense on a
+# whiteboard, so drawn styles use plain view changes.
+# ---------------------------------------------------------------------------
+STYLES: dict[str, dict] = {
+    "photoreal": {
+        "direction": "",
+        "brief": "Photorealistic, cinematic, specific. No text or watermarks in image.",
+        "shots": SHOT_STYLES,
+    },
+    "cartoon": {
+        "direction": (
+            "flat 2D vector cartoon illustration, bold clean outlines, "
+            "vivid solid colors, simple expressive shapes, no text, no watermark"
+        ),
+        "brief": (
+            "Flat 2D vector cartoon: bold outlines, vivid solid colors, simple "
+            "expressive shapes, one clear scene per image. No text or watermarks."
+        ),
+        "shots": [
+            "wide shot of the full scene",
+            "medium shot",
+            "close-up",
+            "side view",
+            "high angle view",
+            "new angle",
+            "centered composition",
+        ],
+    },
+    "stickman": {
+        # Wording tested against Pollinations: leading with "stick figure
+        # drawing, simple black stickman with round head and line limbs"
+        # yields the hand-drawn look; "whiteboard doodle" alone degenerates
+        # into abstract marker scribbles.
+        "direction": (
+            "stick figure drawing, simple black stick figures with round "
+            "heads and single-stroke line limbs in expressive poses, sparse "
+            "hand-drawn props, hand-drawn marker on off-white paper texture, "
+            "minimalist, no text, no watermark"
+        ),
+        "brief": (
+            "Stick figure drawing style: a NEW simple full scene per beat — "
+            "simple black stick figures with round heads and line limbs in "
+            "expressive poses, one or two hand-drawn props, marker on off-white "
+            "paper. No text or watermarks."
+        ),
+        "shots": [
+            "wide shot of the full scene",
+            "closer view",
+            "side view",
+            "new angle",
+            "centered composition",
+        ],
+    },
+}
+
+
+def style_spec(name: str) -> dict:
+    """The art-direction entry for a style name; unknown names -> photoreal."""
+    return STYLES.get(str(name).lower(), STYLES["photoreal"])
+
+
+def stylize(prompt: str, style: str) -> str:
+    """Prepend the style's direction so the final image matches video.style."""
+    direction = style_spec(style)["direction"]
+    return f"{direction}, {prompt}" if direction else prompt
+
+
 # Anonymous Pollinations allows roughly one request per 15 seconds — faster
 # than that and the API answers HTTP 429 (or, sneakier, HTTP 200 with a
 # placeholder image instead of yours). The pacer serialises request starts
@@ -170,13 +246,15 @@ def generate_scene_images(script, cfg: Config, out_dir: Path) -> list[list[Path]
 
     out_dir.mkdir(parents=True, exist_ok=True)
     per_scene = cfg.images_per_scene
+    shots = style_spec(cfg.style)["shots"]
     jobs: list[tuple[int, int, str, Path, int]] = []
     for index, scene in enumerate(script.scenes, start=1):
+        base = stylize(scene.image_prompt, cfg.style)
         for slot in range(per_scene):
             if per_scene > 1:
-                prompt = f"{scene.image_prompt}, {SHOT_STYLES[slot % len(SHOT_STYLES)]}"
+                prompt = f"{base}, {shots[slot % len(shots)]}"
             else:
-                prompt = scene.image_prompt
+                prompt = base
             name = f"scene_{index:02d}_{slot + 1}of{per_scene}_{_safe_slug(prompt)}.jpg"
             jobs.append((index, slot, prompt, out_dir / name, 1000 + index * 100 + slot))
 

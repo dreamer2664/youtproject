@@ -63,6 +63,7 @@ python main.py generate --format portrait --seconds 45   # vertical Short
 python main.py generate --seconds 120                    # 2-minute landscape video
 python main.py generate --topic "one-off idea here"      # single video outside your niche
 python main.py generate --images-per-scene 3             # more pictures, denser cuts
+python main.py generate --style stickman                 # whiteboard stickman look
 python main.py generate --no-subs                        # no subtitles for this run
 python main.py batch --topics topics.txt     # render a whole list overnight
 ```

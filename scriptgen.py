@@ -19,6 +19,7 @@ from typing import Protocol
 import requests
 
 from config import Config
+from images import style_spec
 
 
 @dataclass
@@ -239,6 +240,7 @@ class GeminiProvider:
         scene_len = 10 if cfg.format == "portrait" else 20
         scene_count = max(3, min(12, round(target / scene_len)))
         word_budget = int(target * wpm / 60)
+        art_brief = style_spec(cfg.style)["brief"]
 
         prompt = f"""You are a script writer for a high-retention vertical video channel (TikTok, YouTube Shorts, Instagram Reels).
 
@@ -265,7 +267,7 @@ RETENTION RULES — follow all of them:
 - narration: plain spoken prose for a voiceover. No stage directions, no quotes
   inside the text, no markdown, no emoji.
 - image_prompt: a detailed visual description for an AI image generator matching
-  that scene. Photorealistic, cinematic, specific. No text or watermarks in image.
+  that scene. {art_brief}
 - title: curiosity-gap style, under 70 characters. No clickbait lies.
 - tags: 8 to 12 short search tags. Do not leave this empty.
 - Be factually careful. If a detail is uncertain, leave it out rather than invent it.
@@ -382,13 +384,15 @@ class TemplateProvider:
             "close-up detail", "aerial view", "medium shot from a new angle",
             "moody cinematic lighting", "high angle view",
         ]
+        spec = style_spec(cfg.style)
+        prefix = spec["direction"] or "cinematic photorealistic"
+        if cfg.style != "photoreal":
+            shots = spec["shots"]
         picked = [b for b in (core * 2)[: max(2, count - 1)] + [cta] if b]
         scenes = [
             Scene(
                 narration=beat,
-                image_prompt=(
-                    f"cinematic photorealistic {shots[i % len(shots)]} depicting {topic}"
-                ),
+                image_prompt=f"{prefix}, {shots[i % len(shots)]} depicting {topic}",
             )
             for i, beat in enumerate(picked)
         ]
