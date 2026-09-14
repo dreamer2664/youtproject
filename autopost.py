@@ -225,6 +225,58 @@ def upload_video(path: Path, cloud_name: str, upload_preset: str,
     raise BufferError(f"Cloudinary upload failed: {last}")
 
 
+def sign_upload_params(params: dict, api_secret: str) -> str:
+    """Cloudinary signed-upload signature (pure, tested).
+
+    SHA-1 of the &-joined, alphabetically sorted k=v pairs with the
+    api_secret appended. `file`, `cloud_name`, `resource_type` and
+    `api_key` are never part of the signature.
+    """
+    import hashlib
+
+    to_sign = "&".join(f"{key}={params[key]}" for key in sorted(params))
+    return hashlib.sha1((to_sign + api_secret).encode("utf-8")).hexdigest()
+
+
+def upload_video_signed(path: Path, cloud_name: str, api_key: str,
+                        api_secret: str, timeout: int = 600) -> str:
+    """Upload via signed params (api key + secret). Returns the secure_url."""
+    url = cloudinary_upload_url(cloud_name)
+    data = Path(path).read_bytes()  # read once so retries don't re-open
+    last = "unknown"
+    for attempt in range(1, 4):
+        stamp = int(time.time())
+        signature = sign_upload_params({"timestamp": stamp}, api_secret)
+        try:
+            response = requests.post(
+                url,
+                data={"api_key": api_key, "timestamp": stamp,
+                      "signature": signature},
+                files={"file": (Path(path).name, data, "video/mp4")},
+                timeout=timeout,
+            )
+        except Exception as exc:
+            last = str(exc)[:160]
+            print(f"  [autopost] upload attempt {attempt}/3 failed: {last[:100]}")
+            time.sleep(5 * attempt)
+            continue
+        if response.status_code == 200:
+            secure = response.json().get("secure_url")
+            if secure:
+                return secure
+            last = f"no secure_url in response: {response.text[:160]}"
+        elif response.status_code in (400, 401, 403):
+            # Config wrong (bad cloud name / key / secret) — no retry.
+            raise BufferError(
+                f"Cloudinary rejected the signed upload (HTTP {response.status_code}): "
+                f"{response.text[:200]} — check cloud_name/api_key/api_secret")
+        else:
+            last = f"HTTP {response.status_code}: {response.text[:160]}"
+        print(f"  [autopost] upload attempt {attempt}/3 failed: {last[:100]}")
+        time.sleep(5 * attempt)
+    raise BufferError(f"Cloudinary upload failed: {last}")
+
+
 def read_sidecar(video: Path) -> dict:
     """Title/description/tags from <video>.json or meta.json next to it."""
     for candidate in (video.with_suffix(".json"), video.parent / "meta.json"):

@@ -533,6 +533,15 @@ def t_autopost_builders():
         assert newest_video(tmpdir).name == "a.mp4"
         assert newest_video(tmpdir / "empty") is None
 
+    from autopost import sign_upload_params
+
+    sig1 = sign_upload_params({"timestamp": 123}, "secret")
+    assert sig1 == sign_upload_params({"timestamp": 123}, "secret")
+    assert len(sig1) == 40 and all(c in "0123456789abcdef" for c in sig1)
+    assert sign_upload_params({"timestamp": 124}, "secret") != sig1
+    assert sign_upload_params({"b": 2, "a": 1}, "s") == \
+        sign_upload_params({"a": 1, "b": 2}, "s")  # sorted before hashing
+
 
 def main() -> int:
     tests = [

@@ -832,13 +832,23 @@ def cmd_autopost(cfg, args) -> int:
             video_url = args.video_url
             print(f"  [autopost] using provided video URL")
         else:
-            if not (cfg.cloudinary_cloud_name and cfg.cloudinary_preset):
-                die("no video host configured. Set buffer.cloud_name + "
-                    "buffer.upload_preset (free Cloudinary unsigned preset — "
-                    "see config.example.yaml) or pass --video-url.")
+            if not cfg.cloudinary_cloud_name:
+                die("no video host configured. Set buffer.cloud_name plus an "
+                    "upload_preset (unsigned) or cloudinary_api_key/_secret "
+                    "(signed) — see config.example.yaml — or pass --video-url.")
             print(f"  [autopost] uploading to Cloudinary...")
-            video_url = upload_video(video, cfg.cloudinary_cloud_name,
-                                     cfg.cloudinary_preset)
+            if cfg.cloudinary_preset:
+                video_url = upload_video(video, cfg.cloudinary_cloud_name,
+                                         cfg.cloudinary_preset)
+            elif cfg.cloudinary_api_key and cfg.cloudinary_api_secret:
+                from autopost import upload_video_signed
+
+                video_url = upload_video_signed(
+                    video, cfg.cloudinary_cloud_name,
+                    cfg.cloudinary_api_key, cfg.cloudinary_api_secret)
+            else:
+                die("buffer.cloud_name is set but no credentials: add "
+                    "upload_preset (unsigned) or cloudinary_api_key/_secret.")
             print(f"  [autopost] hosted: {video_url}")
         client = BufferClient(cfg.buffer_api_key)
         orgs = client.organizations()

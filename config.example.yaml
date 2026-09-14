@@ -231,12 +231,20 @@ buffer:
 
   # Video hosting: Buffer only accepts videos by public URL, so autopost
   # uploads the mp4 first. Free Cloudinary account (no card required):
-  #   1. Sign up at https://cloudinary.com/users/register_free
-  #   2. Dashboard top bar -> copy your "Cloud name" below (or export
-  #      CLOUDINARY_CLOUD_NAME).
-  #   3. Settings (gear) -> Upload -> Upload presets -> Add upload preset:
-  #      name it (e.g. shorts), set Signing Mode to UNSIGNED, Save.
-  #      Paste the preset name below (or export CLOUDINARY_UPLOAD_PRESET).
+  # https://cloudinary.com/users/register_free
+  # Pick ONE of the two upload styles (preset wins if both are set):
+  #   A. UNSIGNED (simplest, no secret in your config):
+  #      1. Dashboard top bar -> copy "Cloud name" below (or export
+  #         CLOUDINARY_CLOUD_NAME).
+  #      2. Settings (gear) -> Upload -> Upload presets -> Add upload
+  #         preset: name it (e.g. shorts), Signing Mode UNSIGNED, Save.
+  #         Paste the preset name below (or export CLOUDINARY_UPLOAD_PRESET).
+  #   B. SIGNED (no preset to create): Dashboard top bar -> copy "Cloud
+  #      name", "API key", and reveal + copy the API secret (or export
+  #      CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET).
+  #      Prefer env vars for the secret over writing it in this file.
   # Or skip hosting entirely by passing --video-url to autopost.
   cloud_name: ""
   upload_preset: ""
+  cloudinary_api_key: ""
+  cloudinary_api_secret: ""

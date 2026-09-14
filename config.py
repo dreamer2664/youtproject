@@ -116,10 +116,15 @@ DEFAULTS: dict[str, Any] = {
         "youtube_privacy": "public",
         "youtube_category_id": "27",
         "made_for_kids": False,
-        # Free Cloudinary unsigned upload (no card): cloud name + preset.
-        # Or export CLOUDINARY_CLOUD_NAME / CLOUDINARY_UPLOAD_PRESET.
+        # Free Cloudinary upload (no card): cloud name + EITHER an unsigned
+        # upload_preset (simplest, no secret in code) OR cloudinary_api_key +
+        # cloudinary_api_secret (signed uploads). Preset wins when both set.
+        # Env: CLOUDINARY_CLOUD_NAME / CLOUDINARY_UPLOAD_PRESET /
+        #      CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET.
         "cloud_name": "",
         "upload_preset": "",
+        "cloudinary_api_key": "",
+        "cloudinary_api_secret": "",
     },
     "telegram": {
         # Phone control: text the bot a topic, get back a finished video.
@@ -578,6 +583,16 @@ class Config:
     def cloudinary_preset(self) -> str:
         return (os.environ.get("CLOUDINARY_UPLOAD_PRESET")
                 or str(self.data["buffer"].get("upload_preset") or "")).strip()
+
+    @property
+    def cloudinary_api_key(self) -> str:
+        return (os.environ.get("CLOUDINARY_API_KEY")
+                or str(self.data["buffer"].get("cloudinary_api_key") or "")).strip()
+
+    @property
+    def cloudinary_api_secret(self) -> str:
+        return (os.environ.get("CLOUDINARY_API_SECRET")
+                or str(self.data["buffer"].get("cloudinary_api_secret") or "")).strip()
 
     @property
     def image_workers(self) -> int:
