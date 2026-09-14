@@ -497,6 +497,13 @@ def t_image_builders():
     except ValueError as exc:
         assert "SAFETY" in str(exc)
 
+    from images import upstream_throttled
+
+    assert upstream_throttled(
+        'Gen Sana request failed with 429: {"message":'
+        '"Per-user limit of 300 RPM exceeded"}') is True
+    assert upstream_throttled("HTTP 500: something else broke") is False
+
 
 def t_autopost_builders():
     from autopost import (BufferError, build_post_input, cloudinary_upload_url,

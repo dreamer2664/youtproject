@@ -218,6 +218,17 @@ def _safe_slug(text: str, limit: int = 40) -> str:
 
 # --- Pollinations --------------------------------------------------------
 
+def upstream_throttled(error_text: str) -> bool:
+    """True when Pollinations' GPU provider is throttling them (pure, tested).
+
+    Surfaced as our HTTP 500 ("Gen Sana request failed with 429:
+    Per-user limit of 300 RPM exceeded..."). The "user" is Pollinations
+    itself — their congestion, not our quota — so hammering helps nobody.
+    """
+    lowered = error_text.lower()
+    return "per-user limit" in lowered or "300 rpm" in lowered
+
+
 def pollinations_request(prompt: str, cfg: Config, seed: int) -> tuple[str, dict, dict]:
     """Pure builder: (url, params, headers) for one Pollinations image."""
     quoted = urllib.parse.quote(prompt[:900])
@@ -282,7 +293,13 @@ def _pollinations_fetch(
             print(f"  [image] attempt {attempt}/{attempts} failed: {exc}")
             if attempt == attempts:
                 break
-            time.sleep(3 * attempt)
+            if upstream_throttled(str(exc)):
+                delay = 45.0
+                print(f"  [image] Pollinations' upstream is throttled (their "
+                      f"congestion, not your quota) — waiting {delay:.0f}s...")
+            else:
+                delay = 3 * attempt
+            time.sleep(delay)
 
     raise RuntimeError(f"image generation failed after {attempts} attempts: {last_error}")
 
