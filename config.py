@@ -99,6 +99,11 @@ DEFAULTS: dict[str, Any] = {
         # Editorial passes after factcheck: punch-up (retention) then
         # decringe (taste veto). Skipped automatically without an LLM key.
         "editorial_passes": True,
+        # OpenRouter free-model overflow lane (https://openrouter.ai/keys) —
+        # last LLM resort before the offline template. Env: OPENROUTER_KEYS
+        # (space/comma-separated) wins, else OPENROUTER_API_KEY (single).
+        "openrouter_api_keys": [],
+        "openrouter_model": "nvidia/nemotron-3-super-120b-a12b:free",
         # Primary image provider + ordered fallbacks (IMAGE_PROVIDERS).
         # Fallbacks missing their key are skipped automatically, never fatal.
         "image_provider": "pollinations",
@@ -536,6 +541,23 @@ class Config:
     @property
     def editorial_enabled(self) -> bool:
         return bool(self.data["ai"].get("editorial_passes", True))
+
+    @property
+    def openrouter_api_keys(self) -> list[str]:
+        """All configured OpenRouter keys; env wins over config.yaml."""
+        env = (os.environ.get("OPENROUTER_KEYS")
+               or os.environ.get("OPENROUTER_API_KEY") or "").strip()
+        if env:
+            return [key for key in env.replace(",", " ").split() if key]
+        raw = self.data["ai"].get("openrouter_api_keys") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        return [str(key).strip() for key in raw if str(key).strip()]
+
+    @property
+    def openrouter_model(self) -> str:
+        return str(self.data["ai"].get("openrouter_model")
+                   or "nvidia/nemotron-3-super-120b-a12b:free")
 
     @property
     def image_width(self) -> int:

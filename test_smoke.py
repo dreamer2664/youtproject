@@ -806,6 +806,86 @@ def t_editorial():
     assert calls == []
 
 
+def t_openrouter_lane():
+    from unittest.mock import Mock, patch
+
+    from openrouter import OpenRouterProvider
+    from scriptgen import get_provider
+
+    def ok(text="hello"):
+        response = Mock(status_code=200)
+        response.json.return_value = {"choices": [{"message": {"content": text}}]}
+        return response
+
+    # Referer/Title headers sent (OpenRouter attribution).
+    with patch("requests.post", return_value=ok()) as post:
+        OpenRouterProvider(api_keys=["k"])._complete("hi", 0.0, False, "t")
+    headers = post.call_args.kwargs["headers"]
+    assert headers["Authorization"] == "Bearer k"
+    assert headers["HTTP-Referer"].endswith("dreamer2664/youtproject")
+    assert headers["X-Title"] == "youtproject"
+    # 200-with-error 429 naming upstream -> next model, keys untouched.
+    err429 = Mock(status_code=200, text="wrapped")
+    err429.json.return_value = {"id": "gen-x", "error": {
+        "message": "x temporarily rate-limited upstream", "code": 429}}
+    with patch("requests.post", side_effect=[err429, ok()]) as post:
+        result = OpenRouterProvider(api_keys=["k1", "k2"])._complete(
+            "hi", 0.0, False, "t")
+    assert result == "hello" and post.call_count == 2
+    assert post.call_args_list[1].kwargs["json"]["model"] == "z-ai/glm-5.2:free"
+    # plain 429 (own per-key RPM) still rotates keys on the same model.
+    with patch("requests.post", side_effect=[Mock(status_code=429, text="slow"),
+                                             ok()]) as post:
+        OpenRouterProvider(api_keys=["k1", "k2"])._complete("hi", 0.0, False, "t")
+    calls = post.call_args_list
+    assert calls[1].kwargs["json"]["model"] == "nvidia/nemotron-3-super-120b-a12b:free"
+    assert calls[1].kwargs["headers"]["Authorization"] == "Bearer k2"
+    # chain: openrouter sits after groq, before template.
+    cfg = tmp_cfg()
+    cfg.data["ai"]["gemini_api_key"] = "g"
+    cfg.data["ai"]["groq_api_keys"] = ["q"]
+    cfg.data["ai"]["openrouter_api_keys"] = ["o"]
+    assert [label for label, _ in get_provider(cfg).chain] == [
+        "gemini", "groq", "openrouter", "template"]
+    cfg.data["ai"]["groq_api_keys"] = []
+    cfg.data["ai"]["gemini_api_key"] = ""
+    assert [label for label, _ in get_provider(cfg).chain] == ["openrouter", "template"]
+
+
+def t_broll():
+    from unittest.mock import Mock, patch
+
+    from broll import _pick_file, search_clips
+
+    portrait_hd = {"id": 1, "file_type": "video/mp4", "width": 1080, "height": 1920,
+                   "fps": 30, "link": "https://v/p.mp4"}
+    landscape_4k = {"id": 2, "file_type": "video/mp4", "width": 3840, "height": 2160,
+                    "fps": 30, "link": "https://v/l.mp4"}
+    assert _pick_file({"video_files": [landscape_4k, portrait_hd]}) == portrait_hd
+    assert _pick_file({"video_files": [landscape_4k]}) == landscape_4k
+    assert _pick_file({"video_files": []}) is None
+    assert _pick_file({}) is None
+
+    body = {"videos": [{"id": 9, "url": "https://p/9", "duration": 16,
+                        "image": "https://i/9.jpg", "video_files": [portrait_hd]}]}
+    resp = Mock(status_code=200)
+    resp.json.return_value = body
+    with patch("broll.requests.get", return_value=resp) as get:
+        clips = search_clips("KEY", "ocean waves", per_page=3)
+    assert len(clips) == 1 and clips[0]["file"] == "https://v/p.mp4"
+    assert clips[0]["height"] == 1920 and clips[0]["duration"] == 16
+    assert get.call_args.kwargs["headers"] == {"Authorization": "KEY"}
+    assert get.call_args.kwargs["params"]["orientation"] == "portrait"
+    with patch("broll.requests.get",
+               return_value=Mock(status_code=401, text="bad")):
+        try:
+            search_clips("BAD", "x")
+        except RuntimeError as exc:
+            assert "rejected" in str(exc)
+        else:
+            raise AssertionError("expected RuntimeError on 401")
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -839,6 +919,8 @@ def main() -> int:
         ("encoder_setting", t_encoder_setting),
         ("dry_run_batch", t_dry_run_batch),
         ("editorial", t_editorial),
+        ("openrouter_lane", t_openrouter_lane),
+        ("broll", t_broll),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:

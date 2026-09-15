@@ -187,6 +187,12 @@ ai:
   # (taste veto). Skipped automatically without an LLM key.
   editorial_passes: true
 
+  # OpenRouter free-model overflow lane (https://openrouter.ai/keys) —
+  # last LLM resort before the offline template.
+  openrouter_api_keys:
+    - ""
+  openrouter_model: "nvidia/nemotron-3-super-120b-a12b:free"
+
   # Images walk a provider chain until one delivers: the primary first,
   # then each fallback in order. Providers missing their key are skipped
   # automatically, never fatal. Image dimensions follow video.format
