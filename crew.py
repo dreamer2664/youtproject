@@ -49,6 +49,22 @@ def _say(say, message: str) -> None:
         pass
 
 
+def _logged_say(cfg: Config, state: dict, say):
+    """Wrap say so every crew message is recorded in the state log too.
+
+    /log and crew --status replay this — the full mission transcript,
+    crash-safe (written on every message, not just at cycle end).
+    """
+    def wrapper(message: str) -> None:
+        _say(say, message)
+        state.setdefault("log", []).append(
+            {"ts": datetime.now().astimezone().isoformat(),
+             "msg": str(message)[:500]})
+        _save_state(cfg, state)
+
+    return wrapper
+
+
 def _tg_ping(cfg: Config, text: str) -> None:
     """Best-effort Telegram ping for CLI-run missions. Never raises."""
     try:
@@ -352,6 +368,62 @@ def _usage_line(usage: dict) -> str:
             f"~{usage['llm_tokens_est']:,} tokens (all free tiers, $0)")
 
 
+def mission_status_text(cfg: Config) -> str | None:
+    """One-block mission progress for /queue and crew --status.
+
+    None when no mission ever ran (callers stay silent for pure-render
+    users instead of nagging about a feature they never touched).
+    """
+    state = _load_state(cfg)
+    mission = state.get("mission") or {}
+    if not mission:
+        return None
+    now = datetime.now().astimezone()
+    today = now.date().isoformat()
+    try:
+        started = datetime.fromisoformat(mission["started"]).date()
+        day_no = (now.date() - started).days + 1
+    except (ValueError, TypeError, KeyError):
+        day_no = 1
+    posted = state.get("posted") or []
+    posted_today = sum(1 for p in posted if p.get("day") == today)
+    live_count = sum(1 for p in posted if p.get("mode") == "live")
+    day_start = int(mission.get("started_day_hour", 0)) \
+        if today == mission.get("started_day") else 0
+    due = _due_now(mission.get("per_day", 4), now, day_start)
+    if state.get("ended"):
+        status = f"⚪ ended ({state.get('ended_reason', '?')})"
+    elif mission_active(cfg):
+        mode = "🔴 LIVE posting" if mission.get("live") else "draft mode"
+        status = f"🟢 running · {mode}"
+    else:
+        status = "🟡 stale (loop died — rerun to resume)"
+    digest = "✓" if today in (state.get("digests") or []) else "pending"
+    goal = str(mission.get("goal", ""))[:60]
+    usage = {**_fresh_usage(today), **(state.get("usage") or {})}
+    return (f"🤖 Mission day {day_no}/{mission.get('days')}: {goal}\n"
+            f"{status}\n"
+            f"Today: {posted_today}/{mission.get('per_day')} posted "
+            f"({due} due) · digest {digest}\n"
+            f"Total: {len(posted)} posted ({live_count} live)\n"
+            f"Usage: {_usage_line(usage)}")
+
+
+def mission_log_tail(cfg: Config, count: int = 10) -> str:
+    """Last crew messages for /log and crew --status."""
+    state = _load_state(cfg)
+    entries = state.get("log") or []
+    if not entries:
+        return ("No crew chatter yet — start a mission with /crew "
+                "(e.g. /crew 3 days, 4 posts a day).")
+    lines = []
+    for entry in entries[-count:]:
+        stamp = str(entry.get("ts", ""))[11:16]
+        first = str(entry.get("msg", "")).splitlines()
+        lines.append(f"{stamp} {(first[0][:120] if first else '?')}")
+    return f"💬 Crew chatter (last {len(lines)}):\n" + "\n".join(lines)
+
+
 def daily_digest(cfg: Config, state: dict, brain, say) -> None:
     """HERALD: nightly numbers + usage audit, in plain words."""
     from analytics import channel_stats
@@ -418,6 +490,7 @@ def _sleep_until_next_cycle(cfg: Config) -> bool:
 
 def _end_mission(cfg: Config, state: dict, reason: str, say) -> None:
     state["ended"] = datetime.now().astimezone().isoformat()
+    state["ended_reason"] = reason
     posted = state["posted"]
     _save_state(cfg, state)
     _say(say, f"🏁 Mission {reason}: {len(posted)} videos posted "
@@ -449,6 +522,7 @@ def run_mission(cfg: Config, days: int, per_day: int, live: bool,
                  "posted": [], "usage": _fresh_usage(now.date().isoformat()),
                  "digests": [], "heartbeat": now.isoformat(), "ended": None,
                  "log": []}
+    say = _logged_say(cfg, state, say)
     stop = cfg.root / STOP_FILE
     if stop.exists():
         stop.unlink()

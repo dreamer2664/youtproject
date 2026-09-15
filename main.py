@@ -898,6 +898,18 @@ def cmd_schedule(cfg, args) -> int:
 def cmd_crew(cfg, args) -> int:
     from crew import _tg_ping, run_mission
 
+    if args.stop:
+        (cfg.root / "crew_stop").write_text("stop", encoding="utf-8")
+        print("Stop requested — halting after the current video.")
+        return 0
+    if args.status:
+        from crew import mission_log_tail, mission_status_text
+
+        print(mission_status_text(cfg) or "No mission yet.")
+        print()
+        print(mission_log_tail(cfg, count=5))
+        return 0
+
     def say(message: str) -> None:
         print(message)
         _tg_ping(cfg, message)
@@ -1189,6 +1201,10 @@ def main() -> int:
                    help="really publish (default: drafts)")
     p.add_argument("--goal", default="grow the channel",
                    help="mission goal in plain words")
+    p.add_argument("--status", action="store_true",
+                   help="show mission progress + recent chatter, don't start")
+    p.add_argument("--stop", action="store_true",
+                   help="halt the running mission")
 
     p = sub.add_parser("yt", help="YouTube stats: video/channel lookup or Shorts niche search")
     p.add_argument("ref", nargs="?", help="video/channel URL, ID, or @handle (1 quota unit)")

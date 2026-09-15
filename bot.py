@@ -55,7 +55,8 @@ A video takes roughly 15–25 minutes. I'll send it here as a file
 
 /crew <mission> — autonomous team for N days, e.g.
 /crew manage yourself for 3 days, post 4 times a day (drafts unless "for real")
-/stop — halt the mission after the current video."""
+/stop — halt the mission after the current video.
+/log — replay what the crew has been saying."""
 
 
 class TelegramError(RuntimeError):
@@ -77,7 +78,7 @@ def parse_incoming(text: str) -> tuple[str, str]:
     """Pure command parser (unit-tested). Returns (action, argument).
 
     Actions: 'topic' (render this), 'queue', 'send', 'help', 'ignore',
-    'jarvis' (channel-manager task).
+    'jarvis' (channel-manager task), 'crew' (mission), 'stop', 'log'.
     """
     text = (text or "").strip()
     if not text:
@@ -96,6 +97,8 @@ def parse_incoming(text: str) -> tuple[str, str]:
         return ("crew", text[5:].strip())
     if low == "/stop" or low.startswith("/stop "):
         return ("stop", "")
+    if low == "/log" or low.startswith("/log "):
+        return ("log", "")
     if low.startswith("/send"):
         return ("send", text[5:].strip())
     if text.startswith("/"):
@@ -191,8 +194,13 @@ class PhoneBot:
         if action == "help":
             self.send_message(chat_id, HELP_TEXT)
         elif action == "queue":
-            self.send_message(chat_id, "📋 Queue:\n" +
-                              Queue(self.cfg.state_file).format_table())
+            from crew import mission_status_text
+
+            text = "📋 Queue:\n" + Queue(self.cfg.state_file).format_table()
+            mission = mission_status_text(self.cfg)
+            if mission:
+                text += "\n\n" + mission
+            self.send_message(chat_id, text)
         elif action == "send":
             self._send_existing(chat_id, arg)
         elif action == "ignore":
@@ -225,6 +233,10 @@ class PhoneBot:
             (self.cfg.root / "crew_stop").write_text("stop", encoding="utf-8")
             print("  [bot] stop requested")
             self.send_message(chat_id, "🛑 Stop requested — halting after the current video.")
+        elif action == "log":
+            from crew import mission_log_tail
+
+            self.send_message(chat_id, mission_log_tail(self.cfg))
         else:
             position = self.jobs.qsize()
             self.jobs.put((chat_id, "topic", arg))

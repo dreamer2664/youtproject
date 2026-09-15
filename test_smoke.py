@@ -1346,6 +1346,62 @@ def t_crew():
     assert "2 (1 live, 1 draft)" in said[0] and state["digests"] == [today]
 
 
+def t_crew_watch():
+    from datetime import datetime as real_datetime
+    from types import SimpleNamespace
+
+    from bot import parse_incoming
+    from crew import (_fresh_usage, _logged_say, _save_state, mission_log_tail,
+                      mission_status_text)
+
+    assert parse_incoming("/log") == ("log", "")
+    assert parse_incoming("/stop") == ("stop", "")
+    # Every say() lands in the state log (the mission transcript).
+    cfg = tmp_cfg()
+    state: dict = {"log": []}
+    said: list = []
+    say = _logged_say(cfg, state, said.append)
+    say("hello crew")
+    assert said == ["hello crew"]
+    assert state["log"][-1]["msg"] == "hello crew"
+    # Status: silent before any mission, rich during one.
+    assert mission_status_text(cfg) is None
+    today = real_datetime.now().astimezone().date().isoformat()
+    usage = _fresh_usage(today)
+    usage.update({"yt_units": 1234, "eleven_chars": 900,
+                  "llm_tokens_est": 16000})
+    state = {"mission": {"goal": "grow it", "days": 3, "per_day": 4,
+                         "live": False,
+                         "started": real_datetime.now().astimezone().isoformat(),
+                         "started_day": today, "started_day_hour": 0,
+                         "ends": "2099-01-01T23:59:00+00:00"},
+             "posted": [{"day": today, "mode": "draft"},
+                        {"day": "2000-01-01", "mode": "live"}],
+             "usage": usage, "digests": [],
+             "heartbeat": real_datetime.now().astimezone().isoformat(),
+             "ended": None,
+             "log": [{"ts": today + "T14:05:00+00:00",
+                      "msg": "🚀 boom\nsecond line"}]}
+    _save_state(cfg, state)
+    text = mission_status_text(cfg)
+    assert "Mission day 1/3" in text and "🟢 running" in text
+    assert "1/4 posted" in text and "2 posted (1 live)" in text
+    assert "1,234" in text
+    tail = mission_log_tail(cfg)
+    assert "14:05 🚀 boom" in tail and "second line" not in tail
+    # Ended missions report their reason.
+    state["ended"] = today + "T23:00:00+00:00"
+    state["ended_reason"] = "complete"
+    _save_state(cfg, state)
+    assert "ended (complete)" in mission_status_text(cfg)
+    # CLI --status/--stop paths (no mission starts).
+    from main import cmd_crew
+
+    assert cmd_crew(cfg, SimpleNamespace(status=True, stop=False)) == 0
+    assert cmd_crew(cfg, SimpleNamespace(status=False, stop=True)) == 0
+    assert (cfg.root / "crew_stop").exists()
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -1389,6 +1445,7 @@ def main() -> int:
         ("elevenlabs", t_elevenlabs),
         ("youtube", t_youtube),
         ("crew", t_crew),
+        ("crew_watch", t_crew_watch),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:
