@@ -417,6 +417,37 @@ def _build_mux_cmd(
     return cmd
 
 
+def _build_simple_mux_cmd(
+    *,
+    concat_txt: Path,
+    audio_txt: Path,
+    out_path: Path,
+    cfg: Config,
+    audio_codec: str = "aac",
+    faststart: bool = True,
+) -> list[str]:
+    """Emergency direct mux: no filters at all.
+
+    Last-resort rungs for FFmpeg builds that segfault even the plain mix
+    (seen: 9.x Windows on the filter_complex path). Straight concat in,
+    H264 + AAC/MP3 out — no fade, no garnish, but a complete uploadable
+    video. Pure constructor like _build_mux_cmd (unit-tested, no FFmpeg).
+    """
+    cmd = [
+        "ffmpeg", "-y", "-loglevel", "warning",
+        "-f", "concat", "-safe", "0", "-i", str(concat_txt),
+        "-f", "concat", "-safe", "0", "-i", str(audio_txt),
+        "-map", "0:v", "-map", "1:a",
+        *resolve_encoder_args(cfg.encoder),
+        "-threads", "4",
+        "-c:a", audio_codec, "-b:a", "192k",
+    ]
+    if faststart:
+        cmd += ["-movflags", "+faststart"]
+    cmd.append(str(out_path))
+    return cmd
+
+
 def _save_mux_debug(path: Path, label: str, cmd: list[str], exc: AssemblyError) -> None:
     """Append a failed mux attempt (command + full stderr) to the debug log."""
     try:
@@ -502,6 +533,19 @@ def assemble_video(
         )
         if all(cmd != built for _, built in plan):
             plan.append((label, cmd))
+    # Emergency rungs: filter-free direct muxes. If even the plain mix
+    # segfaults the FFmpeg build, these still deliver a video.
+    for label, cmd in (
+        ("emergency direct mux",
+         _build_simple_mux_cmd(concat_txt=concat_txt, audio_txt=audio_txt,
+                               out_path=out_path, cfg=cfg)),
+        ("last-resort mp3 mux",
+         _build_simple_mux_cmd(concat_txt=concat_txt, audio_txt=audio_txt,
+                               out_path=out_path, cfg=cfg,
+                               audio_codec="libmp3lame", faststart=False)),
+    ):
+        if all(cmd != built for _, built in plan):
+            plan.append((label, cmd))
 
     debug_path = cfg.work_dir / f"mux_debug_{out_path.stem}.log"
     try:
@@ -520,7 +564,7 @@ def assemble_video(
                 first = str(exc).splitlines()[0][:110] if str(exc) else "unknown error"
                 print(f"      mux       : {label} failed ({first}) — retrying simpler...")
                 continue
-            print(f"      mux       : even the plain mix failed — full log in {debug_path.name}")
+            print(f"      mux       : every mix failed (7 attempts) — full log in {debug_path.name}")
             raise
         if index > 0:
             print(f"      mux       : full mix crashes this FFmpeg build — finished {label}.")

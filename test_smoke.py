@@ -1474,6 +1474,24 @@ def t_render_debug():
     assert "mux_debug" in out
 
 
+def t_emergency_mux():
+    from assembler import _build_simple_mux_cmd
+
+    cfg = tmp_cfg()
+    cmd = _build_simple_mux_cmd(concat_txt=cfg.root / "c.txt",
+                                audio_txt=cfg.root / "a.txt",
+                                out_path=cfg.root / "o.mp4", cfg=cfg)
+    assert "-filter_complex" not in cmd
+    assert "-vf" not in cmd and "-af" not in cmd
+    assert "-map" in cmd and "aac" in cmd
+    assert cmd[-1].endswith("o.mp4")
+    mp3 = _build_simple_mux_cmd(concat_txt=cfg.root / "c.txt",
+                                audio_txt=cfg.root / "a.txt",
+                                out_path=cfg.root / "o.mp4", cfg=cfg,
+                                audio_codec="libmp3lame", faststart=False)
+    assert "libmp3lame" in mp3 and "+faststart" not in " ".join(mp3)
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -1521,6 +1539,7 @@ def main() -> int:
         ("key_pools", t_key_pools),
         ("deps_guard", t_deps_guard),
         ("render_debug", t_render_debug),
+        ("emergency_mux", t_emergency_mux),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:
