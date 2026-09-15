@@ -1439,6 +1439,41 @@ def t_deps_guard():
     assert "Traceback" not in proc.stderr
 
 
+def t_render_debug():
+    import io
+    from contextlib import redirect_stdout
+    from types import SimpleNamespace
+
+    from bot import parse_incoming
+    from jobqueue import Queue
+
+    assert parse_incoming("Stop") == ("stop", "")
+    assert parse_incoming("stop the press") == ("topic", "stop the press")
+    assert parse_incoming("/stop") == ("stop", "")
+    # Table limit: newest N + summary; unlimited list untouched.
+    cfg = tmp_cfg()
+    queue = Queue(cfg.state_file)
+    for i in range(15):
+        job = queue.add(f"topic {i}")
+        if i % 3 == 0:
+            queue.update(job, status="failed", error="boom")
+    full = queue.format_table()
+    assert "topic 0" in full and "topic 14" in full
+    short = queue.format_table(limit=12)
+    assert "topic 14" in short and "topic 0" not in short
+    assert "... and 3 older jobs (5 failed in total)" in short
+    # errors command: full text + dates for the newest failures.
+    from main import cmd_errors
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        assert cmd_errors(cfg, SimpleNamespace(count=2)) == 0
+    out = buf.getvalue()
+    assert "topic 12" in out and "topic 9" in out
+    assert "topic 0" not in out and "boom" in out
+    assert "mux_debug" in out
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -1485,6 +1520,7 @@ def main() -> int:
         ("crew_watch", t_crew_watch),
         ("key_pools", t_key_pools),
         ("deps_guard", t_deps_guard),
+        ("render_debug", t_render_debug),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:

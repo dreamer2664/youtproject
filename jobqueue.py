@@ -102,14 +102,16 @@ class Queue:
             out[job.status] = out.get(job.status, 0) + 1
         return out
 
-    def format_table(self) -> str:
+    def format_table(self, limit: int | None = None) -> str:
+        """Newest `limit` jobs when set (Telegram), else all."""
         if not self.jobs:
             return "Queue is empty. Run: python main.py generate"
+        jobs = self.jobs if limit is None else self.jobs[-limit:]
         lines = [
             f"{'ID':<13}{'STATUS':<12}TITLE",
             "-" * 78,
         ]
-        for job in self.jobs:
+        for job in jobs:
             title = job.title or job.topic
             lines.append(f"{job.id:<13}{job.status:<12}{title[:52]}")
             if job.package_dir:
@@ -118,4 +120,8 @@ class Queue:
                 lines.append(f"{'':<13}\u2514\u2500 {job.published_url}")
             if job.error:
                 lines.append(f"{'':<13}\u2514\u2500 error: {job.error[:60]}")
+        if len(self.jobs) > len(jobs):
+            failed = sum(1 for job in self.jobs if job.status == "failed")
+            lines.append(f"... and {len(self.jobs) - len(jobs)} older jobs "
+                         f"({failed} failed in total)")
         return "\n".join(lines)

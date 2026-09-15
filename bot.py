@@ -95,6 +95,10 @@ def parse_incoming(text: str) -> tuple[str, str]:
         return ("jarvis", text[7:].strip())
     if low.startswith("/crew"):
         return ("crew", text[5:].strip())
+    # Bare "stop" (no slash): the user means /stop, not a video titled Stop.
+    # (A mistyped topic here costs a 20-minute render; the reverse costs nothing.)
+    if low == "stop":
+        return ("stop", "")
     if low == "/stop" or low.startswith("/stop "):
         return ("stop", "")
     if low == "/log" or low.startswith("/log "):
@@ -196,7 +200,7 @@ class PhoneBot:
         elif action == "queue":
             from crew import mission_status_text
 
-            text = "📋 Queue:\n" + Queue(self.cfg.state_file).format_table()
+            text = "📋 Queue:\n" + Queue(self.cfg.state_file).format_table(limit=12)
             mission = mission_status_text(self.cfg)
             if mission:
                 text += "\n\n" + mission

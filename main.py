@@ -1036,6 +1036,23 @@ def cmd_published(cfg, args) -> int:
     return 0
 
 
+def cmd_errors(cfg, args) -> int:
+    from datetime import datetime
+
+    failed = [job for job in Queue(cfg.state_file).jobs
+              if job.status == "failed"][-args.count:]
+    if not failed:
+        print("No failed jobs.")
+        return 0
+    for job in failed:
+        when = datetime.fromtimestamp(job.created_at).strftime("%m-%d %H:%M")
+        print(f"=== {job.id} · {when} · {job.title or job.topic} ===")
+        print(job.error or "(no error text)")
+        print()
+    print(f"({len(failed)} shown. Full ffmpeg logs: work/mux_debug_*.log)")
+    return 0
+
+
 def cmd_queue(cfg, args) -> int:
     print(Queue(cfg.state_file).format_table())
     return 0
@@ -1238,6 +1255,9 @@ def main() -> int:
     p.add_argument("id", help="job id (prefix ok)")
     p.add_argument("url", help="the YouTube URL, e.g. https://youtu.be/....")
 
+    p = sub.add_parser("errors", help="full text of recent failures (for debugging)")
+    p.add_argument("--count", type=int, default=3, help="how many failures to show")
+
     sub.add_parser("queue", help="show the queue")
 
     p = sub.add_parser("voices", help="list available voiceover voices")
@@ -1274,6 +1294,7 @@ def main() -> int:
         "reburn": cmd_reburn,
         "published": cmd_published,
         "queue": cmd_queue,
+        "errors": cmd_errors,
         "voices": cmd_voices,
         "autopost": cmd_autopost,
     }
