@@ -206,35 +206,45 @@ class GeminiProvider:
     MAX_DELAY = 45.0
     # Tried, in order, if the configured model keeps failing (5xx saturation
     # or 404 renames — Google retires model IDs regularly). ORDER IS
-    # EMPIRICAL: on 2026-09-14 the rolling alias saturated (503) and the
-    # 2.5/3.0 pinned IDs 404'd on v1beta, while 3.1-flash-lite answered —
-    # so it leads. The user's configured model is always tried first.
+    # EMPIRICAL, re-surveyed 2026-09-15: the 2.5 IDs 404 "no longer
+    # available", gemini-3-flash 404s on v1beta, and the rolling full-flash
+    # alias plus 3.1-flash-lite 503 under afternoon load — flash-lite-latest
+    # is the one answering right now, so it leads. Configured model first.
     FALLBACK_MODELS = [
-        "gemini-3.1-flash-lite",
-        "gemini-2.5-flash",
-        "gemini-3-flash",
-        "gemini-2.5-flash-lite",
         "gemini-flash-lite-latest",
+        "gemini-3.1-flash-lite",
+        "gemini-flash-latest",
     ]
 
-    def __init__(self, api_key: str, model: str = "gemini-flash-latest") -> None:
-        if not api_key:
+    def __init__(self, api_key: str | list[str],
+                 model: str = "gemini-flash-latest") -> None:
+        if isinstance(api_key, str):
+            api_key = [api_key]
+        keys = [key.strip() for key in api_key if key and key.strip()]
+        if not keys:
             raise RuntimeError(
                 "No Gemini API key. Get a free one at https://aistudio.google.com/apikey, "
                 "then put it in config.yaml or export GEMINI_API_KEY. "
                 "Or set ai.provider: template in config.yaml to run keyless."
             )
-        self.api_key = api_key
+        self.api_keys = keys
+        self.api_key = keys[0]  # first key; kept for backward compat
         self.model = model
 
     def _try_model(self, model: str, payload: dict, tag: str = "script") -> tuple[dict | None, int, str]:
-        """One model, with retries. Returns (result, last_status, last_error)."""
+        """One model, with retries across keys. Returns (result, status, error)."""
+        keys = list(self.api_keys)
         last_status = 0
         last_error = ""
+        # 429 budget: every key gets one immediate shot (spent per-key quota
+        # is the common case), minimum 3 attempts like the single-key days.
+        failover_after = max(3, len(keys))
+        tried_429 = 0
         for attempt in range(1, self.MAX_RETRIES + 1):
+            key = keys[0]
             response = requests.post(
                 self.URL.format(model=model),
-                params={"key": self.api_key},
+                params={"key": key},
                 json=payload,
                 timeout=180,
             )
@@ -244,16 +254,30 @@ class GeminiProvider:
             last_status = response.status_code
             last_error = response.text[:300]
 
-            # A bad key will never work. Stop immediately, on every model.
-            if response.status_code in (400, 401, 403):
+            # Dead model ID: retrying is pointless — fail over at once.
+            if response.status_code == 404:
                 return None, last_status, last_error
 
-            # 429s on the free tier rarely clear within a run (usually a
-            # saturated model or spent quota, not a blip) — fail over to the
-            # next model after 3 tries instead of burning all 6 (~60s saved
-            # per saturated model per run).
-            if response.status_code == 429 and attempt >= 3:
-                break
+            # Rejected key: drop it and try the next (keys come from
+            # different accounts, so one's revocation is no verdict on the
+            # others). All rejected -> fatal; _post raises with a hint.
+            if response.status_code in (400, 401, 403):
+                keys.pop(0)
+                if keys:
+                    print(f"  [{tag}] Gemini key ...{key[-4:]} rejected — "
+                          f"trying next key")
+                    continue
+                return None, last_status, last_error
+
+            # 429: rotate immediately (a different key = a different quota
+            # bucket; sleeping helps nothing). Every key 429'd -> the model
+            # itself is saturated, fail over to the next model.
+            if response.status_code == 429:
+                tried_429 += 1
+                keys.append(keys.pop(0))
+                if tried_429 >= failover_after:
+                    break
+                continue
 
             if response.status_code in self.RETRYABLE and attempt < self.MAX_RETRIES:
                 delay = min(2 ** attempt + random.uniform(0, 1), self.MAX_DELAY)
@@ -293,7 +317,7 @@ class GeminiProvider:
             raise RuntimeError(
                 "No Gemini model in the fallback chain exists (Google may have "
                 "renamed them again). Set ai.gemini_model to a current free-tier "
-                f"ID such as 'gemini-3.1-flash-lite'. Last error: {last_error}"
+                f"ID such as 'gemini-flash-lite-latest'. Last error: {last_error}"
             )
         raise RuntimeError(
             f"Gemini unavailable after trying {len(chain)} model(s) with retries "
@@ -650,7 +674,7 @@ def get_provider(cfg: Config) -> ScriptProvider:
     chain: list[tuple[str, object]] = []
     for name in order:
         if name == "gemini" and cfg.gemini_api_key:
-            chain.append(("gemini", GeminiProvider(cfg.gemini_api_key, cfg.gemini_model)))
+            chain.append(("gemini", GeminiProvider(cfg.gemini_api_keys, cfg.gemini_model)))
         elif name == "groq" and cfg.groq_api_keys:
             from groq import GroqProvider
 

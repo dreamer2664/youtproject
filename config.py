@@ -43,6 +43,16 @@ DEFAULTS: dict[str, Any] = {
         # Narration speed for edge-tts: "+40%" is brisk TikTok pacing (~180 wpm),
         # "+0%" is normal, "-10%" is slow. Range -50%..+100%.
         "speech_rate": "+40%",
+        # ElevenLabs premium voice (https://elevenlabs.io/app/settings/api-keys):
+        # used instead of edge-tts when keys + voice_id are set, with word
+        # timings from the with-timestamps endpoint. Any failure falls back
+        # to edge-tts automatically. Free tier is ~10k chars/month (~11
+        # Shorts). Env: ELEVENLABS_KEYS (space/comma-separated) wins.
+        "elevenlabs_api_keys": [],
+        # Voice ID from the ElevenLabs voice library (e.g. Sarah:
+        # EXAVITQu4vr4xnSDxMaL). Empty = ElevenLabs stays off.
+        "elevenlabs_voice_id": "",
+        "elevenlabs_model": "eleven_turbo_v2_5",
         "language": "English",
         "category_id": "22",
         "default_tags": [],
@@ -88,7 +98,13 @@ DEFAULTS: dict[str, Any] = {
     },
     "ai": {
         "provider": "gemini",
+        # Legacy single key (kept working); prefer the list below.
         "gemini_api_key": "",
+        # Free Gemini keys (https://aistudio.google.com/apikey) — one per
+        # Google account. Rejected/rate-limited keys rotate automatically,
+        # so five keys is roughly 5x the free quota. Env: GEMINI_API_KEYS
+        # (space/comma-separated) wins, else GEMINI_API_KEY (single).
+        "gemini_api_keys": [],
         "gemini_model": "gemini-flash-latest",
         # Free Groq keys (https://console.groq.com/keys) — script/topic/
         # factcheck fallback after Gemini, with key rotation spreading the
@@ -287,6 +303,27 @@ class Config:
     def speech_rate_factor(self) -> float:
         """1.25 for '+25%' — scales script word budgets and estimates."""
         return 1.0 + self.speech_rate_pct / 100.0
+
+    @property
+    def elevenlabs_api_keys(self) -> list[str]:
+        """ElevenLabs keys; env ELEVENLABS_KEYS wins (never crash)."""
+        env = (os.environ.get("ELEVENLABS_KEYS") or "").strip()
+        if env:
+            return [part for chunk in env.split(",") for part in
+                    (p.strip() for p in chunk.split()) if part]
+        raw = self.data["channel"].get("elevenlabs_api_keys") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        return [str(k).strip() for k in raw if str(k).strip()]
+
+    @property
+    def elevenlabs_voice_id(self) -> str:
+        return str(self.data["channel"].get("elevenlabs_voice_id") or "").strip()
+
+    @property
+    def elevenlabs_model(self) -> str:
+        return str(self.data["channel"].get("elevenlabs_model")
+                   or "eleven_turbo_v2_5").strip()
 
     @property
     def language(self) -> str:
@@ -531,11 +568,27 @@ class Config:
         return str(self.data["ai"]["provider"]).lower()
 
     @property
+    def gemini_api_keys(self) -> list[str]:
+        """All configured Gemini keys; env wins over config.yaml (never crash)."""
+        env = (os.environ.get("GEMINI_API_KEYS") or "").strip()
+        if env:
+            return [part for chunk in env.split(",") for part in
+                    (p.strip() for p in chunk.split()) if part]
+        raw = self.data["ai"].get("gemini_api_keys") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        keys = [str(k).strip() for k in raw if str(k).strip()]
+        legacy = (os.environ.get("GEMINI_API_KEY")
+                  or str(self.data["ai"].get("gemini_api_key") or "")).strip()
+        if legacy and legacy not in keys:
+            keys.append(legacy)
+        return keys
+
+    @property
     def gemini_api_key(self) -> str:
-        return (
-            os.environ.get("GEMINI_API_KEY")
-            or str(self.data["ai"].get("gemini_api_key") or "")
-        ).strip()
+        """First Gemini key (legacy single-key callers)."""
+        keys = self.gemini_api_keys
+        return keys[0] if keys else ""
 
     @property
     def gemini_model(self) -> str:

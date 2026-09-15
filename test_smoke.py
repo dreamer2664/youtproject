@@ -457,10 +457,12 @@ def t_mux_builder():
 def t_gemini_fallback_order():
     from scriptgen import GeminiProvider
 
-    # Empirically verified 2026-09-14: the rolling alias saturated (503)
-    # and the 2.5/3.0 pinned IDs 404'd on v1beta, while 3.1-flash-lite
-    # answered. Keep it first; reorder only on fresh evidence.
-    assert GeminiProvider.FALLBACK_MODELS[0] == "gemini-3.1-flash-lite"
+    # Empirically verified 2026-09-15: the 2.5 IDs 404 ("no longer
+    # available"), gemini-3-flash 404s on v1beta, and the rolling full-flash
+    # alias plus 3.1-flash-lite 503 under afternoon load — while
+    # flash-lite-latest answers 200. Keep it first; reorder only on
+    # fresh evidence.
+    assert GeminiProvider.FALLBACK_MODELS[0] == "gemini-flash-lite-latest"
     assert len(set(GeminiProvider.FALLBACK_MODELS)) == len(GeminiProvider.FALLBACK_MODELS)
 
 
@@ -1030,6 +1032,110 @@ def t_voice():
         assert out.read_bytes() == b"ogg-bytes"
 
 
+def t_gemini_keys():
+    from unittest.mock import Mock, patch
+
+    from scriptgen import GeminiProvider
+
+    def ok():
+        response = Mock(status_code=200)
+        response.json.return_value = {"candidates": []}
+        return response
+
+    # 429 on key1 -> key2 tried immediately (different ?key= param).
+    with patch("requests.post", side_effect=[Mock(status_code=429, text="slow"),
+                                             ok()]) as post, \
+            patch("time.sleep", return_value=None):
+        result, status, _ = GeminiProvider(
+            api_key=["k1", "k2"])._try_model("m", {}, tag="t")
+    assert result is not None and post.call_count == 2
+    assert post.call_args_list[0].kwargs["params"] == {"key": "k1"}
+    assert post.call_args_list[1].kwargs["params"] == {"key": "k2"}
+    # Rejected key dropped, next key delivers.
+    with patch("requests.post", side_effect=[Mock(status_code=400,
+                                                  text="API key not valid"),
+                                             ok()]) as post:
+        result, status, _ = GeminiProvider(
+            api_key=["bad", "good"])._try_model("m", {}, tag="t")
+    assert result is not None and post.call_count == 2
+    # All keys rejected -> fatal triple for _post to raise on.
+    with patch("requests.post", return_value=Mock(status_code=401,
+                                                  text="nope")) as post:
+        result, status, _ = GeminiProvider(
+            api_key=["a", "b"])._try_model("m", {}, tag="t")
+    assert result is None and status == 401 and post.call_count == 2
+    # All keys 429 -> failover after one try per key (5 keys = 5 calls).
+    with patch("requests.post", return_value=Mock(status_code=429,
+                                                  text="x")) as post, \
+            patch("time.sleep", return_value=None):
+        result, status, _ = GeminiProvider(
+            api_key=["a", "b", "c", "d", "e"])._try_model("m", {}, tag="t")
+    assert result is None and post.call_count == 5
+    # 404 model -> immediate failover, no pointless retries.
+    with patch("requests.post", return_value=Mock(status_code=404,
+                                                  text="gone")) as post:
+        result, status, _ = GeminiProvider(
+            api_key="k")._try_model("m", {}, tag="t")
+    assert result is None and status == 404 and post.call_count == 1
+    # Single string still works (backward compat).
+    assert GeminiProvider(api_key="k").api_keys == ["k"]
+
+
+def t_elevenlabs():
+    import base64
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import Mock, patch
+
+    from voiceover import synthesise
+
+    payload = {"audio_base64": base64.b64encode(b"x" * 2000).decode(),
+               "alignment": {
+                   "characters": ["H", "i", " ", "y", "o"],
+                   "character_start_times_seconds": [0, 0.1, 0.2, 0.3, 0.4],
+                   "character_end_times_seconds": [0.1, 0.2, 0.3, 0.4, 0.5]}}
+    ok = Mock(status_code=200)
+    ok.json.return_value = payload
+
+    def eleven_cfg():
+        cfg = tmp_cfg()
+        channel = cfg.data.setdefault("channel", {})
+        channel["elevenlabs_api_keys"] = ["k1"]
+        channel["elevenlabs_voice_id"] = "v1"
+        channel.setdefault("voice", "edge-voice")
+        return cfg
+
+    async def fake_edge(text, voice, rate, dest):
+        Path(dest).write_bytes(b"y" * 2000)
+        return []
+
+    # Happy path: audio decoded, chars grouped into word timings.
+    with tempfile.TemporaryDirectory() as tmp, \
+            patch("requests.post", return_value=ok) as post:
+        dest = Path(tmp) / "s.mp3"
+        out, timings = synthesise("Hi yo", dest, eleven_cfg())
+        assert out == dest and dest.stat().st_size == 2000
+        assert [(t.word, t.start, t.end) for t in timings] == [("Hi", 0, 0.2),
+                                                               ("yo", 0.3, 0.5)]
+        assert "with-timestamps" in post.call_args.args[0]
+    # Denied key -> edge-tts fallback still delivers.
+    denied = Mock(status_code=401, text="bad key")
+    with tempfile.TemporaryDirectory() as tmp, \
+            patch("requests.post", return_value=denied), \
+            patch("voiceover._synth", side_effect=fake_edge):
+        dest = Path(tmp) / "s.mp3"
+        out, timings = synthesise("Hi", dest, eleven_cfg())
+    assert out == dest and timings == []
+    # No keys -> edge-tts directly, ElevenLabs never called.
+    with tempfile.TemporaryDirectory() as tmp, \
+            patch("requests.post") as post, \
+            patch("voiceover._synth", side_effect=fake_edge):
+        cfg = tmp_cfg()
+        cfg.data.setdefault("channel", {})["voice"] = "edge-voice"
+        synthesise("Hi", Path(tmp) / "s.mp3", cfg)
+    assert post.call_count == 0
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -1069,6 +1175,8 @@ def main() -> int:
         ("jarvis_task", t_jarvis_task),
         ("analytics", t_analytics),
         ("voice", t_voice),
+        ("gemini_keys", t_gemini_keys),
+        ("elevenlabs", t_elevenlabs),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:

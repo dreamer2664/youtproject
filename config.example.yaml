@@ -40,6 +40,17 @@ channel:
   # target_seconds — faster speech just fits more words.
   speech_rate: "+40%"
 
+  # ElevenLabs premium voice (https://elevenlabs.io/app/settings/api-keys):
+  # used instead of edge-tts when keys + voice_id are set. Any failure falls
+  # back to edge-tts automatically. Free tier is ~10k chars/month (~11
+  # Shorts). Env ELEVENLABS_KEYS (space/comma-separated) wins.
+  elevenlabs_api_keys:
+    - ""
+  # Voice ID from the ElevenLabs voice library (e.g. Sarah:
+  # EXAVITQu4vr4xnSDxMaL). Empty = ElevenLabs stays off.
+  elevenlabs_voice_id: ""
+  elevenlabs_model: "eleven_turbo_v2_5"
+
   # Spoken language, used to prompt the script writer.
   language: "English"
 
@@ -173,13 +184,18 @@ ai:
   #   "template" -> no key, no network. Lower quality but always works.
   provider: "gemini"
 
-  # Paste your free Gemini key here, or set GEMINI_API_KEY in the environment.
-  # Leave blank to use the environment variable.
+  # Legacy single Gemini key (kept working); prefer the list below.
   gemini_api_key: ""
+  # Free Gemini keys (https://aistudio.google.com/apikey) — one per Google
+  # account. Rejected/rate-limited keys rotate automatically, so five keys
+  # is roughly 5x the free quota. Env GEMINI_API_KEYS (space/comma-separated)
+  # wins, else GEMINI_API_KEY (single).
+  gemini_api_keys:
+    - ""
   # Script-writing model. The default tracks the current Flash automatically;
   # if it ever 404s (Google renames models regularly) or saturates (503),
   # the built-in fallback chain tries pinned IDs in order, starting with
-  # "gemini-3.1-flash-lite" (verified answering on the free tier, Sep 2026).
+  # "gemini-flash-lite-latest" (verified answering, Sep 2026).
   # You can also set that ID explicitly here to skip straight to it.
   gemini_model: "gemini-flash-latest"
 

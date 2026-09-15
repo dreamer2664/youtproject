@@ -1,26 +1,30 @@
-"""Voiceover generation with edge-tts.
+"""Voiceover generation: ElevenLabs premium first, edge-tts fallback.
 
-edge-tts is free and needs no API key. It talks to an unofficial Microsoft
-endpoint, so it has no SLA — every call is retried and the caller is told
-clearly if voice is unavailable.
+ElevenLabs (keys + voice_id in config) gives the more human voice, with word
+timings from the with-timestamps endpoint. Anything goes wrong — no keys,
+denied keys, spent quota, bad audio — and the run falls back to edge-tts
+automatically, so voice can never block a render. Without ElevenLabs keys
+this module behaves exactly as before: free edge-tts, no signup.
 
-Word timings come from WordBoundary events (100ns ticks) and drive the
-subtitles. If timings are missing for a scene, subtitles fall back to even
-word spacing — see subtitles.py.
+Word timings drive the subtitles. If timings are missing for a scene,
+subtitles fall back to even word spacing — see subtitles.py.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import edge_tts
+import requests
 
 from config import Config
 
 TICKS_PER_SECOND = 10_000_000
+ELEVEN_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
 
 
 @dataclass
@@ -28,6 +32,72 @@ class WordTiming:
     word: str
     start: float  # seconds from the start of this clip
     end: float
+
+
+def _elevenlabs_available(cfg: Config) -> bool:
+    return bool(cfg.elevenlabs_api_keys and cfg.elevenlabs_voice_id)
+
+
+def _elevenlabs_save(data: dict, dest: Path) -> list[WordTiming]:
+    """Decode audio + char alignment into an MP3 and word timings."""
+    audio = base64.b64decode(data.get("audio_base64") or "")
+    if len(audio) <= 1000:
+        raise RuntimeError("elevenlabs returned empty audio")
+    dest.write_bytes(audio)
+    align = data.get("alignment") or {}
+    chars = align.get("characters") or []
+    starts = align.get("character_start_times_seconds") or []
+    ends = align.get("character_end_times_seconds") or []
+    timings: list[WordTiming] = []
+    word, wstart, wend = "", 0.0, 0.0
+    for index, char in enumerate(chars):
+        if str(char).isspace():
+            if word:
+                timings.append(WordTiming(word=word, start=wstart, end=wend))
+                word = ""
+        elif not word:
+            word = str(char)
+            wstart = float(starts[index]) if index < len(starts) else 0.0
+            wend = float(ends[index]) if index < len(ends) else wstart
+        else:
+            word += str(char)
+            wend = float(ends[index]) if index < len(ends) else wend
+    if word:
+        timings.append(WordTiming(word=word, start=wstart, end=wend))
+    return timings
+
+
+def _elevenlabs_synth(text: str, dest: Path, cfg: Config) -> list[WordTiming]:
+    """Premium voice with word timings. Raises when every key fails."""
+    last = "no keys tried"
+    for key in cfg.elevenlabs_api_keys:
+        try:
+            response = requests.post(
+                f"{ELEVEN_TTS_URL}/{cfg.elevenlabs_voice_id}/with-timestamps",
+                headers={"xi-api-key": key, "Content-Type": "application/json"},
+                json={"text": text, "model_id": cfg.elevenlabs_model,
+                      "voice_settings": {"stability": 0.5,
+                                         "similarity_boost": 0.75}},
+                timeout=180,
+            )
+        except Exception as exc:
+            last = str(exc)[:120]
+            continue
+        if response.status_code == 200:
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise RuntimeError(
+                    "elevenlabs returned a non-JSON payload") from exc
+            return _elevenlabs_save(data, dest)
+        last = f"HTTP {response.status_code}: {response.text[:150]}"
+        if response.status_code in (401, 429):
+            print(f"  [voice] elevenlabs key ...{key[-4:]} failed "
+                  f"({response.status_code}) — next key")
+            continue
+        # Any other status is the request/voice, not the key — stop.
+        break
+    raise RuntimeError(f"elevenlabs failed ({last})")
 
 
 async def _synth(text: str, voice: str, rate: str, dest: Path) -> list[WordTiming]:
@@ -56,9 +126,16 @@ def synthesise(
 ) -> tuple[Path, list[WordTiming]]:
     """Render narration to an MP3 plus word timings.
 
-    Raises RuntimeError if every attempt fails.
+    ElevenLabs first when configured, edge-tts otherwise (or on any
+    ElevenLabs failure). Raises RuntimeError if every attempt fails.
     """
     dest.parent.mkdir(parents=True, exist_ok=True)
+    if _elevenlabs_available(cfg):
+        try:
+            return dest, _elevenlabs_synth(text, dest, cfg)
+        except Exception as exc:
+            print(f"  [voice] elevenlabs failed ({exc}) — "
+                  f"falling back to edge-tts")
     last_error: Exception | None = None
 
     for attempt in range(1, attempts + 1):
@@ -86,7 +163,11 @@ def generate_scene_audio(
     paths: list[Path] = []
     all_timings: list[list[tuple[float, float]]] = []
     total = len(script.scenes)
-    print(f"  [voice] {cfg.voice} at {cfg.speech_rate}")
+    if _elevenlabs_available(cfg):
+        print(f"  [voice] elevenlabs {cfg.elevenlabs_model} "
+              f"(voice {cfg.elevenlabs_voice_id[:8]}…)")
+    else:
+        print(f"  [voice] {cfg.voice} at {cfg.speech_rate}")
 
     for index, scene in enumerate(script.scenes, start=1):
         dest = out_dir / f"scene_{index:02d}.mp3"
