@@ -9,8 +9,8 @@ Approach:
 
 The final mux is self-healing: if the full mix (burned subtitles + progress
 bar + end-card text + audio candy) crashes an FFmpeg build, it retries with
-progressively simpler mixes until one works, so a filter quirk can only cost
-a garnish, never the whole video.
+a Python-rendered full-garnish mix until one works, so a filter quirk
+can only cost native quality, never the garnish or the video.
 """
 
 from __future__ import annotations
@@ -547,6 +547,36 @@ def assemble_video(
         if all(cmd != built for _, built in plan):
             plan.append((label, cmd))
 
+    # Python garnish rung: full subtitles + progress + CTA + audio candy
+    # rendered WITHOUT any FFmpeg filter (Pillow text PNGs via movie+overlay
+    # on the -vf path, audio pre-mixed in numpy). Survives FFmpeg builds
+    # whose filter_complex/font stack segfaults. Built lazily — healthy
+    # machines that finish the native plan never pay for it.
+    try:
+        from pygarnish import available as _pyg_available
+
+        _pyg_ok = _pyg_available()
+    except ImportError:
+        _pyg_ok = False
+    if _pyg_ok:
+        try:
+            from pygarnish import build_pygarnish_mux_cmd, prepare_pygarnish
+
+            _pyg_kwargs = prepare_pygarnish(
+                work_dir=work_dir, cfg=cfg, padded_audio=padded_audio,
+                total_seconds=total_seconds, cuts=cuts, assets=assets,
+                music_track=music_track, burn_path=burn_path,
+                cta_overlay=cta_overlay,
+            )
+            _pyg_cmd = build_pygarnish_mux_cmd(
+                concat_txt=concat_txt, out_path=out_path, cfg=cfg,
+                total_seconds=total_seconds, **_pyg_kwargs,
+            )
+            if all(_pyg_cmd != built for _, built in plan):
+                plan.append(("python garnish mix (no ffmpeg filters)", _pyg_cmd))
+        except Exception as exc:  # noqa: BLE001 - ladder must survive
+            print(f"      mux       : python garnish unavailable ({exc}) — continuing...")
+
     debug_path = cfg.work_dir / f"mux_debug_{out_path.stem}.log"
     try:
         debug_path.unlink(missing_ok=True)  # fresh log per render
@@ -564,7 +594,7 @@ def assemble_video(
                 first = str(exc).splitlines()[0][:110] if str(exc) else "unknown error"
                 print(f"      mux       : {label} failed ({first}) — retrying simpler...")
                 continue
-            print(f"      mux       : every mix failed (7 attempts) — full log in {debug_path.name}")
+            print(f"      mux       : every mix failed ({len(plan)} attempts) — full log in {debug_path.name}")
             raise
         if index > 0:
             print(f"      mux       : full mix crashes this FFmpeg build — finished {label}.")

@@ -1492,6 +1492,101 @@ def t_emergency_mux():
     assert "libmp3lame" in mp3 and "+faststart" not in " ".join(mp3)
 
 
+def t_pygarnish():
+    """Python garnish: SRT/ASS parsing, caption PNGs, numpy audio mix, and a
+    mux command with no filter_complex/af/font filters. Offline; the render
+    and mix parts are skipped when Pillow/numpy are missing (the ladder
+    skips the rung the same way)."""
+    from pygarnish import (available, build_pygarnish_mux_cmd, merge_phrases,
+                           parse_sub_file)
+
+    cfg = tmp_cfg()
+    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    srt = tmp / "t.srt"
+    srt.write_text(
+        "1\n00:00:01,000 --> 00:00:02,500\nHello world\n\n"
+        "2\n00:00:03,000 --> 00:00:04,000\nSecond cue here\n",
+        encoding="utf-8",
+    )
+    events, is_ass = parse_sub_file(srt)
+    assert not is_ass and len(events) == 2
+    assert abs(events[0].start - 1.0) < 1e-6
+    assert abs(events[0].end - 2.5) < 1e-6
+    assert events[0].lines == ((("Hello", False), ("world", False)),)
+
+    ass = tmp / "t.ass"
+    ass.write_text(
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        "Dialogue: 0,0:00:01.00,0:00:01.50,Karaoke,,0,0,0,,"
+        "{\\c&H00FFFF&}Hello{\\c&HFFFFFF&} world\n"
+        "Dialogue: 0,0:00:01.50,0:00:02.00,Karaoke,,0,0,0,,"
+        "Hello {\\c&H00FFFF&}world{\\c&HFFFFFF&}\n",
+        encoding="utf-8",
+    )
+    ev2, is_ass2 = parse_sub_file(ass)
+    assert is_ass2 and len(ev2) == 2
+    assert ev2[0].lines[0][0] == ("Hello", True)
+    assert ev2[1].lines[0][1] == ("world", True)
+    merged = merge_phrases(ev2)
+    assert len(merged) == 1
+    assert abs(merged[0].start - 1.0) < 1e-6
+    assert abs(merged[0].end - 2.0) < 1e-6
+    assert all(not hl for line in merged[0].lines for _, hl in line)
+
+    # Command shape: pure constructor, needs no PIL/numpy/FFmpeg.
+    cmd = build_pygarnish_mux_cmd(
+        concat_txt=tmp / "c.txt", mixed_wav=tmp / "m.wav",
+        out_path=tmp / "o.mp4", cfg=cfg, total_seconds=10.0,
+        overlays=[(tmp / "cue1.png", 1.0, 2.5)],
+        cta=(tmp / "cta.png", 6.5), with_progress=True)
+    joined = " ".join(cmd)
+    assert "-filter_complex" not in cmd and "-af" not in cmd
+    assert "subtitles=" not in joined and "drawtext" not in joined
+    vf = cmd[cmd.index("-vf") + 1]
+    assert "movie=" in vf and "overlay=" in vf and "drawbox" in vf, vf
+    assert "between(t,1.000,2.500)" in vf and "gte(t,6.500)" in vf
+    assert cmd[-1].endswith("o.mp4")
+
+    if not available():
+        return
+    from pygarnish import mix_audio_py, render_caption_png
+
+    png = tmp / "cap.png"
+    render_caption_png(png, 1080, 1920, events[0].lines, fontsize=73,
+                       centered=False, bottom_margin=333)
+    assert png.exists() and png.stat().st_size > 1000
+
+    import math
+    import wave as _wave
+    from array import array as _array
+
+    def _tone(path, secs, hz):
+        n = int(48000 * secs)
+        data = _array("h")
+        for i in range(n):
+            val = int(10000 * math.sin(2 * math.pi * hz * i / 48000))
+            data.append(val)
+            data.append(val)
+        with _wave.open(str(path), "wb") as handle:
+            handle.setnchannels(2)
+            handle.setsampwidth(2)
+            handle.setframerate(48000)
+            handle.writeframes(data.tobytes())
+
+    _tone(tmp / "n.wav", 0.5, 440.0)
+    _tone(tmp / "bed.wav", 0.25, 110.0)
+    _tone(tmp / "w.wav", 0.1, 880.0)
+    out = mix_audio_py(
+        padded_audio=[tmp / "n.wav"], out_path=tmp / "mix.wav",
+        total_seconds=0.5, cuts=[0.25], whoosh_path=tmp / "w.wav",
+        whoosh_db=-6.0, pop_path=None, pop_at=None,
+        music_track=tmp / "bed.wav", music_level_db=-12.0, music_duck=True)
+    with _wave.open(str(out), "rb") as handle:
+        assert handle.getnframes() == 24000
+        assert handle.getnchannels() == 2
+        assert handle.getframerate() == 48000
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -1540,6 +1635,7 @@ def main() -> int:
         ("deps_guard", t_deps_guard),
         ("render_debug", t_render_debug),
         ("emergency_mux", t_emergency_mux),
+        ("pygarnish", t_pygarnish),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:
