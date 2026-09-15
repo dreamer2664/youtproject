@@ -65,6 +65,11 @@ DEFAULTS: dict[str, Any] = {
         #   stickman  = whiteboard stick-figure explainer (viral TikTok look)
         # One-off override:  python main.py generate --style stickman
         "style": "photoreal",
+        # Video encoder. "cpu" = libx264 veryfast (always works).
+        # "auto" = fastest hardware encoder this FFmpeg offers (NVENC >
+        # QuickSync > VideoToolbox), falling back to libx264; or force one:
+        # "nvenc", "qsv", "videotoolbox". Garbage -> "cpu".
+        "encoder": "cpu",
     },
     "subtitles": {
         # Word-timed subtitles, burned into the video. A captions.srt is also
@@ -129,6 +134,9 @@ DEFAULTS: dict[str, Any] = {
         "upload_preset": "",
         "cloudinary_api_key": "",
         "cloudinary_api_secret": "",
+        # Chain package + autopost (as Buffer drafts) after every generate.
+        # The only manual step left is reviewing drafts in Buffer.
+        "autopost_after_generate": False,
     },
     "telegram": {
         # Phone control: text the bot a topic, get back a finished video.
@@ -326,6 +334,12 @@ class Config:
         """Art direction; garbage in -> 'photoreal' (never crashes)."""
         name = str(self.data["video"].get("style", "photoreal")).lower()
         return name if name in STYLES else "photoreal"
+
+    @property
+    def encoder(self) -> str:
+        """Video encoder; garbage in -> 'cpu' (never crashes)."""
+        name = str(self.data["video"].get("encoder", "cpu")).lower()
+        return name if name in ("cpu", "auto", "nvenc", "qsv", "videotoolbox") else "cpu"
 
     @property
     def thumb_width(self) -> int:
@@ -588,6 +602,10 @@ class Config:
     @property
     def buffer_made_for_kids(self) -> bool:
         return bool(self.data["buffer"].get("made_for_kids", False))
+
+    @property
+    def autopost_after_generate(self) -> bool:
+        return bool(self.data["buffer"].get("autopost_after_generate", False))
 
     @property
     def cloudinary_cloud_name(self) -> str:

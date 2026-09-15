@@ -197,6 +197,105 @@ def cmd_preflight(cfg, args) -> int:
 # --------------------------------------------------------------------------
 # generate
 # --------------------------------------------------------------------------
+def _estimate_render_seconds(cfg) -> tuple[float, str]:
+    """(avg seconds per video, basis note) from job history, else a default."""
+    from jobqueue import Queue
+
+    spans = [job.updated_at - job.created_at for job in Queue(cfg.state_file).jobs
+             if job.status in ("generated", "packaged")
+             and 0 < job.updated_at - job.created_at < 10800]
+    if spans:
+        return sum(spans) / len(spans), f"avg of {len(spans)} past video(s)"
+    return 240.0, "default (no history yet)"
+
+
+def _auto_chain(cfg, new_ids: list[str]) -> None:
+    """Package this run's new videos and draft them to Buffer. Never raises."""
+    import argparse
+
+    from jobqueue import Queue
+
+    from package import build_package
+
+    queue = Queue(cfg.state_file)
+    for job_id in new_ids:
+        job = queue.get(job_id)
+        if job is None or job.status != "generated":
+            continue
+        print(f"  [auto] packaging {job.title or job.topic}...")
+        try:
+            kit = build_package(job, cfg)
+            queue.update(job, status="packaged", package_dir=str(kit))
+        except Exception as exc:  # noqa: BLE001 - the chain never fails the run
+            print(f"  [auto] package failed ({str(exc)[:120]}) — skipping post.")
+            continue
+        if not (cfg.buffer_api_key and cfg.cloudinary_cloud_name):
+            print("  [auto] Buffer/Cloudinary not configured — packaged, not posted.")
+            continue
+        print("  [auto] drafting to Buffer (review drafts to release)...")
+        try:
+            cmd_autopost(cfg, argparse.Namespace(
+                file=str(Path(job.video_file)) if job.video_file else None,
+                publish=False, schedule=False, at=None, channels=None,
+                video_url=None))
+        except SystemExit:
+            print("  [auto] autopost skipped (see message above).")
+        except Exception as exc:  # noqa: BLE001 - the chain never fails the run
+            print(f"  [auto] autopost failed ({str(exc)[:120]}).")
+
+
+def _fresh_preview(cfg, limit: int) -> tuple[list[str], int]:
+    """(up to `limit` fresh backlog topics, total fresh). Read-only, no API."""
+    from jobqueue import Queue
+
+    from topics import is_same_topic, load_backlog
+
+    used = [job.topic for job in Queue(cfg.state_file).jobs]
+    fresh = [t for t in load_backlog(cfg.topics_backlog_file)
+             if not any(is_same_topic(t, old) for old in used)]
+    return fresh[:limit], len(fresh)
+
+
+def _dry_run_batch(cfg, topics: list) -> int:
+    """Report what batch WOULD render. No API calls, no backlog writes."""
+    print(BANNER)
+    avg, basis = _estimate_render_seconds(cfg)
+    explicit = [t for t in topics if t]
+    auto_count = len(topics) - len(explicit)
+    print(f"DRY RUN — {len(topics)} video(s), ~{avg * len(topics) / 60:.0f} min total "
+          f"(~{avg / 60:.1f} min each, {basis}).")
+    if explicit:
+        print("explicit topics:")
+        for topic in explicit:
+            print(f"  - {topic}")
+    if auto_count:
+        preview, total = _fresh_preview(cfg, auto_count)
+        print(f"auto-pick ({auto_count} needed, {total} fresh in backlog):")
+        for topic in preview:
+            print(f"  - {topic}")
+        if total < auto_count:
+            print("  ... shortfall would come from top-up or the channel topic.")
+    print("\nNothing rendered, nothing spent. Drop --dry-run to go.")
+    return 0
+
+
+def _dry_run_schedule(cfg, times: list[str], per_day: int) -> int:
+    """Report what schedule WOULD do. No API calls, no backlog writes, no sleep."""
+    print(BANNER)
+    avg, basis = _estimate_render_seconds(cfg)
+    slots = ", ".join(times) if times else f"evenly spaced x{per_day}"
+    print(f"DRY RUN — {per_day} video(s)/day at {slots} "
+          f"(~{avg * per_day / 60:.0f} min/day, ~{avg / 60:.1f} min each, {basis}).")
+    preview, total = _fresh_preview(cfg, per_day)
+    print(f"next topics preview ({total} fresh in backlog):")
+    for topic in preview:
+        print(f"  - {topic}")
+    if total < per_day:
+        print("  ... shortfall would come from top-up or the channel topic.")
+    print("\nNothing rendered, nothing spent. Drop --dry-run to go.")
+    return 0
+
+
 def _pick_fresh_topic(cfg, used: list[str]) -> tuple[str, str]:
     """Next backlog topic the channel hasn't covered; channel topic last resort."""
     from topics import load_backlog, pop_fresh_topic, top_up_backlog
@@ -238,6 +337,7 @@ def cmd_generate(cfg, args) -> int:
     from topics import is_same_topic
 
     used = [job.topic for job in queue.jobs]
+    new_ids: list[str] = []
     for number in range(1, count + 1):
         if args.topic:
             topic, source = args.topic, "--topic override"
@@ -253,6 +353,7 @@ def cmd_generate(cfg, args) -> int:
         print(f"[{number}/{count}] topic: {topic}  ({source})")
 
         job = queue.add(topic)
+        new_ids.append(job.id)
         job_dir = cfg.work_dir / job.id
         job_dir.mkdir(parents=True, exist_ok=True)
 
@@ -327,7 +428,9 @@ def cmd_generate(cfg, args) -> int:
             segments, padded, durations = build_segments(
                 images_by_scene, audio_paths, job_dir, cfg
             )
-            out_path = cfg.out_dir / f"{job.id}.mp4"
+            from bot import slugify
+
+            out_path = cfg.out_dir / f"{slugify(script.title, 'video')}-{job.id}.mp4"
 
             print("  5/5 subtitles + final video")
             burn_path = None
@@ -413,9 +516,15 @@ def cmd_generate(cfg, args) -> int:
             if not args.keep_going:
                 return 1
 
+    if cfg.autopost_after_generate and new_ids:
+        _auto_chain(cfg, new_ids)
+
     print()
     print(queue.format_table())
-    print("\nNext: python main.py package")
+    if cfg.autopost_after_generate and new_ids:
+        print("\nAuto-chain on: packaged + drafted to Buffer (review drafts to release).")
+    else:
+        print("\nNext: python main.py package")
     return 0
 
 
@@ -585,6 +694,8 @@ def cmd_batch(cfg, args) -> int:
     if not topics:
         topics = [None] * count  # type: ignore[list-item] - auto-pick below
     topics = topics[:count]
+    if args.dry_run:
+        return _dry_run_batch(cfg, topics)
 
     gen_args = argparse.Namespace(
         topic=None, count=1, seconds=args.seconds, format=args.format,
@@ -743,6 +854,8 @@ def cmd_schedule(cfg, args) -> int:
             detail = ((new[-1].error or "")[:100] if new else "") or "unknown"
             _notify_telegram(cfg, f"\u274c scheduled video failed: {detail}")
 
+    if args.dry_run:
+        return _dry_run_schedule(cfg, times, per_day)
     if args.once:
         fire()
         return 0
@@ -952,6 +1065,8 @@ def main() -> int:
     p.add_argument("--no-subs", action="store_true")
     p.add_argument("--keep-work", action="store_true")
     p.add_argument("--verbose", action="store_true")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report what would render, then stop")
 
     p = sub.add_parser("topics", help="view/refill the topic backlog")
     p.add_argument("--topup", action="store_true",
@@ -976,6 +1091,8 @@ def main() -> int:
                    help="render one backlog topic now and exit")
     p.add_argument("--no-topup", dest="topup", action="store_false", default=True,
                    help="never auto-refill the backlog")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report what would render, then stop")
     p = sub.add_parser("bot", help="render videos from your phone via Telegram")
     p.add_argument("--seconds", type=int, help="target length for bot renders")
     p.add_argument("--format", choices=["landscape", "portrait"],

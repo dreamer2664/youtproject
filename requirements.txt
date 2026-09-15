@@ -1,5 +1,6 @@
 # No Google/YouTube libraries on purpose — this project uses no YouTube API,
 # which is exactly why no audit or verification can ever be required.
-requests>=2.31.0
-edge-tts>=6.1.0
-PyYAML>=6.0
+# Ceilings block breaking majors; minors float for security fixes.
+requests>=2.31.0,<3
+edge-tts>=6.1.0,<8
+PyYAML>=6.0,<7

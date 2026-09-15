@@ -729,6 +729,34 @@ def t_script_chain_groq():
     assert isinstance(get_provider(cfg), ChainedProvider)
 
 
+def t_slugify():
+    from bot import slugify
+
+    assert slugify("The Secret Language of Trees!", "video") == "the-secret-language-of-trees"
+    assert slugify("  ", "video") == "video"
+    assert len(slugify("x" * 100, "video")) <= 50
+
+
+def t_encoder_setting():
+    from assembler import _ENCODER_ARGS
+
+    cfg = tmp_cfg()
+    assert cfg.encoder == "cpu"
+    cfg.data["video"]["encoder"] = "NVENC"
+    assert cfg.encoder == "nvenc"
+    cfg.data["video"]["encoder"] = "nonsense"
+    assert cfg.encoder == "cpu"
+    assert _ENCODER_ARGS["cpu"][0] == "libx264"  # CPU path byte-identical
+    assert _ENCODER_ARGS["nvenc"][0] == "h264_nvenc"
+
+
+def t_dry_run_batch():
+    from main import _dry_run_batch
+
+    cfg = tmp_cfg()
+    assert _dry_run_batch(cfg, ["explicit topic", None]) == 0
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -758,6 +786,9 @@ def main() -> int:
         ("autopost_builders", t_autopost_builders),
         ("groq_rotation", t_groq_rotation),
         ("script_chain_groq", t_script_chain_groq),
+        ("slugify", t_slugify),
+        ("encoder_setting", t_encoder_setting),
+        ("dry_run_batch", t_dry_run_batch),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:

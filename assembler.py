@@ -111,6 +111,71 @@ def _esc(text: str) -> str:
     return text.replace("\\", "\\\\").replace("'", "\u2019").replace(":", "\\:").replace("%", "\\%")
 
 
+# Hardware encoder map: setting -> (ffmpeg encoder, quality args).
+# Quality matches the CPU path's CRF 20 closely enough that outputs are
+# interchangeable; speed is typically 3-10x on a machine with a GPU.
+_ENCODER_ARGS = {
+    "cpu": ("libx264", ["-preset", "veryfast", "-crf", "20"]),
+    "nvenc": ("h264_nvenc", ["-preset", "p4", "-cq", "20"]),
+    "qsv": ("h264_qsv", ["-preset", "veryfast", "-global_quality", "20"]),
+    "videotoolbox": ("h264_videotoolbox", ["-q:v", "65"]),
+}
+_ENCODER_CACHE: dict[str, list[str]] = {}
+
+
+def resolve_encoder_args(setting: str) -> list[str]:
+    """Full -c:v arg list for a config encoder setting (cached, self-testing).
+
+    "auto" picks the fastest encoder this FFmpeg build actually encodes
+    with (NVENC > QuickSync > VideoToolbox > CPU); an explicit encoder
+    that fails its 1-second self-test falls back to CPU with a warning.
+    """
+    if setting in _ENCODER_CACHE:
+        return list(_ENCODER_CACHE[setting])
+    if setting == "auto":
+        candidates = ["nvenc", "qsv", "videotoolbox", "cpu"]
+    elif setting in _ENCODER_ARGS:
+        candidates = [setting, "cpu"]
+    else:
+        candidates = ["cpu"]
+    for name in candidates:
+        if name == "cpu" or _encoder_selftest(name):
+            if setting != "auto" and name != setting:
+                print(f"  [encoder] {setting} unavailable — falling back to CPU (libx264).")
+            if setting == "auto" and name != "cpu":
+                print(f"  [encoder] auto: using {name} ({_ENCODER_ARGS[name][0]}).")
+            args = ["-c:v", _ENCODER_ARGS[name][0], *_ENCODER_ARGS[name][1]]
+            _ENCODER_CACHE[setting] = args
+            return list(args)
+    args = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20"]
+    _ENCODER_CACHE[setting] = args
+    return list(args)
+
+
+def _encoder_selftest(name: str) -> bool:
+    """True if this FFmpeg can actually encode 1s of test video with `name`."""
+    encoder = _ENCODER_ARGS[name][0]
+    try:
+        probe = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if f" {encoder} " not in f" {probe.stdout} ":
+        return False
+    try:
+        test = subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+             "-i", "testsrc=duration=1:size=320x240:rate=10",
+             "-c:v", encoder, *_ENCODER_ARGS[name][1], "-f", "null", "-"],
+            capture_output=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return test.returncode == 0
+
+
 def build_segments(
     images_by_scene: list[list[Path]],
     audio_paths: list[Path],
@@ -173,7 +238,7 @@ def build_segments(
                     "-vf", vf,
                     "-t", f"{part_seconds:.3f}",
                     "-r", str(cfg.fps),
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                    *resolve_encoder_args(cfg.encoder),
                     "-pix_fmt", "yuv420p",
                     str(segment),
                 ],
@@ -340,7 +405,7 @@ def _build_mux_cmd(
         # veryfast + capped threads: the medium preset's lookahead buffers
         # can OOM small machines on 2MP frames; visually identical here
         # since the segments were already encoded once at CRF 20.
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+        *resolve_encoder_args(cfg.encoder),
         "-threads", "4",
         "-c:a", "aac", "-b:a", "192k",
         "-movflags", "+faststart",
