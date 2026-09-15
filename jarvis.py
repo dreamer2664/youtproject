@@ -243,19 +243,10 @@ def channel_report(cfg: Config, days: int = 7) -> dict:
     failed = [{"job_id": job.id, "error": (job.error or "?")[:150]}
               for job in jobs if job.status == "failed"]
     backlog = load_backlog(cfg.topics_backlog_file)
-    scheduled = []
-    try:
-        lines = (cfg.root / "jarvis_log.jsonl").read_text(encoding="utf-8").splitlines()
-    except OSError:
-        lines = []
-    for line in lines[-50:]:
-        try:
-            entry = json.loads(line)
-        except ValueError:
-            continue
-        if entry.get("tool") == "schedule_video" and "error" not in str(entry.get("result", "")):
-            scheduled.append(entry)
+    from analytics import channel_stats
+
+    buffer = channel_stats(cfg, days=days)
     return {"days": days, "made": len(made), "failed": len(failed),
             "videos": made[-10:], "failures": failed[-5:],
             "backlog": f"{len(backlog)}/{cfg.topics_backlog_target}",
-            "scheduled_recent": scheduled[-10:]}
+            "buffer": buffer}

@@ -895,6 +895,25 @@ def cmd_schedule(cfg, args) -> int:
         return 0
 
 
+def cmd_stats(cfg, args) -> int:
+    from analytics import channel_stats
+
+    stats = channel_stats(cfg, days=args.days)
+    if "error" in stats:
+        die(stats["error"])
+    print(f"Channel — last {stats['days']} days")
+    print(f"  sent: {stats['posts']} | scheduled: {stats['scheduled']}")
+    for service, bucket in stats["services"].items():
+        print(f"  {service}: {bucket['posts']} posts, {bucket['views']} views, "
+              f"reach {bucket['reach']}, eng {bucket['eng_rate_avg']}%")
+    if stats["top"]:
+        print(f"  top: {stats['top']['service']} {stats['top']['views']} views "
+              f"({stats['top']['text']})")
+    elif not stats["posts"]:
+        print("  nothing sent in this window yet.")
+    return 0
+
+
 def cmd_jarvis(cfg, args) -> int:
     from jarvis import run_task
 
@@ -1113,6 +1132,9 @@ def main() -> int:
     p.add_argument("--style", choices=["photoreal", "cartoon", "stickman"],
                    help="art direction for bot renders")
 
+    p = sub.add_parser("stats", help="channel performance from Buffer")
+    p.add_argument("--days", type=int, default=30, help="lookback window")
+
     p = sub.add_parser("jarvis", help="give the channel manager a task")
     p.add_argument("task", nargs="+", help="plain-language task in quotes")
 
@@ -1156,6 +1178,7 @@ def main() -> int:
         "schedule": cmd_schedule,
         "bot": cmd_bot,
         "jarvis": cmd_jarvis,
+        "stats": cmd_stats,
         "package": cmd_package,
         "reburn": cmd_reburn,
         "published": cmd_published,

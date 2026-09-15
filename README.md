@@ -111,29 +111,30 @@ python main.py generate --style stickman  # whiteboard stickman explainer look
 python main.py generate --style cartoon   # flat 2D vector toon look
 python main.py generate --no-subs       # skip subtitles for one run
 python main.py batch --topics topics.txt  # render a whole list overnight
-python main.py batch --count 7          # 7 auto-variations of your topic
-python main.py topics --topup       # refill the topic backlog with Gemini ideas
+python main.py batch --count 7          # 7 fresh backlog topics, auto-picked
+python main.py batch --dry-run --count 3  # preview a batch: topics + time, $0
+python main.py topics --topup       # refill the topic backlog with AI ideas
 python main.py schedule --per-day 2 # render 2 videos/day unattended (Ctrl+C stops)
+python main.py schedule --dry-run   # preview the daily plan, $0
 python main.py bot                         # render videos from your phone via Telegram
+python main.py jarvis "make 3 videos and schedule them 4h apart tomorrow"  # channel manager
+python main.py autopost                     # post newest video via Buffer (draft)
+python main.py stats --days 30                # views/reach/eng per channel (Buffer)
 python main.py queue                    # what's in the queue
 python main.py package                  # build upload kits for generated videos
 python main.py published <id> <url>     # record a manual upload's URL
 python main.py voices --lang it-        # list Italian voiceover voices
 ```
 
-### Picking topics (nothing is random)
+### Picking topics (nothing repeats)
 
-Every run uses `channel.topic` from `config.yaml` — set it to your niche once:
-
-```yaml
-channel:
-  topic: "forgotten medieval engineering"
-```
-
-Each run then picks **one different story inside that topic**. For a one-off
-idea without changing the config: `python main.py generate --topic "..."`.
-The output always tells you which it used (`from config.yaml` vs
-`--topic override`).
+`channel.topic` in `config.yaml` is your niche (e.g. `"forgotten medieval
+engineering"`). Every auto run pops one **fresh story from the backlog**
+(`topics/backlog.txt`, auto-refilled by AI), skipping anything the channel
+already covered — exact or near-duplicate. Same video twice is structurally
+impossible. For a one-off: `python main.py generate --topic "..."` (explicit
+always wins, with a warning if it's a repeat). The output tells you the
+source (`from backlog` vs `--topic override` vs channel fallback).
 
 ### The daily flow
 
@@ -159,10 +160,12 @@ Text the bot a topic from your phone, get back the finished video:
    firewall or port setup is needed.
 
 Plain text = a topic to render. `/queue` shows progress, `/send <id>`
-re-sends a finished video. One video renders
-at a time; extras queue up. The video arrives as a file (bit-exact, ready
-to upload) plus the caption and hashtags, and the full YouTube kit is also
-built on your PC. Only your account can use the bot.
+re-sends a finished video. `/jarvis <task>` hands the channel manager a job
+("make 3 videos and schedule them 4 hours apart tomorrow") — it reports back
+here as it goes. One thing runs at a time; extras queue up. A rendered video
+arrives as a file (bit-exact, ready to upload) plus the caption and hashtags,
+and the full YouTube kit is also built on your PC. Only your account can use
+the bot.
 
 ---
 
@@ -207,6 +210,12 @@ Shorts, long-form and art styles without touching the config.
 | `jobqueue.py` | `state.json` job tracking |
 | `bot.py` | Telegram phone control (polls, renders, delivers) |
 | `autopost.py` | Buffer autopost: video hosting + TikTok/YouTube/IG drafts or scheduled posts |
+| `jarvis.py` | Channel manager brain: tasks → render + schedule + report |
+| `openai_compat.py` | Shared base for OpenAI-style chat lanes (rotation + fallback) |
+| `groq.py` / `openrouter.py` | Free LLM lanes (primary / backup) |
+| `broll.py` | Pexels stock B-roll fetcher (fetch-only) |
+| `editorial.py` | Punch-up (retention) + decringe (taste veto) passes |
+| `analytics.py` | Buffer stats: posts + per-post metrics roll-up (read-only) |
 | `test_smoke.py` | Offline self-tests: `python test_smoke.py` (no keys/network needed) |
 | `UPLOAD-GUIDE.md` | The manual-upload walkthrough |
 | `hooks/pre-commit` | Blocks credentials from being committed |

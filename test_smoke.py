@@ -954,6 +954,47 @@ def t_jarvis_task():
     assert result["requested"] == 99 and result["capped_to"] == 5
 
 
+def t_analytics():
+    from unittest.mock import patch
+
+    from analytics import channel_stats
+
+    page = {"posts": {"edges": [
+        {"node": {"id": "a", "status": "sent", "text": "vid one",
+                   "sentAt": "2026-09-15T06:00:00.000Z",
+                   "channelService": "tiktok", "dueAt": None,
+                   "createdAt": "2026-09-14T00:00:00.000Z",
+                   "metrics": [{"name": "Video Views", "value": 100},
+                               {"name": "Reach", "value": 80},
+                               {"name": "Eng. Rate", "value": 2.5}]}},
+        {"node": {"id": "b", "status": "scheduled", "text": "vid two",
+                   "sentAt": None, "channelService": "youtube",
+                   "dueAt": "2026-09-16T09:00:00.000Z",
+                   "createdAt": "2026-09-15T00:00:00.000Z", "metrics": []}},
+    ], "pageInfo": {"hasNextPage": False, "endCursor": None}}}
+
+    class FakeClient:
+        def __init__(self, key: str) -> None:
+            pass
+
+        def organizations(self):
+            return [{"id": "org"}]
+
+        def _gql(self, query, variables=None):
+            return page
+
+    cfg = tmp_cfg()
+    cfg.data["buffer"] = {"api_key": "x"}
+    with patch("autopost.BufferClient", FakeClient):
+        stats = channel_stats(cfg, days=30)
+    assert stats["posts"] == 1 and stats["scheduled"] == 1
+    assert stats["services"]["tiktok"]["views"] == 100
+    assert stats["services"]["tiktok"]["eng_rate_avg"] == 2.5
+    assert stats["top"]["id"] == "a"
+    # no key -> clean error, nothing raised.
+    assert "error" in channel_stats(tmp_cfg())
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -991,6 +1032,7 @@ def main() -> int:
         ("broll", t_broll),
         ("chat_tools", t_chat_tools),
         ("jarvis_task", t_jarvis_task),
+        ("analytics", t_analytics),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:
