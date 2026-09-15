@@ -12,6 +12,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+# Friendly guard: config.py is the first project import everywhere, so a
+# missing venv shows up here as a scary traceback. Say the fix instead.
+_missing = []
+for _mod in ("yaml", "requests", "edge_tts"):
+    try:
+        __import__(_mod)
+    except ImportError:
+        _missing.append(_mod)
+if _missing:
+    raise SystemExit(
+        f"Missing Python packages ({', '.join(_missing)}). You probably "
+        f"forgot to activate the venv — run: .\\venv\\Scripts\\Activate.ps1 "
+        f"(Windows) or source venv/bin/activate (Linux/Mac), then retry. "
+        f"First time ever? Run setup.ps1 (Windows) / setup.sh (Linux/Mac), "
+        f"or: pip install -r requirements.txt"
+    )
 import yaml
 
 # (width, height) per format. Portrait is what YouTube shelves as Shorts.

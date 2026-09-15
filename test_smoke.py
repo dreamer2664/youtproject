@@ -1420,6 +1420,25 @@ def t_key_pools():
     cmd_preflight(tmp_cfg(), SimpleNamespace(live=False))
 
 
+def t_deps_guard():
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    # Simulate an empty venv: blocked imports must produce the friendly
+    # message (on stderr, non-zero exit), not a traceback.
+    code = ("import sys; "
+            "[sys.modules.__setitem__(m, None) "
+            "for m in ('yaml', 'requests', 'edge_tts')]; "
+            "import config")
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                          text=True, cwd=Path(__file__).parent)
+    assert proc.returncode != 0
+    assert "Activate.ps1" in proc.stderr
+    assert "pip install -r requirements.txt" in proc.stderr
+    assert "Traceback" not in proc.stderr
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -1465,6 +1484,7 @@ def main() -> int:
         ("crew", t_crew),
         ("crew_watch", t_crew_watch),
         ("key_pools", t_key_pools),
+        ("deps_guard", t_deps_guard),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:
