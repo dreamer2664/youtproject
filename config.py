@@ -222,6 +222,14 @@ DEFAULTS: dict[str, Any] = {
         # never blocks a render on failure.
         "enabled": True,
     },
+    "youtube": {
+        # YouTube Data API v3 keys (https://console.cloud.google.com/apis/
+        # library/youtube.googleapis.com) — one Cloud project per key, each
+        # with its own free 10k-units/day pool. Powers `python main.py yt`:
+        # video/channel stats (1 unit) and Shorts niche search (100 units).
+        # Env: YOUTUBE_KEYS (space/comma-separated) wins.
+        "api_keys": [],
+    },
     "jarvis": {
         # Channel manager: `python main.py jarvis "..."` + Telegram /jarvis.
         # Drafts by default — flip auto_schedule once you trust it.
@@ -324,6 +332,18 @@ class Config:
     def elevenlabs_model(self) -> str:
         return str(self.data["channel"].get("elevenlabs_model")
                    or "eleven_turbo_v2_5").strip()
+
+    @property
+    def youtube_api_keys(self) -> list[str]:
+        """YouTube Data keys; env YOUTUBE_KEYS wins (never crash)."""
+        env = (os.environ.get("YOUTUBE_KEYS") or "").strip()
+        if env:
+            return [part for chunk in env.split(",") for part in
+                    (p.strip() for p in chunk.split()) if part]
+        raw = self.data.get("youtube", {}).get("api_keys") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        return [str(k).strip() for k in raw if str(k).strip()]
 
     @property
     def language(self) -> str:

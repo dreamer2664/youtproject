@@ -163,6 +163,15 @@ factcheck:
   # without one it skips silently. Never blocks a render on failure.
   enabled: true
 
+youtube:
+  # YouTube Data API v3 keys: one Cloud project per key, each with its own
+  # free 10k-units/day pool. Powers `python main.py yt`: video/channel
+  # stats cost 1 unit, Shorts niche search costs 100. Quota is tracked and
+  # printed every run. Env YOUTUBE_KEYS (space/comma-separated) wins.
+  # Enable at https://console.cloud.google.com/apis/library/youtube.googleapis.com
+  api_keys:
+    - ""
+
 jarvis:
   # Channel manager: python main.py jarvis "..." + Telegram /jarvis.
   # Drafts by default — flip auto_schedule once you trust it.

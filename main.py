@@ -895,6 +895,44 @@ def cmd_schedule(cfg, args) -> int:
         return 0
 
 
+def cmd_yt(cfg, args) -> int:
+    from youtube import (YouTubeClient, channel_stats, extract_id,
+                         search_shorts, video_stats)
+
+    if not cfg.youtube_api_keys:
+        die("no YouTube API key (youtube.api_keys) — enable YouTube Data API v3\n"
+            "at https://console.cloud.google.com/apis/library/youtube.googleapis.com")
+    client = YouTubeClient(cfg.youtube_api_keys)
+    if args.search:
+        print(f"  [yt] niche search costs ~100 quota units "
+              f"(key has 10k/day).")
+        results = search_shorts(client, args.search)
+        for pos, item in enumerate(results, start=1):
+            print(f"  {pos}. {item['title'][:70]} — {item['channel'][:30]} "
+                  f"({item['id']})")
+        print(f"  quota used this run: ~{client.spent} units.")
+        return 0
+    if not args.ref:
+        die('give me something to look up: python main.py yt "@handle"')
+    try:
+        kind, ident = extract_id(args.ref)
+    except ValueError as exc:
+        die(str(exc))
+    if kind == "video":
+        info = video_stats(client, ident)
+        minutes, seconds = divmod(info["duration_s"], 60)
+        print(f"{info['title']}\n  {info['channel']} · {info['published']} · "
+              f"{minutes}:{seconds:02d}\n  {info['views']:,} views · "
+              f"{info['likes']:,} likes · {info['comments']:,} comments")
+    else:
+        info = channel_stats(client, args.ref)
+        print(f"{info['title']} ({info['handle']})\n  "
+              f"{info['subs']:,} subs · {info['videos']:,} videos · "
+              f"{info['views']:,} views · since {info['created']}")
+    print(f"  quota used this run: ~{client.spent} units.")
+    return 0
+
+
 def cmd_stats(cfg, args) -> int:
     from analytics import channel_stats
 
@@ -1132,6 +1170,11 @@ def main() -> int:
     p.add_argument("--style", choices=["photoreal", "cartoon", "stickman"],
                    help="art direction for bot renders")
 
+    p = sub.add_parser("yt", help="YouTube stats: video/channel lookup or Shorts niche search")
+    p.add_argument("ref", nargs="?", help="video/channel URL, ID, or @handle (1 quota unit)")
+    p.add_argument("--search", metavar="QUERY", default="",
+                   help="top Shorts for a niche query (~100 quota units)")
+
     p = sub.add_parser("stats", help="channel performance from Buffer")
     p.add_argument("--days", type=int, default=30, help="lookback window")
 
@@ -1179,6 +1222,7 @@ def main() -> int:
         "bot": cmd_bot,
         "jarvis": cmd_jarvis,
         "stats": cmd_stats,
+        "yt": cmd_yt,
         "package": cmd_package,
         "reburn": cmd_reburn,
         "published": cmd_published,

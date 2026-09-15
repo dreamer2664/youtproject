@@ -120,6 +120,8 @@ python main.py bot                         # render videos from your phone via T
 python main.py jarvis "make 3 videos and schedule them 4h apart tomorrow"  # channel manager
 python main.py autopost                     # post newest video via Buffer (draft)
 python main.py stats --days 30                # views/reach/eng per channel (Buffer)
+python main.py yt "@handle"                   # channel subs/views (1 quota unit)
+python main.py yt --search "roman engineering"  # top niche Shorts (~100 units)
 python main.py queue                    # what's in the queue
 python main.py package                  # build upload kits for generated videos
 python main.py published <id> <url>     # record a manual upload's URL
@@ -219,6 +221,7 @@ Shorts, long-form and art styles without touching the config.
 | `editorial.py` | Punch-up (retention) + decringe (taste veto) passes |
 | `analytics.py` | Buffer stats: posts + per-post metrics roll-up (read-only) |
 | `voice.py` | Voice notes: Telegram download + Groq Whisper transcription |
+| `youtube.py` | YouTube Data API: video/channel stats + Shorts niche search |
 | `test_smoke.py` | Offline self-tests: `python test_smoke.py` (no keys/network needed) |
 | `UPLOAD-GUIDE.md` | The manual-upload walkthrough |
 | `hooks/pre-commit` | Blocks credentials from being committed |

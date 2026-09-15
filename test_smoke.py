@@ -1136,6 +1136,109 @@ def t_elevenlabs():
     assert post.call_count == 0
 
 
+def t_youtube():
+    from unittest.mock import Mock, patch
+
+    from youtube import (YouTubeClient, channel_stats, extract_id,
+                         parse_duration, search_shorts, video_stats)
+
+    # ID extraction: raw IDs, handles, and every URL shape.
+    assert extract_id("dQw4w9WgXcQ") == ("video", "dQw4w9WgXcQ")
+    assert extract_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == (
+        "video", "dQw4w9WgXcQ")
+    assert extract_id("https://youtu.be/dQw4w9WgXcQ") == ("video", "dQw4w9WgXcQ")
+    assert extract_id("https://www.youtube.com/shorts/abc123XYZ_-") == (
+        "video", "abc123XYZ_-")
+    assert extract_id("@GoogleDevelopers") == ("handle", "GoogleDevelopers")
+    assert extract_id("https://www.youtube.com/@GoogleDevelopers") == (
+        "handle", "GoogleDevelopers")
+    assert extract_id("UC_x5XG1OV2P6uZZ5FSM9Ttw") == (
+        "channel", "UC_x5XG1OV2P6uZZ5FSM9Ttw")
+    try:
+        extract_id("https://vimeo.com/123")
+        raise AssertionError("non-youtube should raise")
+    except ValueError:
+        pass
+    # Duration parsing.
+    assert parse_duration("PT1M30S") == 90
+    assert parse_duration("PT2H") == 7200
+    assert parse_duration("junk") == 0
+    # Lookup shape + key plumbing.
+    payload = {"items": [{
+        "id": "v",
+        "snippet": {"title": "T", "channelTitle": "C", "channelId": "UC1",
+                    "publishedAt": "2026-01-02T00:00:00Z"},
+        "statistics": {"viewCount": "100", "likeCount": "5",
+                       "commentCount": "2"},
+        "contentDetails": {"duration": "PT1M"}}]}
+    ok = Mock(status_code=200)
+    ok.json.return_value = payload
+    with patch("requests.get", return_value=ok) as get:
+        info = video_stats(YouTubeClient(["k1"]), "v")
+    assert info["views"] == 100 and info["duration_s"] == 60
+    assert info["published"] == "2026-01-02"
+    assert get.call_args.args[0].endswith("/videos")
+    assert get.call_args.args[0].startswith(
+        "https://www.googleapis.com/youtube/v3/")
+    assert get.call_args.kwargs["params"]["key"] == "k1"
+    # quotaExceeded on key1 -> key2 serves, quota counted once.
+    denied = Mock(status_code=403, text="quota")
+    denied.json.return_value = {"error": {"errors": [{"reason":
+                                                      "quotaExceeded"}]}}
+    client = YouTubeClient(["k1", "k2"])
+    with patch("requests.get", side_effect=[denied, ok]) as get:
+        video_stats(client, "v")
+    assert get.call_count == 2 and client.spent == 1
+    assert get.call_args_list[1].kwargs["params"]["key"] == "k2"
+    # Invalid key dropped; malformed request raises at once.
+    badkey = Mock(status_code=400, text="bad")
+    badkey.json.return_value = {"error": {"errors": [{"reason":
+                                                      "keyInvalid"}]}}
+    with patch("requests.get", side_effect=[badkey, ok]):
+        video_stats(YouTubeClient(["bad", "good"]), "v")
+    badparam = Mock(status_code=400, text="bad param")
+    badparam.json.return_value = {"error": {"errors": [{"reason": "invalid"}]}}
+    with patch("requests.get", return_value=badparam):
+        try:
+            video_stats(YouTubeClient(["k"]), "v")
+            raise AssertionError("bad param should raise")
+        except RuntimeError:
+            pass
+    # Empty items -> clean not-found.
+    empty = Mock(status_code=200)
+    empty.json.return_value = {"items": []}
+    with patch("requests.get", return_value=empty):
+        try:
+            video_stats(YouTubeClient(["k"]), "v")
+            raise AssertionError("missing video should raise")
+        except RuntimeError:
+            pass
+    # Channel via @handle resolves with forHandle.
+    cpayload = {"items": [{
+        "id": "UC1",
+        "snippet": {"title": "Ch", "customUrl": "@ch",
+                    "publishedAt": "2020-05-01T00:00:00Z"},
+        "statistics": {"subscriberCount": "10", "videoCount": "3",
+                       "viewCount": "99"}}]}
+    cok = Mock(status_code=200)
+    cok.json.return_value = cpayload
+    with patch("requests.get", return_value=cok) as get:
+        channel = channel_stats(YouTubeClient(["k"]), "@ch")
+    assert channel["subs"] == 10
+    assert get.call_args.kwargs["params"]["forHandle"] == "ch"
+    # Search costs 100 units and parses items.
+    spayload = {"items": [{
+        "id": {"videoId": "s1"},
+        "snippet": {"title": "S", "channelTitle": "C",
+                    "publishedAt": "2026-01-01T00:00:00Z"}}]}
+    sok = Mock(status_code=200)
+    sok.json.return_value = spayload
+    client = YouTubeClient(["k"])
+    with patch("requests.get", return_value=sok):
+        results = search_shorts(client, "q", max_results=5)
+    assert results[0]["id"] == "s1" and client.spent == 100
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -1177,6 +1280,7 @@ def main() -> int:
         ("voice", t_voice),
         ("gemini_keys", t_gemini_keys),
         ("elevenlabs", t_elevenlabs),
+        ("youtube", t_youtube),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:
