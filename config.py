@@ -230,6 +230,14 @@ DEFAULTS: dict[str, Any] = {
         # Env: YOUTUBE_KEYS (space/comma-separated) wins.
         "api_keys": [],
     },
+    "crew": {
+        # Autonomous missions: `python main.py crew --days 3 --per-day 4`
+        # (Telegram /crew, /stop). Drafts unless --live.
+        "cycle_minutes": 10,  # loop cadence; the stop file is checked more often
+        "digest_hour": 21,  # local hour for the nightly Herald digest
+        "premium_voices": 1,  # ElevenLabs videos/day, rest use edge-tts
+        "max_searches": 3,  # YouTube niche searches/day (100 units each)
+    },
     "jarvis": {
         # Channel manager: `python main.py jarvis "..."` + Telegram /jarvis.
         # Drafts by default — flip auto_schedule once you trust it.
@@ -344,6 +352,38 @@ class Config:
         if isinstance(raw, str):
             raw = [raw]
         return [str(k).strip() for k in raw if str(k).strip()]
+
+    @property
+    def crew_cycle_minutes(self) -> int:
+        try:
+            return max(2, min(120, int(self.data.get("crew", {}).get(
+                "cycle_minutes", 10))))
+        except (ValueError, TypeError):
+            return 10
+
+    @property
+    def crew_digest_hour(self) -> int:
+        try:
+            return max(0, min(23, int(self.data.get("crew", {}).get(
+                "digest_hour", 21))))
+        except (ValueError, TypeError):
+            return 21
+
+    @property
+    def crew_premium_voices(self) -> int:
+        try:
+            return max(0, min(10, int(self.data.get("crew", {}).get(
+                "premium_voices", 1))))
+        except (ValueError, TypeError):
+            return 1
+
+    @property
+    def crew_max_searches(self) -> int:
+        try:
+            return max(0, min(20, int(self.data.get("crew", {}).get(
+                "max_searches", 3))))
+        except (ValueError, TypeError):
+            return 3
 
     @property
     def language(self) -> str:

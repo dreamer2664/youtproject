@@ -172,6 +172,14 @@ youtube:
   api_keys:
     - ""
 
+crew:
+  # Autonomous missions: python main.py crew --days 3 --per-day 4
+  # (Telegram /crew, /stop). Drafts unless --live.
+  cycle_minutes: 10  # loop cadence; the stop file is checked more often
+  digest_hour: 21  # local hour for the nightly Herald digest
+  premium_voices: 1  # ElevenLabs videos/day, rest use edge-tts
+  max_searches: 3  # YouTube niche searches/day (100 units each)
+
 jarvis:
   # Channel manager: python main.py jarvis "..." + Telegram /jarvis.
   # Drafts by default — flip auto_schedule once you trust it.

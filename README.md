@@ -122,6 +122,7 @@ python main.py autopost                     # post newest video via Buffer (draf
 python main.py stats --days 30                # views/reach/eng per channel (Buffer)
 python main.py yt "@handle"                   # channel subs/views (1 quota unit)
 python main.py yt --search "roman engineering"  # top niche Shorts (~100 units)
+python main.py crew --days 3 --per-day 4      # autonomous mission (drafts; add --live)
 python main.py queue                    # what's in the queue
 python main.py package                  # build upload kits for generated videos
 python main.py published <id> <url>     # record a manual upload's URL
@@ -222,6 +223,7 @@ Shorts, long-form and art styles without touching the config.
 | `analytics.py` | Buffer stats: posts + per-post metrics roll-up (read-only) |
 | `voice.py` | Voice notes: Telegram download + Groq Whisper transcription |
 | `youtube.py` | YouTube Data API: video/channel stats + Shorts niche search |
+| `crew.py` | Autonomous team: Manager/Scout/Maker/Herald missions (`crew`, `/crew`) |
 | `test_smoke.py` | Offline self-tests: `python test_smoke.py` (no keys/network needed) |
 | `UPLOAD-GUIDE.md` | The manual-upload walkthrough |
 | `hooks/pre-commit` | Blocks credentials from being committed |

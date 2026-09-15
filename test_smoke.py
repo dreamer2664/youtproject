@@ -1239,6 +1239,113 @@ def t_youtube():
     assert results[0]["id"] == "s1" and client.spent == 100
 
 
+def t_crew():
+    from datetime import datetime as real_datetime
+    from unittest.mock import patch
+
+    import crew
+    from crew import (_cycle, _due_now, _fresh_usage, _load_state,
+                      _manager_pick, _save_state, _usage_line, daily_digest,
+                      make_and_post, mission_active, parse_mission)
+
+    # Mission parsing: the user's sentence, live markers, clamps, defaults.
+    spec = parse_mission("Manage yourself for 3 days, post at least 4 times "
+                         "a day on both platforms.")
+    assert (spec["days"], spec["per_day"], spec["live"]) == (3, 4, False)
+    assert parse_mission("3 days, 4 posts a day, go live")["live"] is True
+    assert parse_mission("post for real")["live"] is True
+    spec = parse_mission("100 days, 20 videos per day")
+    assert (spec["days"], spec["per_day"]) == (30, 10)
+    assert parse_mission("")["goal"] == "grow the channel"
+    assert parse_mission("/crew")["days"] == 3  # bare command still works
+    # Slot math: 4/day -> 9, 13, 17, 21.
+    noon = real_datetime(2026, 9, 15, 14, 0, 0)
+    assert _due_now(4, noon) == 2
+    assert _due_now(4, real_datetime(2026, 9, 15, 8, 0, 0)) == 0
+    assert _due_now(4, real_datetime(2026, 9, 15, 22, 0, 0)) == 4
+    assert _due_now(4, real_datetime(2026, 9, 15, 22, 0, 0),
+                    day_start_hour=15) == 2
+    assert _due_now(1, noon) == 1
+    # State round-trip + liveness: fresh beats count, stale don't.
+    cfg = tmp_cfg()
+    assert mission_active(cfg) is None
+    now_iso = real_datetime.now().astimezone().isoformat()
+    state = {"mission": {"days": 3, "per_day": 4, "live": False,
+                         "ends": "2099-01-01T00:00:00+00:00"},
+             "posted": [], "usage": _fresh_usage("2099-01-01"),
+             "digests": [], "heartbeat": now_iso, "ended": None, "log": []}
+    _save_state(cfg, state)
+    assert _load_state(cfg)["heartbeat"] == now_iso
+    assert mission_active(cfg) is not None
+    state["heartbeat"] = "2020-01-01T00:00:00+00:00"
+    _save_state(cfg, state)
+    assert mission_active(cfg) is None  # stale heartbeat frees the slot
+    # Usage line formats thousands.
+    assert "1,234" in _usage_line({"yt_units": 1234, "eleven_chars": 56,
+                                   "llm_tokens_est": 7})
+    # Manager ranking with and without a brain.
+    cands = ["Alpha story", "Bravo story", "Charlie story"]
+    assert _manager_pick(None, "n", cands, 2) == cands[:2]
+
+    class FakeBrain:
+        def ask(self, prompt, tag="crew"):
+            return "1. Bravo\n2. Alpha\n"
+
+    assert _manager_pick(FakeBrain(), "n", cands, 2) == ["Bravo story",
+                                                         "Alpha story"]
+    # make_and_post: render + post mocked, keys restored, ping sent.
+    cfg = tmp_cfg()
+    channel = cfg.data.setdefault("channel", {})
+    channel.update({"topic": "test niche", "voice": "v",
+                    "elevenlabs_api_keys": ["k"],
+                    "elevenlabs_voice_id": "v1"})
+    usage = _fresh_usage(real_datetime.now().astimezone().date().isoformat())
+    usage["premium_today"] = 99  # budget spent -> edge-tts forced
+    state = {"mission": {"per_day": 4, "live": False}, "usage": usage,
+             "posted": [], "log": []}
+    said = []
+    with patch("jarvis.render_videos",
+               return_value={"jobs": [{"job_id": "j", "title": "T"}],
+                             "failed": []}), \
+            patch("jarvis.schedule_video",
+                  return_value={"posts": [{"service": "youtube"},
+                                          {"service": "tiktok"}]}):
+        entry = make_and_post(cfg, state, None, said.append, "2026-09-15T15:00:00+02:00")
+    assert entry["mode"] == "draft" and len(state["posted"]) == 1
+    assert channel["elevenlabs_api_keys"] == ["k"]  # restored after forcing edge
+    assert any("Hey, we posted" in m for m in said)
+    # Full cycle at fake 14:00: scout (no YT keys, topup mocked) + 1 video.
+    class FakeNow(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = real_datetime(2026, 9, 15, 14, 0, 0)
+            return base.replace(tzinfo=tz) if tz else base
+
+    usage = _fresh_usage("2026-09-15")
+    state = {"mission": {"per_day": 4, "live": False,
+                         "ends": "2026-09-20T23:59:00+02:00",
+                         "started_day": "2026-09-15", "started_day_hour": 0},
+             "usage": usage, "posted": [], "digests": [],
+             "heartbeat": "", "log": []}
+    with patch("crew.datetime", FakeNow), \
+            patch("topics.top_up_backlog", return_value=([], 0)), \
+            patch("jarvis.render_videos",
+                  return_value={"jobs": [{"job_id": "j", "title": "T"}],
+                                "failed": []}), \
+            patch("jarvis.schedule_video", return_value={"posts": [{"service": "x"}]}):
+        assert _cycle(cfg, state, None, said.append) == "ok"
+    assert len(state["posted"]) == 1 and usage["made_today"] == 1
+    assert state["heartbeat"].startswith("2026-09-15T14:00")
+    # Digest without a brain still reports numbers (no Buffer key -> error text).
+    today = real_datetime.now().astimezone().date().isoformat()
+    state = {"posted": [{"day": today, "mode": "live"},
+                        {"day": today, "mode": "draft"}],
+             "usage": _fresh_usage(today), "digests": []}
+    said = []
+    daily_digest(tmp_cfg(), state, None, said.append)
+    assert "2 (1 live, 1 draft)" in said[0] and state["digests"] == [today]
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -1281,6 +1388,7 @@ def main() -> int:
         ("gemini_keys", t_gemini_keys),
         ("elevenlabs", t_elevenlabs),
         ("youtube", t_youtube),
+        ("crew", t_crew),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:

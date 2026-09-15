@@ -51,7 +51,11 @@ A video takes roughly 15–25 minutes. I'll send it here as a file
 (bit-exact, ready to upload) plus the caption and hashtags.
 
 /jarvis <task> — channel manager: render + schedule + report, e.g.
-/jarvis make 3 videos and schedule them 4 hours apart tomorrow."""
+/jarvis make 3 videos and schedule them 4 hours apart tomorrow.
+
+/crew <mission> — autonomous team for N days, e.g.
+/crew manage yourself for 3 days, post 4 times a day (drafts unless "for real")
+/stop — halt the mission after the current video."""
 
 
 class TelegramError(RuntimeError):
@@ -88,6 +92,10 @@ def parse_incoming(text: str) -> tuple[str, str]:
         return ("topic", topic) if topic else ("help", "")
     if low.startswith("/jarvis"):
         return ("jarvis", text[7:].strip())
+    if low.startswith("/crew"):
+        return ("crew", text[5:].strip())
+    if low == "/stop" or low.startswith("/stop "):
+        return ("stop", "")
     if low.startswith("/send"):
         return ("send", text[5:].strip())
     if text.startswith("/"):
@@ -197,6 +205,26 @@ class PhoneBot:
                 self.jobs.put((chat_id, "jarvis", arg))
                 print(f"  [bot] queued jarvis task: {arg}")
                 self.send_message(chat_id, f"🧠 Task queued #{position + 1} — I'll report here as I go.")
+        elif action == "crew":
+            from crew import mission_active, parse_mission
+
+            spec = parse_mission(arg)
+            if mission_active(self.cfg):
+                self.send_message(chat_id, "A mission is already running. /stop it first.")
+            else:
+                thread = threading.Thread(target=self._run_crew,
+                                          args=(chat_id, spec), daemon=True)
+                thread.start()
+                mode = "LIVE posting" if spec["live"] else "DRAFT mode — nothing public"
+                self.send_message(chat_id,
+                                  f"🚀 Mission accepted: {spec['days']} days × "
+                                  f"{spec['per_day']}/day, {mode}.\n"
+                                  f"I'll ping every post + a digest nightly. "
+                                  f"/stop halts.")
+        elif action == "stop":
+            (self.cfg.root / "crew_stop").write_text("stop", encoding="utf-8")
+            print("  [bot] stop requested")
+            self.send_message(chat_id, "🛑 Stop requested — halting after the current video.")
         else:
             position = self.jobs.qsize()
             self.jobs.put((chat_id, "topic", arg))
@@ -208,6 +236,23 @@ class PhoneBot:
             else:
                 self.send_message(
                     chat_id, f"📥 Queued #{position + 1}: \"{arg}\"")
+
+    def _run_crew(self, chat_id: int, spec: dict) -> None:
+        """Run a /crew mission on a background thread (outside the queue)."""
+        from crew import run_mission
+
+        def say(message: str) -> None:
+            try:
+                self.send_message(chat_id, message)
+            except TelegramError:
+                pass
+
+        try:
+            run_mission(self.cfg, spec["days"], spec["per_day"],
+                        spec["live"], spec["goal"], say=say)
+        except Exception as exc:  # noqa: BLE001 - mission thread must not die silent
+            traceback.print_exc()
+            say(f"❌ Crew crashed: {exc}")
 
     def _handle_voice(self, chat_id: int, file_id: str) -> None:
         """Voice note -> transcribed topic (or 'jarvis, ...' task)."""

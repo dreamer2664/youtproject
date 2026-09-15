@@ -895,6 +895,18 @@ def cmd_schedule(cfg, args) -> int:
         return 0
 
 
+def cmd_crew(cfg, args) -> int:
+    from crew import _tg_ping, run_mission
+
+    def say(message: str) -> None:
+        print(message)
+        _tg_ping(cfg, message)
+
+    print(run_mission(cfg, args.days, args.per_day, args.live,
+                      args.goal or "grow the channel", say=say))
+    return 0
+
+
 def cmd_yt(cfg, args) -> int:
     from youtube import (YouTubeClient, channel_stats, extract_id,
                          search_shorts, video_stats)
@@ -1170,6 +1182,14 @@ def main() -> int:
     p.add_argument("--style", choices=["photoreal", "cartoon", "stickman"],
                    help="art direction for bot renders")
 
+    p = sub.add_parser("crew", help="autonomous mission: the crew posts for N days")
+    p.add_argument("--days", type=int, default=3, help="mission length")
+    p.add_argument("--per-day", type=int, default=4, help="videos per day")
+    p.add_argument("--live", action="store_true",
+                   help="really publish (default: drafts)")
+    p.add_argument("--goal", default="grow the channel",
+                   help="mission goal in plain words")
+
     p = sub.add_parser("yt", help="YouTube stats: video/channel lookup or Shorts niche search")
     p.add_argument("ref", nargs="?", help="video/channel URL, ID, or @handle (1 quota unit)")
     p.add_argument("--search", metavar="QUERY", default="",
@@ -1223,6 +1243,7 @@ def main() -> int:
         "jarvis": cmd_jarvis,
         "stats": cmd_stats,
         "yt": cmd_yt,
+        "crew": cmd_crew,
         "package": cmd_package,
         "reburn": cmd_reburn,
         "published": cmd_published,
