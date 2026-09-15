@@ -206,6 +206,13 @@ DEFAULTS: dict[str, Any] = {
         # never blocks a render on failure.
         "enabled": True,
     },
+    "jarvis": {
+        # Channel manager: `python main.py jarvis "..."` + Telegram /jarvis.
+        # Drafts by default — flip auto_schedule once you trust it.
+        "auto_schedule": False,
+        # Hard cap per task (render_videos refuses more, with a note).
+        "max_videos": 5,
+    },
     "schedule": {
         # Unattended daily rendering (`python main.py schedule`).
         "per_day": 2,
@@ -453,6 +460,18 @@ class Config:
     @property
     def factcheck_enabled(self) -> bool:
         return bool(self.data.get("factcheck", {}).get("enabled", True))
+
+    @property
+    def jarvis_auto_schedule(self) -> bool:
+        return bool(self.data.get("jarvis", {}).get("auto_schedule", False))
+
+    @property
+    def jarvis_max_videos(self) -> int:
+        """Hard cap per Jarvis task. Garbage in -> 5 (never crashes)."""
+        try:
+            return max(1, min(20, int(self.data.get("jarvis", {}).get("max_videos", 5))))
+        except (ValueError, TypeError):
+            return 5
 
     # -- schedule --------------------------------------------------------
     @property

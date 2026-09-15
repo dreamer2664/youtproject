@@ -152,6 +152,13 @@ factcheck:
   # without one it skips silently. Never blocks a render on failure.
   enabled: true
 
+jarvis:
+  # Channel manager: python main.py jarvis "..." + Telegram /jarvis.
+  # Drafts by default — flip auto_schedule once you trust it.
+  auto_schedule: false
+  # Hard cap per task (render_videos refuses more, with a note).
+  max_videos: 5
+
 schedule:
   # Unattended daily rendering: `python main.py schedule` pops backlog
   # topics and renders forever (Ctrl+C stops). Telegram-notifies each

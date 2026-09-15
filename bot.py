@@ -48,7 +48,10 @@ Commands:
 
 One video renders at a time; extra topics queue up behind it.
 A video takes roughly 15–25 minutes. I'll send it here as a file
-(bit-exact, ready to upload) plus the caption and hashtags."""
+(bit-exact, ready to upload) plus the caption and hashtags.
+
+/jarvis <task> — channel manager: render + schedule + report, e.g.
+/jarvis make 3 videos and schedule them 4 hours apart tomorrow."""
 
 
 class TelegramError(RuntimeError):
@@ -69,7 +72,8 @@ def slugify(title: str, fallback: str) -> str:
 def parse_incoming(text: str) -> tuple[str, str]:
     """Pure command parser (unit-tested). Returns (action, argument).
 
-    Actions: 'topic' (render this), 'queue', 'send', 'help', 'ignore'.
+    Actions: 'topic' (render this), 'queue', 'send', 'help', 'ignore',
+    'jarvis' (channel-manager task).
     """
     text = (text or "").strip()
     if not text:
@@ -82,6 +86,8 @@ def parse_incoming(text: str) -> tuple[str, str]:
     if low.startswith("/new"):
         topic = text[4:].strip()
         return ("topic", topic) if topic else ("help", "")
+    if low.startswith("/jarvis"):
+        return ("jarvis", text[7:].strip())
     if low.startswith("/send"):
         return ("send", text[5:].strip())
     if text.startswith("/"):
@@ -179,9 +185,17 @@ class PhoneBot:
             self._send_existing(chat_id, arg)
         elif action == "ignore":
             self.send_message(chat_id, HELP_TEXT)
+        elif action == "jarvis":
+            if not arg:
+                self.send_message(chat_id, "Give me a task, e.g. /jarvis make 3 videos and schedule them 4 hours apart tomorrow.")
+            else:
+                position = self.jobs.qsize()
+                self.jobs.put((chat_id, "jarvis", arg))
+                print(f"  [bot] queued jarvis task: {arg}")
+                self.send_message(chat_id, f"🧠 Task queued #{position + 1} — I'll report here as I go.")
         else:
             position = self.jobs.qsize()
-            self.jobs.put((chat_id, arg))
+            self.jobs.put((chat_id, "topic", arg))
             print(f"  [bot] queued: {arg}")
             if position == 0:
                 self.send_message(
@@ -228,6 +242,25 @@ class PhoneBot:
                              f"when it's done.")
             except TelegramError:
                 pass
+
+    def _run_task(self, chat_id: int, task: str) -> None:
+        """Run a /jarvis task, narrating progress back to the chat."""
+        def say(message: str) -> None:
+            try:
+                self.send_message(chat_id, message)
+            except TelegramError:
+                pass
+
+        say(f"🧠 Working on it: {task[:200]}")
+        try:
+            from jarvis import run_task
+
+            summary = run_task(self.cfg, task, say=say)
+        except Exception as exc:  # noqa: BLE001 - worker loop is immortal
+            traceback.print_exc()
+            say(f"❌ Task failed: {exc}")
+            return
+        say(f"✅ Done.\n\n{summary}")
 
     def _render_and_send(self, chat_id: int, topic: str) -> None:
         # Deferred import: main.py imports this module for cmd_bot.
@@ -332,9 +365,12 @@ class PhoneBot:
 
     def _worker(self) -> None:
         while True:
-            chat_id, topic = self.jobs.get()
+            chat_id, kind, text = self.jobs.get()
             try:
-                self._render_and_send(chat_id, topic)
+                if kind == "jarvis":
+                    self._run_task(chat_id, text)
+                else:
+                    self._render_and_send(chat_id, text)
             except Exception:  # noqa: BLE001 - worker loop is immortal
                 traceback.print_exc()
             finally:

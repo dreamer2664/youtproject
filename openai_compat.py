@@ -8,10 +8,36 @@ generalized when OpenRouter joined as the second lane.
 
 from __future__ import annotations
 
+import json
+
 import requests
 
 from config import Config
 from scriptgen import GeminiProvider
+
+
+def _parse_tool_calls(raw_calls) -> list[dict]:
+    """OpenAI tool_calls -> [{id, name, args, raw}]. Nameless ones dropped."""
+    calls = []
+    for item in raw_calls or []:
+        if not isinstance(item, dict):
+            continue
+        func = item.get("function") or {}
+        try:
+            args = json.loads(func.get("arguments") or "{}")
+        except ValueError:
+            args = {}
+        if not isinstance(args, dict):
+            args = {}
+        calls.append({
+            "id": item.get("id", ""),
+            "name": func.get("name", ""),
+            "args": args,
+            "raw": {"id": item.get("id", ""), "type": "function",
+                    "function": {"name": func.get("name", ""),
+                                 "arguments": func.get("arguments") or "{}"}},
+        })
+    return [call for call in calls if call["name"]]
 
 
 class OpenAICompatProvider(GeminiProvider):
@@ -96,17 +122,25 @@ class OpenAICompatProvider(GeminiProvider):
         )
         return {"candidates": [{"content": {"parts": [{"text": text}]}}]}
 
-    def _complete(self, prompt: str, temperature: float,
-                  json_mode: bool, tag: str) -> str:
+    def _complete(self, prompt: str = "", temperature: float = 0.7,
+                  json_mode: bool = False, tag: str = "llm", *,
+                  messages: list[dict] | None = None,
+                  tools: list[dict] | None = None,
+                  raw: bool = False):
+        if messages is None:
+            messages = [{"role": "user", "content": prompt}]
         models = [self.model] + [m for m in self.FALLBACK_MODELS if m != self.model]
         keys = list(self.api_keys)
         last_error = "no keys tried"
         for model in models:
             body: dict = {
                 "model": model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": messages,
                 "temperature": temperature,
             }
+            if tools:
+                body["tools"] = tools
+                body["tool_choice"] = "auto"
             if json_mode:
                 body["response_format"] = {"type": "json_object"}
             self._tweak_body(body, model)
@@ -136,10 +170,16 @@ class OpenAICompatProvider(GeminiProvider):
                 status, text, payload = self._read_response(response)
                 if status == 200:
                     try:
-                        content = payload["choices"][0]["message"]["content"]
-                    except (KeyError, IndexError, TypeError):
+                        message = payload["choices"][0]["message"]
+                        content = message.get("content") or ""
+                    except (KeyError, IndexError, TypeError, AttributeError):
                         raise RuntimeError(
                             f"unexpected {self.name} reply shape: {response.text[:200]}")
+                    calls = _parse_tool_calls(message.get("tool_calls"))
+                    if calls:
+                        # Only tool callers (raw=True) send tools; anything
+                        # else receiving calls just takes the text.
+                        return (content, calls) if raw else content
                     # A dry backing pool can come back 200-with-empty (seen
                     # live): a pool-wide symptom, so jump pools at once.
                     if not content or not str(content).strip():
@@ -147,7 +187,7 @@ class OpenAICompatProvider(GeminiProvider):
                         print(f"  [{tag}] {self.name} {model} returned empty content; "
                               f"trying next model.")
                         break
-                    return content
+                    return (content, []) if raw else content
                 last_error = f"HTTP {status}: {text[:160]}"
                 if status in (401, 403):
                     print(f"  [{tag}] {self.name} key ...{key[-4:]} rejected — "
@@ -184,3 +224,8 @@ class OpenAICompatProvider(GeminiProvider):
         """Raw text completion using key rotation + model fallback."""
         return self._complete(prompt, temperature=temperature,
                               json_mode=json_mode, tag=tag)
+
+    def chat_with_tools(self, messages: list[dict], tools: list[dict],
+                        tag: str = "jarvis") -> tuple[str, list[dict]]:
+        """One agentic turn with full rotation. Returns (text, tool calls)."""
+        return self._complete(messages=messages, tools=tools, tag=tag, raw=True)

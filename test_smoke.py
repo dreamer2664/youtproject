@@ -886,6 +886,74 @@ def t_broll():
             raise AssertionError("expected RuntimeError on 401")
 
 
+def t_chat_tools():
+    from unittest.mock import Mock, patch
+
+    from groq import GroqProvider
+
+    resp = Mock(status_code=200)
+    resp.json.return_value = {"choices": [{"message": {
+        "content": "", "tool_calls": [{"id": "c1", "type": "function",
+            "function": {"name": "set_timer",
+                         "arguments": '{"minutes": 10}'}}]}}]}
+    with patch("requests.post", return_value=resp):
+        text, calls = GroqProvider(api_keys=["k"]).chat_with_tools(
+            [{"role": "user", "content": "hi"}], [{"type": "function"}], tag="t")
+    assert text == "" and calls[0]["name"] == "set_timer"
+    assert calls[0]["args"] == {"minutes": 10} and calls[0]["id"] == "c1"
+
+
+def t_jarvis_task():
+    from unittest.mock import patch
+
+    import jarvis
+    from bot import parse_incoming
+
+    assert parse_incoming("/jarvis make 2 videos") == ("jarvis", "make 2 videos")
+    assert parse_incoming("/jarvis") == ("jarvis", "")
+
+    script = [
+        ("", [{"id": "1", "name": "render_videos", "args": {"count": 2}, "raw": {}}]),
+        ("", [{"id": "2", "name": "schedule_video",
+               "args": {"job_id": "abc", "due_at_iso": "2026-09-16T09:00:00+02:00"},
+               "raw": {}}]),
+        ("All done: 2 videos scheduled.", []),
+    ]
+
+    class FakeBrain:
+        def chat_with_tools(self, messages, tools, tag="jarvis"):
+            return script.pop(0)
+
+    said = []
+    with patch("jarvis._brain", return_value=FakeBrain()), \
+            patch("jarvis.render_videos",
+                  return_value={"rendered": 2, "jobs": []}) as rendered, \
+            patch("jarvis.schedule_video",
+                  return_value={"posts": []}) as scheduled:
+        summary = jarvis.run_task(tmp_cfg(), "make 2 videos", say=said.append)
+    assert summary == "All done: 2 videos scheduled."
+    assert rendered.call_count == 1 and scheduled.call_count == 1
+    assert said  # progress was narrated
+    # unknown tool -> error result, loop still reaches the final text.
+    script2 = [("", [{"id": "1", "name": "nope", "args": {}, "raw": {}}]),
+               ("Recovered.", [])]
+
+    class FakeBrain2:
+        def chat_with_tools(self, messages, tools, tag="jarvis"):
+            return script2.pop(0)
+
+    with patch("jarvis._brain", return_value=FakeBrain2()):
+        assert jarvis.run_task(tmp_cfg(), "hi") == "Recovered."
+    # no brain -> clean message, nothing done.
+    with patch("jarvis._brain", return_value=None):
+        assert "No LLM keys" in jarvis.run_task(tmp_cfg(), "hi")
+    # render cap enforced before the pipeline runs.
+    with patch("main.cmd_generate", return_value=0) as gen:
+        result = jarvis.render_videos(tmp_cfg(), 99, None, say=lambda m: None)
+    assert gen.call_count == 1 and gen.call_args.args[1].count == 5
+    assert result["requested"] == 99 and result["capped_to"] == 5
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -921,6 +989,8 @@ def main() -> int:
         ("editorial", t_editorial),
         ("openrouter_lane", t_openrouter_lane),
         ("broll", t_broll),
+        ("chat_tools", t_chat_tools),
+        ("jarvis_task", t_jarvis_task),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:

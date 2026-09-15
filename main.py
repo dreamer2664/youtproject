@@ -895,6 +895,16 @@ def cmd_schedule(cfg, args) -> int:
         return 0
 
 
+def cmd_jarvis(cfg, args) -> int:
+    from jarvis import run_task
+
+    text = " ".join(args.task).strip()
+    if not text:
+        die('give me a task in quotes: python main.py jarvis "make 2 videos..."')
+    print(run_task(cfg, text, say=print))
+    return 0
+
+
 def cmd_bot(cfg, args) -> int:
     """Poll Telegram for topics; render each; send back the finished video."""
     print(BANNER)
@@ -1103,6 +1113,9 @@ def main() -> int:
     p.add_argument("--style", choices=["photoreal", "cartoon", "stickman"],
                    help="art direction for bot renders")
 
+    p = sub.add_parser("jarvis", help="give the channel manager a task")
+    p.add_argument("task", nargs="+", help="plain-language task in quotes")
+
     p = sub.add_parser("package", help="build upload-ready kits")
     p.add_argument("--id", help="package only the job with this id (prefix ok)")
     p.add_argument("--limit", type=int, help="max kits to build this run")
@@ -1142,6 +1155,7 @@ def main() -> int:
         "topics": cmd_topics,
         "schedule": cmd_schedule,
         "bot": cmd_bot,
+        "jarvis": cmd_jarvis,
         "package": cmd_package,
         "reburn": cmd_reburn,
         "published": cmd_published,
