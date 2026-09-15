@@ -183,6 +183,10 @@ ai:
     - ""
   groq_model: "qwen/qwen3.8-27b"
 
+  # Editorial passes after factcheck: punch-up (retention) then decringe
+  # (taste veto). Skipped automatically without an LLM key.
+  editorial_passes: true
+
   # Images walk a provider chain until one delivers: the primary first,
   # then each fallback in order. Providers missing their key are skipped
   # automatically, never fatal. Image dimensions follow video.format

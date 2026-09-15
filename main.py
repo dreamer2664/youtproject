@@ -365,6 +365,9 @@ def cmd_generate(cfg, args) -> int:
             from factcheck import check_script
 
             fact_report = check_script(script, cfg)
+            from editorial import polish_script
+
+            polish_script(script, cfg, provider)
             from cta import commit_cta, next_cta
 
             # commit=False: the rotation counter only advances once this

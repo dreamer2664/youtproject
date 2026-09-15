@@ -96,6 +96,9 @@ DEFAULTS: dict[str, Any] = {
         # GROQ_API_KEY (single), else this list.
         "groq_api_keys": [],
         "groq_model": "qwen/qwen3.8-27b",
+        # Editorial passes after factcheck: punch-up (retention) then
+        # decringe (taste veto). Skipped automatically without an LLM key.
+        "editorial_passes": True,
         # Primary image provider + ordered fallbacks (IMAGE_PROVIDERS).
         # Fallbacks missing their key are skipped automatically, never fatal.
         "image_provider": "pollinations",
@@ -529,6 +532,10 @@ class Config:
     @property
     def groq_model(self) -> str:
         return str(self.data["ai"].get("groq_model") or "qwen/qwen3.8-27b")
+
+    @property
+    def editorial_enabled(self) -> bool:
+        return bool(self.data["ai"].get("editorial_passes", True))
 
     @property
     def image_width(self) -> int:

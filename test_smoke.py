@@ -757,6 +757,55 @@ def t_dry_run_batch():
     assert _dry_run_batch(cfg, ["explicit topic", None]) == 0
 
 
+def t_editorial():
+    import types
+
+    from editorial import _apply, polish_script
+
+    def script(*lines):
+        return types.SimpleNamespace(
+            scenes=[types.SimpleNamespace(narration=t) for t in lines])
+
+    class FakeProvider:
+        def __init__(self, replies):
+            self.replies = list(replies)
+
+        def generate_text(self, prompt, temperature=0.7, tag="", json_mode=False):
+            reply = self.replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+    good = '{"scenes": [{"narration": "Hook here."}, {"narration": "Payoff here."}]}'
+    cfg = tmp_cfg()
+    # happy path: both stages apply in place.
+    sc = script("aaa aaa aaa.", "bbb bbb bbb.")
+    polish_script(sc, cfg, FakeProvider([good, good]))
+    assert [x.narration for x in sc.scenes] == ["Hook here.", "Payoff here."]
+    # garbage then provider error: stages skip, previous kept, never raises.
+    sc = script("aaa aaa aaa.", "bbb bbb bbb.")
+    polish_script(sc, cfg, FakeProvider(["not json", RuntimeError("down")]))
+    assert [x.narration for x in sc.scenes] == ["aaa aaa aaa.", "bbb bbb bbb."]
+    # scene-count change rejected.
+    sc = script("aaa aaa aaa.", "bbb bbb bbb.")
+    assert _apply(sc, '{"scenes": [{"narration": "Only one."}]}', "test", 1.3) is False
+    assert [x.narration for x in sc.scenes] == ["aaa aaa aaa.", "bbb bbb bbb."]
+    # word bloat rejected (21 new words vs 6 old, cap 1.3x).
+    bloat = '{"scenes": [{"narration": "' + "word " * 20 + '"}, {"narration": "short"}]}'
+    assert _apply(sc, bloat, "test", 1.3) is False
+    # disabled flag: provider never touched.
+    calls = []
+
+    class Spy:
+        def generate_text(self, *args, **kwargs):
+            calls.append(1)
+            return good
+
+    cfg.data["ai"]["editorial_passes"] = False
+    polish_script(script("x."), cfg, Spy())
+    assert calls == []
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -789,6 +838,7 @@ def main() -> int:
         ("slugify", t_slugify),
         ("encoder_setting", t_encoder_setting),
         ("dry_run_batch", t_dry_run_batch),
+        ("editorial", t_editorial),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:
