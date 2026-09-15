@@ -995,6 +995,41 @@ def t_analytics():
     assert "error" in channel_stats(tmp_cfg())
 
 
+def t_voice():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import Mock, mock_open, patch
+
+    from voice import download_telegram_voice, transcribe
+
+    cfg = tmp_cfg()
+    cfg.data.setdefault("ai", {})["groq_api_keys"] = ["k1", "k2"]
+    ok = Mock(status_code=200)
+    ok.json.return_value = {"text": "  hello mars "}
+    with patch("requests.post", return_value=ok) as post, \
+            patch("builtins.open", mock_open(read_data=b"ogg")):
+        assert transcribe(cfg, Path("x.ogg")) == "hello mars"
+        assert "audio/transcriptions" in post.call_args.args[0]
+        assert post.call_args.kwargs["data"]["model"].startswith("whisper")
+    # 429 on the first key -> rotates to the second.
+    denied = Mock(status_code=429, text="slow down")
+    with patch("requests.post", side_effect=[denied, ok]), \
+            patch("builtins.open", mock_open(read_data=b"ogg")):
+        assert transcribe(cfg, Path("x.ogg")) == "hello mars"
+    # Telegram getFile + download round-trip.
+    info_resp = Mock()
+    info_resp.json.return_value = {"ok": True,
+                                   "result": {"file_path": "voice/x.ogg"}}
+    file_resp = Mock()
+    file_resp.__enter__ = Mock(return_value=file_resp)
+    file_resp.__exit__ = Mock(return_value=False)
+    file_resp.iter_content.return_value = [b"ogg-bytes"]
+    with tempfile.TemporaryDirectory() as tmp, \
+            patch("requests.get", side_effect=[info_resp, file_resp]):
+        out = download_telegram_voice("tok", "fid123", Path(tmp))
+        assert out.read_bytes() == b"ogg-bytes"
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -1033,6 +1068,7 @@ def main() -> int:
         ("chat_tools", t_chat_tools),
         ("jarvis_task", t_jarvis_task),
         ("analytics", t_analytics),
+        ("voice", t_voice),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:

@@ -170,6 +170,10 @@ class PhoneBot:
             print(f"  [bot] ignored message from user {sender.get('id')} "
                   f"(owner is {self.owner})")
             return
+        voice = message.get("voice") or message.get("audio")
+        if isinstance(voice, dict) and voice.get("file_id"):
+            self._handle_voice(chat_id, voice["file_id"])
+            return
         text = message.get("text", "")
         if not isinstance(text, str) or not text.strip():
             self.send_message(chat_id, "Send me a topic as text — "
@@ -204,6 +208,34 @@ class PhoneBot:
             else:
                 self.send_message(
                     chat_id, f"📥 Queued #{position + 1}: \"{arg}\"")
+
+    def _handle_voice(self, chat_id: int, file_id: str) -> None:
+        """Voice note -> transcribed topic (or 'jarvis, ...' task)."""
+        from voice import download_telegram_voice, transcribe
+
+        try:
+            path = download_telegram_voice(self.token, file_id,
+                                           self.cfg.work_dir)
+            topic = transcribe(self.cfg, path)
+        except Exception as exc:
+            self.send_message(chat_id,
+                              f"🎙️ Couldn't hear that ({exc}). Try text?")
+            return
+        if not topic:
+            self.send_message(chat_id, "🎙️ Heard nothing — try again or type it?")
+            return
+        print(f"  [bot] voice -> {topic}")
+        if topic.lower().lstrip().startswith("jarvis"):
+            task = topic.lstrip()[6:].lstrip(" ,:—-")
+            if task:
+                self.jobs.put((chat_id, "jarvis", task))
+                self.send_message(chat_id, f"🎙️ Heard: \"{topic}\"\n🧠 On it.")
+                return
+        position = self.jobs.qsize()
+        self.jobs.put((chat_id, "topic", topic))
+        self.send_message(chat_id, f"🎙️ Heard: \"{topic}\"")
+        if position:
+            self.send_message(chat_id, f"📥 Queued #{position + 1}")
 
     def _send_existing(self, chat_id: int, job_ref: str) -> None:
         """Deliver an already-made video (recovery + re-send)."""

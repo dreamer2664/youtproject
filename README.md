@@ -162,7 +162,9 @@ Text the bot a topic from your phone, get back the finished video:
 Plain text = a topic to render. `/queue` shows progress, `/send <id>`
 re-sends a finished video. `/jarvis <task>` hands the channel manager a job
 ("make 3 videos and schedule them 4 hours apart tomorrow") — it reports back
-here as it goes. One thing runs at a time; extras queue up. A rendered video
+here as it goes. Voice notes work too — talk, and it transcribes ("jarvis, …"
+routes to the channel manager, anything else becomes a render topic). One thing
+runs at a time; extras queue up. A rendered video
 arrives as a file (bit-exact, ready to upload) plus the caption and hashtags,
 and the full YouTube kit is also built on your PC. Only your account can use
 the bot.
@@ -216,6 +218,7 @@ Shorts, long-form and art styles without touching the config.
 | `broll.py` | Pexels stock B-roll fetcher (fetch-only) |
 | `editorial.py` | Punch-up (retention) + decringe (taste veto) passes |
 | `analytics.py` | Buffer stats: posts + per-post metrics roll-up (read-only) |
+| `voice.py` | Voice notes: Telegram download + Groq Whisper transcription |
 | `test_smoke.py` | Offline self-tests: `python test_smoke.py` (no keys/network needed) |
 | `UPLOAD-GUIDE.md` | The manual-upload walkthrough |
 | `hooks/pre-commit` | Blocks credentials from being committed |
