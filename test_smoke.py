@@ -1402,6 +1402,24 @@ def t_crew_watch():
     assert (cfg.root / "crew_stop").exists()
 
 
+def t_key_pools():
+    from types import SimpleNamespace
+
+    from crew import _pools_line
+
+    cfg = tmp_cfg()
+    assert "none" in _pools_line(cfg) and "no Gemini" in _pools_line(cfg)
+    cfg.data.setdefault("ai", {})["groq_api_keys"] = ["a", "b"]
+    cfg.data.setdefault("channel", {})["elevenlabs_api_keys"] = ["x"]
+    line = _pools_line(cfg)
+    assert "Groq×2" in line and "11Labs×1" in line
+    assert "YouTube" in line and "no Gemini" in line
+    # Preflight runs offline and never raises without keys.
+    from main import cmd_preflight
+
+    cmd_preflight(tmp_cfg(), SimpleNamespace(live=False))
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -1446,6 +1464,7 @@ def main() -> int:
         ("youtube", t_youtube),
         ("crew", t_crew),
         ("crew_watch", t_crew_watch),
+        ("key_pools", t_key_pools),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:

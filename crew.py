@@ -498,6 +498,21 @@ def _end_mission(cfg: Config, state: dict, reason: str, say) -> None:
               f"Total usage: {_usage_line(state['usage'])}")
 
 
+def _pools_line(cfg: Config) -> str:
+    """One-line key-pool census (Manager brain + Scout + voice)."""
+    pools = [("Gemini", len(cfg.gemini_api_keys)),
+             ("Groq", len(cfg.groq_api_keys)),
+             ("OpenRouter", len(cfg.openrouter_api_keys)),
+             ("YouTube", len(cfg.youtube_api_keys)),
+             ("11Labs", len(cfg.elevenlabs_api_keys))]
+    have = [f"{name}×{count}" for name, count in pools if count]
+    missing = [name for name, count in pools if not count]
+    line = "Keys: " + (", ".join(have) if have else "none")
+    if missing:
+        line += f" (no {', '.join(missing)})"
+    return line
+
+
 def run_mission(cfg: Config, days: int, per_day: int, live: bool,
                 goal: str, say=None) -> str:
     """Run a mission to completion. Returns the final status. Never raises."""
@@ -530,12 +545,14 @@ def run_mission(cfg: Config, days: int, per_day: int, live: bool,
     brain = _manager_brain(cfg, state)
     mission = state["mission"]
     if brain is None:
-        _say(say, "🧠 No LLM keys — the Manager runs on procedure, "
-                  "everything else works.")
+        _say(say, "🧠 No LLM keys — the Manager runs on procedure "
+                  "(template scripts, backlog topics). Add Groq/OpenRouter/"
+                  "Gemini keys to config.yaml (ai section) for full quality.")
     _say(say, f"🚀 Mission: {mission['days']} days × {mission['per_day']}/day "
               f"({'LIVE posting' if live else 'DRAFT mode — nothing public'}).\n"
               f"Manager{'+brain' if brain else ' (code-only)'} · Scout · "
               f"Maker · Herald on duty.\nGoal: {mission['goal'][:150]}")
+    _say(say, "🔑 " + _pools_line(cfg))
     try:
         while True:
             if stop.exists():

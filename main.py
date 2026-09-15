@@ -94,6 +94,16 @@ def cmd_preflight(cfg, args) -> int:
             "will fall back to templates. Free key: https://aistudio.google.com/apikey",
         )
 
+    # 3b. full key-pool census (every lane the crew can use).
+    from crew import _pools_line
+
+    pools = _pools_line(cfg)
+    if cfg.gemini_api_keys or cfg.groq_api_keys or cfg.openrouter_api_keys:
+        ok(pools)
+    else:
+        warn("no LLM keys at all",
+             "crew runs code-only with template scripts. " + pools)
+
     # 4. folders are writable
     print()
     try:
