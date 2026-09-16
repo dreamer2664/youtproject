@@ -195,6 +195,79 @@ Previous script JSON:
 Return ONLY the full rewritten JSON object in the same shape."""
 
 
+def build_script_prompt(cfg, topic: str, target: int, scene_count: int,
+                        word_budget: int, ceiling: int, per_scene: int,
+                        per_scene_max: int) -> str:
+    """Full script-writer prompt with the retention architecture (pure, tested).
+
+    v2 (2026-09-16): hook menu with questions demoted, first-five-words rule,
+    per-scene micro-teases, escalation + loop-back ending, concrete-camera
+    rule, and stock-searchable image briefs (the director brain feeds
+    Pexels now, not just AI renderers).
+    """
+    art_brief = style_spec(cfg.style)["brief"]
+    return f"""You are a script writer for a high-retention vertical video channel (TikTok, YouTube Shorts, Instagram Reels).
+
+CHANNEL TOPIC: {topic}
+TONE: {cfg.tone}
+AUDIENCE: {cfg.audience}
+LANGUAGE: {cfg.language}
+TARGET VIDEO LENGTH: about {target} seconds
+
+Pick ONE specific, genuinely interesting story or fact within the topic.
+Write {scene_count} scenes of narration that together take about {target} seconds
+when read aloud fast (roughly {word_budget} words total).
+
+LENGTH IS A HARD REQUIREMENT: the narration must total {word_budget}-{ceiling} words
+(about {per_scene} words per scene, never more than {per_scene_max}). Scripts outside
+this range are rejected — count the words in each scene before returning: expand
+thin scenes with concrete detail, cut filler if running long.
+
+RETENTION ARCHITECTURE — follow every rule:
+- HOOK (first sentence, under 3 seconds). Pick the strongest shape that fits,
+  in this order of power. NEVER a bare question, NEVER "did you know":
+  1. WRONG-BELIEF FLIP ("Everything you know about X is wrong.")
+  2. PARADOX ("The animal that survives being boiled alive.")
+  3. STAKES ("This kills more people than sharks every year.")
+  4. COLD PAYOFF ("X can Y. Here is how.")
+  5. VIVID SCENE ("Picture a lake that turns birds to stone.")
+- The hook's key noun must appear in the FIRST 5 WORDS. No greeting, no
+  "in this video", no throat-clearing, no setup of any kind.
+- SHORT sentences: 12 words max each, one idea per sentence. Staccato rhythm.
+- NO filler: cut every word that does not earn the next second of attention.
+- MICRO-TEASES: every scene except the last ends mid-tension — an unfinished
+  idea, a "but...", a tease of what comes next. Never resolve early.
+- One PATTERN INTERRUPT around the middle: a twist ("but here's what nobody
+  tells you..."), a rhetorical question, or a contrarian turn.
+- One OPEN LOOP before the payoff ("...and the last one changes everything").
+- ESCALATE, never repeat: each scene deepens the mystery or raises the
+  stakes. "That's not even the wildest part" energy — once, in own words.
+- LOOP-BACK ENDING: the final sentence echoes the hook WITH the payoff, so
+  replays feel rewarding ("...and that's why X will never look the same").
+- CONCRETE CAMERA RULE: name physical things (animals, objects, places,
+  food) the camera can show. Every abstract idea must be anchored to
+  something visible within the same scene.
+{end_rule(cfg.cta_enabled)}
+- narration: plain spoken prose for a voiceover. No stage directions, no quotes
+  inside the text, no markdown, no emoji.
+- image_prompt: 2-4 CONCRETE visible subjects (exact animals/objects/places +
+  setting + one action) that a stock-photo search could find, then style:
+  {art_brief}
+- title: curiosity-gap style, under 70 characters. No clickbait lies, no hashtags.
+- tags: 8 to 12 short search tags. Do not leave this empty.
+- Be factually careful. If a detail is uncertain, leave it out rather than invent it.
+
+Return ONLY a JSON object in exactly this shape:
+{{
+  "title": "engaging video title, under 70 characters",
+  "description": "2-4 sentence video description",
+  "tags": ["up to 12 relevant tags"],
+  "scenes": [
+    {{"narration": "...", "image_prompt": "..."}}
+  ]
+}}"""
+
+
 class GeminiProvider:
     name = "gemini"
 
@@ -408,51 +481,9 @@ class GeminiProvider:
         per_scene = max(15, word_budget // scene_count)
         ceiling = int(word_budget * 1.25)
         per_scene_max = max(20, ceiling // scene_count)
-        art_brief = style_spec(cfg.style)["brief"]
-
-        prompt = f"""You are a script writer for a high-retention vertical video channel (TikTok, YouTube Shorts, Instagram Reels).
-
-CHANNEL TOPIC: {topic}
-TONE: {cfg.tone}
-AUDIENCE: {cfg.audience}
-LANGUAGE: {cfg.language}
-TARGET VIDEO LENGTH: about {target} seconds
-
-Pick ONE specific, genuinely interesting story or fact within the topic.
-Write {scene_count} scenes of narration that together take about {target} seconds
-when read aloud fast (roughly {word_budget} words total).
-
-LENGTH IS A HARD REQUIREMENT: the narration must total {word_budget}-{ceiling} words
-(about {per_scene} words per scene, never more than {per_scene_max}). Scripts outside
-this range are rejected — count the words in each scene before returning: expand
-thin scenes with concrete detail, cut filler if running long.
-
-RETENTION RULES — follow all of them:
-- COLD OPEN: the first sentence must hook in under 3 seconds. A shocking payoff,
-  a bold claim, or a question. Never a greeting, never "in this video", never setup.
-- SHORT sentences: 12 words max each, one idea per sentence. Staccato rhythm.
-- NO filler: cut every word that does not earn the next second of attention.
-- One PATTERN INTERRUPT around the middle: a twist ("but here's what nobody
-  tells you..."), a rhetorical question, or a contrarian turn.
-- One OPEN LOOP before the payoff ("...and the last one is the wildest").
-{end_rule(cfg.cta_enabled)}
-- narration: plain spoken prose for a voiceover. No stage directions, no quotes
-  inside the text, no markdown, no emoji.
-- image_prompt: a detailed visual description for an AI image generator matching
-  that scene. {art_brief}
-- title: curiosity-gap style, under 70 characters. No clickbait lies.
-- tags: 8 to 12 short search tags. Do not leave this empty.
-- Be factually careful. If a detail is uncertain, leave it out rather than invent it.
-
-Return ONLY a JSON object in exactly this shape:
-{{
-  "title": "engaging video title, under 70 characters",
-  "description": "2-4 sentence video description",
-  "tags": ["up to 12 relevant tags"],
-  "scenes": [
-    {{"narration": "...", "image_prompt": "..."}}
-  ]
-}}"""
+        prompt = build_script_prompt(
+            cfg, topic, target, scene_count, word_budget, ceiling,
+            per_scene, per_scene_max)
 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],

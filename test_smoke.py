@@ -1058,6 +1058,55 @@ def t_progress_bar():
     assert "overlay=" not in " ".join(plain)
 
 
+def t_script_prompt_rules():
+    from scriptgen import build_script_prompt
+
+    cfg = tmp_cfg()
+    prompt = build_script_prompt(cfg, "octopus arms", 65, 6, 169, 211, 28, 35)
+    for rule in ("WRONG-BELIEF FLIP", "FIRST 5 WORDS", "MICRO-TEASES",
+                 "LOOP-BACK ENDING", "CONCRETE CAMERA RULE",
+                 "stock-photo search", "no hashtags",
+                 '"scenes": [', "octopus arms"):
+        assert rule in prompt, rule
+    assert "did you know" in prompt.lower()  # named only to ban it
+    assert "NEVER a bare question" in prompt
+
+
+def t_topup_prompt():
+    from unittest.mock import patch
+
+    from topics import propose_topics
+
+    class Spy:
+        def generate_text(self, prompt, temperature=0.0, tag=""):
+            self.prompt = prompt
+            return "Why octopuses dream\nHow glass is made\n"
+
+    spy = Spy()
+    with patch("scriptgen.get_provider", return_value=spy):
+        out = propose_topics(tmp_cfg(), 2, ["Why honey never expires"])
+    assert out == ["Why octopuses dream", "How glass is made"], out
+    assert "filmable with stock footage" in spy.prompt
+    assert "65-second" in spy.prompt  # real target, not stale 30-45
+    assert "Why honey never expires" in spy.prompt  # dedupe sample
+    assert "USEFUL explainers" in spy.prompt
+
+
+def t_batch_topics():
+    from pathlib import Path as _Path
+
+    lines = (_Path(__file__).parent / "topics" / "batch-100.txt"
+             ).read_text(encoding="utf-8").splitlines()
+    lines = [line.strip() for line in lines if line.strip()]
+    assert len(lines) == 100, len(lines)
+    assert len(set(lines)) == 100  # no duplicates
+    for line in lines:
+        assert len(line) <= 140, line
+        assert not line[0].isdigit()  # no numbering
+    text = "\n".join(lines).lower()
+    assert "facts about" not in text  # banned shape
+
+
 def t_heartbeat():
     """Heartbeat: unconfigured = silent no-op; pings the check-in URL;
     network faults swallowed; full URLs accepted."""
@@ -1212,8 +1261,10 @@ def t_editorial():
     class FakeProvider:
         def __init__(self, replies):
             self.replies = list(replies)
+            self.prompts = []
 
         def generate_text(self, prompt, temperature=0.7, tag="", json_mode=False):
+            self.prompts.append(prompt)
             reply = self.replies.pop(0)
             if isinstance(reply, Exception):
                 raise reply
@@ -1225,6 +1276,11 @@ def t_editorial():
     sc = script("aaa aaa aaa.", "bbb bbb bbb.")
     polish_script(sc, cfg, FakeProvider([good, good]))
     assert [x.narration for x in sc.scenes] == ["Hook here.", "Payoff here."]
+    # punch-up prompt carries the retention architecture.
+    fp = FakeProvider([good, good])
+    polish_script(script("aaa aaa aaa.", "bbb bbb bbb."), cfg, fp)
+    assert "question-hook" in fp.prompts[0] and "loop-back" in fp.prompts[0]
+    assert "Concrete camera rule" in fp.prompts[0]
     # garbage then provider error: stages skip, previous kept, never raises.
     sc = script("aaa aaa aaa.", "bbb bbb bbb.")
     polish_script(sc, cfg, FakeProvider(["not json", RuntimeError("down")]))
@@ -2075,6 +2131,9 @@ def main() -> int:
         ("encoder_setting", t_encoder_setting),
         ("run_heartbeat", t_run_heartbeat),
         ("progress_bar", t_progress_bar),
+        ("script_prompt_rules", t_script_prompt_rules),
+        ("topup_prompt", t_topup_prompt),
+        ("batch_topics", t_batch_topics),
         ("dry_run_batch", t_dry_run_batch),
         ("editorial", t_editorial),
         ("openrouter_lane", t_openrouter_lane),

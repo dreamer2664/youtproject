@@ -97,8 +97,14 @@ def propose_topics(cfg: Config, count: int, existing: list[str]) -> list[str]:
     prompt = f"""You programme a faceless YouTube Shorts channel about: {cfg.topic}
 Tone: {cfg.tone}. Audience: {cfg.audience}. Language: {cfg.language}.
 Propose {count} SPECIFIC video topics. Each must be one concrete story, fact or
-question that fills a 30-45 second Short — narrow and curiosity-driven.
-"Facts about X" is banned; "why X does Y" / "the X that Y" is perfect.
+question that fills a {cfg.target_seconds}-second Short — narrow and curiosity-driven.
+"Facts about X" is banned; proven shapes: "why X does Y", "the X that Y",
+"what happens when X", "how X really works".
+Mix TWO flavours evenly: (1) pure-curiosity candy (animal superpowers, bizarre
+places, everyday mysteries) and (2) genuinely USEFUL explainers (how everyday
+systems work, body and brain mechanics, food science, money).
+VISUAL RULE: every topic must be filmable with stock footage — real animals,
+places, objects, food, space. Nothing abstract, no real people needed.
 Do not repeat or resemble these existing topics: {sample}
 RULES: one topic per line; no numbering, no bullets, no quotes, no explanations;
 each under 120 characters; nothing offensive, nothing needing visuals of real people."""
