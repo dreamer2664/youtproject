@@ -26,6 +26,8 @@ PATTERNS = [
     (r'"client_secret"\s*:\s*"[^"]{10,}"', "OAuth client secret"),
     (r'"refresh_token"\s*:\s*"[^"]{10,}"', "OAuth refresh token"),
     (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "private key"),
+    (r"sntryu_[A-Za-z0-9]{32,}", "Sentry user auth token"),
+    (r"https://[0-9a-f]{32}@o\d+\.ingest\.(de\.)?sentry\.io/\d+", "Sentry DSN"),
 ]
 
 

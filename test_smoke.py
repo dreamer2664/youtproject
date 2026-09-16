@@ -702,6 +702,28 @@ def t_gemini_network():
     assert post.call_count == 1
 
 
+def t_sentry():
+    """Sentry init: no DSN (or no SDK) = silent no-op; with DSN it inits."""
+    import sys
+    from unittest.mock import Mock
+
+    from sentry_util import init_sentry
+
+    assert init_sentry(tmp_cfg(), "generate") is False  # nothing configured
+
+    cfg = tmp_cfg(**{"sentry": {"dsn": "https://x@o1.ingest.sentry.io/1"}})
+    fake = Mock()
+    sys.modules["sentry_sdk"] = fake
+    try:
+        assert init_sentry(cfg, "bot") is True
+    finally:
+        del sys.modules["sentry_sdk"]
+    _, kwargs = fake.init.call_args
+    assert kwargs["dsn"].startswith("https://x@")
+    assert kwargs["traces_sample_rate"] == 0.0
+    fake.set_tag.assert_called_with("command", "bot")
+
+
 def t_groq_rotation():
     from unittest.mock import Mock, patch
 
@@ -1678,6 +1700,7 @@ def main() -> int:
         ("gemini_429_fast_failover", t_gemini_429_fast_failover),
         ("gemini_key_sweep", t_gemini_key_sweep),
         ("gemini_network", t_gemini_network),
+        ("sentry", t_sentry),
         ("image_chain", t_image_chain),
         ("image_builders", t_image_builders),
         ("autopost_builders", t_autopost_builders),

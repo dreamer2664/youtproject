@@ -312,3 +312,10 @@ buffer:
   # Chain package + autopost (as Buffer drafts) after every generate.
   # The only manual step left is reviewing drafts in Buffer.
   autopost_after_generate: false
+
+# Crash reporting (Sentry student offer — free). Create a Python project at
+# https://sentry.io, paste its DSN here, restart the bot: every crash then
+# shows up in your Sentry dashboard instead of dying silently. Empty = off.
+sentry:
+  dsn: ""
+  environment: "production"

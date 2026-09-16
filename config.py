@@ -267,6 +267,14 @@ DEFAULTS: dict[str, Any] = {
         # Fixed clock times, e.g. "08:00,20:00". Empty = evenly spaced.
         "at": "",
     },
+    "sentry": {
+        # Sentry DSN for crash reporting (https://sentry.io — student pack).
+        # Empty = reporting off. Env: SENTRY_DSN wins. The DSN is semi-public
+        # (it only accepts error events) but still belongs in config.yaml,
+        # never in code — this repo is public.
+        "dsn": "",
+        "environment": "production",
+    },
     "paths": {
         "work_dir": "work",
         "out_dir": "out",
@@ -623,6 +631,21 @@ class Config:
             return int(str(self.data.get("telegram", {}).get("owner_id", 0)))
         except (ValueError, TypeError):
             return 0
+
+    # -- sentry ----------------------------------------------------------
+    @property
+    def sentry_dsn(self) -> str:
+        return (
+            os.environ.get("SENTRY_DSN")
+            or str(self.data.get("sentry", {}).get("dsn") or "")
+        ).strip()
+
+    @property
+    def sentry_environment(self) -> str:
+        return (
+            os.environ.get("SENTRY_ENVIRONMENT")
+            or str(self.data.get("sentry", {}).get("environment") or "production")
+        ).strip() or "production"
 
     # -- subtitles -------------------------------------------------------
     @property

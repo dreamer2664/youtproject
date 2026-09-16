@@ -1279,6 +1279,13 @@ def main() -> int:
     except ValueError as exc:
         die(str(exc))
 
+    try:
+        from sentry_util import init_sentry
+
+        init_sentry(cfg, args.command)
+    except Exception:  # noqa: BLE001 - reporting must never break dispatch
+        pass
+
     handlers = {
         "preflight": cmd_preflight,
         "generate": cmd_generate,
