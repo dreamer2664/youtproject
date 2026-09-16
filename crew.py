@@ -452,6 +452,12 @@ def daily_digest(cfg: Config, state: dict, brain, say) -> None:
 
 
 def _cycle(cfg: Config, state: dict, brain, say) -> str:
+    try:
+        from heartbeat import ping
+
+        ping(cfg)  # dead-man's switch: silence means the loop died
+    except Exception:  # noqa: BLE001 - monitoring must never break a cycle
+        pass
     now = datetime.now().astimezone()
     today = now.date().isoformat()
     state["heartbeat"] = now.isoformat()
@@ -496,6 +502,9 @@ def _end_mission(cfg: Config, state: dict, reason: str, say) -> None:
     _say(say, f"🏁 Mission {reason}: {len(posted)} videos posted "
               f"({sum(1 for p in posted if p['mode'] == 'live')} live).\n"
               f"Total usage: {_usage_line(state['usage'])}")
+    if cfg.honeybadger_check:
+        _say(say, "💓 Heartbeat stopping with the mission — pause the "
+                  "Honeybadger check until the next mission (else it alerts).")
 
 
 def _pools_line(cfg: Config) -> str:
@@ -553,6 +562,9 @@ def run_mission(cfg: Config, days: int, per_day: int, live: bool,
               f"Manager{'+brain' if brain else ' (code-only)'} · Scout · "
               f"Maker · Herald on duty.\nGoal: {mission['goal'][:150]}")
     _say(say, "🔑 " + _pools_line(cfg))
+    if cfg.honeybadger_check:
+        _say(say, "💓 Heartbeat armed (Honeybadger pings every cycle) — "
+                  "unpause the check if you paused it after the last mission.")
     try:
         while True:
             if stop.exists():

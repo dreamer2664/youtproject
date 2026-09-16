@@ -292,6 +292,15 @@ DEFAULTS: dict[str, Any] = {
         "dsn": "",
         "environment": "production",
     },
+    "honeybadger": {
+        # Dead-man's-switch check ID (student pack): the crew loop pings it
+        # every cycle and every finished video pings once; silence longer
+        # than the check's period+grace emails you. A bare ID or the full
+        # ping URL both work. Empty = heartbeat off. Env: HONEYBADGER_CHECK.
+        # Pause the check in the dashboard between missions (else a quiet PC
+        # reads as "dead"). Pinging is send-only — no API token needed here.
+        "check": "",
+    },
     "paths": {
         "work_dir": "work",
         "out_dir": "out",
@@ -648,6 +657,14 @@ class Config:
             return int(str(self.data.get("telegram", {}).get("owner_id", 0)))
         except (ValueError, TypeError):
             return 0
+
+    # -- honeybadger -----------------------------------------------------
+    @property
+    def honeybadger_check(self) -> str:
+        return (
+            os.environ.get("HONEYBADGER_CHECK")
+            or str(self.data.get("honeybadger", {}).get("check") or "")
+        ).strip()
 
     # -- sentry ----------------------------------------------------------
     @property

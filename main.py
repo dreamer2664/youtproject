@@ -518,6 +518,13 @@ def cmd_generate(cfg, args) -> int:
                 commit_cta(cfg)  # rotation advances only on success
             print(f"  \u2705 {out_path.name}  {total:.0f}s  {size_mb:.1f} MB")
 
+            try:
+                from heartbeat import ping
+
+                ping(cfg)  # finished video = pipeline alive
+            except Exception:  # noqa: BLE001 - monitoring never breaks a run
+                pass
+
             if not args.keep_work:
                 shutil.rmtree(job_dir, ignore_errors=True)
 

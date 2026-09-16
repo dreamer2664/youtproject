@@ -331,3 +331,11 @@ buffer:
 sentry:
   dsn: ""
   environment: "production"
+
+# Dead-man's switch (Honeybadger student offer — free). Create a check-in
+# named e.g. crew-heartbeat (simple schedule, report every 2 hours, grace
+# 30 minutes) and paste its ID or ping URL here. The crew loop then pings it
+# every cycle; if the pipeline dies mid-mission, Honeybadger emails you.
+# Pause the check in the dashboard between missions. Empty = off.
+honeybadger:
+  check: ""

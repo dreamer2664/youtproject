@@ -827,6 +827,26 @@ def t_pollinations_text():
     assert calls == ["openai", "mistral"], calls
 
 
+def t_heartbeat():
+    """Heartbeat: unconfigured = silent no-op; pings the check-in URL;
+    network faults swallowed; full URLs accepted."""
+    from unittest.mock import Mock, patch
+
+    from heartbeat import check_id_from, ping
+
+    assert ping(tmp_cfg()) is False  # nothing configured
+    cfg = tmp_cfg(**{"honeybadger": {"check": "ABC123"}})
+    assert check_id_from(cfg) == "ABC123"
+    cfg2 = tmp_cfg(**{"honeybadger": {"check": "https://api.honeybadger.io/v1/check_in/XYZ/"}})
+    assert check_id_from(cfg2) == "XYZ"
+    with patch("heartbeat.requests.get",
+               return_value=Mock(status_code=200)) as get:
+        assert ping(cfg) is True
+    assert get.call_args.args[0] == "https://api.honeybadger.io/v1/check_in/ABC123"
+    with patch("heartbeat.requests.get", side_effect=OSError("down")):
+        assert ping(cfg) is False  # network faults swallowed
+
+
 def t_groq_rotation():
     from unittest.mock import Mock, patch
 
@@ -1807,6 +1827,7 @@ def main() -> int:
         ("azure_budget", t_azure_budget),
         ("music_rotation", t_music_rotation),
         ("pollinations_text", t_pollinations_text),
+        ("heartbeat", t_heartbeat),
         ("image_chain", t_image_chain),
         ("image_builders", t_image_builders),
         ("autopost_builders", t_autopost_builders),
