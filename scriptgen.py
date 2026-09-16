@@ -280,10 +280,19 @@ class GeminiProvider:
                 continue
 
             if response.status_code in self.RETRYABLE and attempt < self.MAX_RETRIES:
-                delay = min(2 ** attempt + random.uniform(0, 1), self.MAX_DELAY)
-                print(f"  [{tag}] {model}: HTTP {response.status_code}, retry in "
-                      f"{delay:.0f}s ({attempt}/{self.MAX_RETRIES})")
-                time.sleep(delay)
+                # A different key sometimes routes around a saturated shard,
+                # and trying it costs nothing — so every key gets one INSTANT
+                # shot before anyone sleeps. (The old code slept ~107s on the
+                # first key and never tried the rest, then dropped a model.)
+                keys.append(keys.pop(0))
+                if attempt >= len(keys):
+                    # Second sweep: all keys failed once, back off now.
+                    # Single-key setups behave exactly as before.
+                    wave = attempt - len(keys) + 1
+                    delay = min(2 ** wave + random.uniform(0, 1), self.MAX_DELAY)
+                    print(f"  [{tag}] {model}: HTTP {response.status_code}, retry in "
+                          f"{delay:.0f}s ({attempt}/{self.MAX_RETRIES})")
+                    time.sleep(delay)
 
         return None, last_status, last_error
 

@@ -637,6 +637,30 @@ def t_gemini_429_fast_failover():
     assert run(200)[0] is not None  # sanity: 200 still returns immediately
 
 
+def t_gemini_key_sweep():
+    """5xx: every key gets one instant shot before any sleep — no more ~107s
+    stuck on the first key while the rest sit idle, then a model drop."""
+    from unittest.mock import Mock, patch
+
+    from scriptgen import GeminiProvider
+
+    with patch("requests.post", return_value=Mock(status_code=503, text="x")) as post, \
+            patch("time.sleep", return_value=None) as sleeper:
+        result, status, _ = GeminiProvider(
+            api_key=["k1", "k2", "k3"])._try_model("m", {}, tag="t")
+    assert result is None and status == 503
+    assert post.call_count == 6
+    used = [call.kwargs["params"]["key"] for call in post.call_args_list]
+    assert used == ["k1", "k2", "k3", "k1", "k2", "k3"], used
+    assert sleeper.call_count == 3  # first sweep instant, second sweep backs off
+
+    # Single key keeps the old patience (5 sleeping retries).
+    with patch("requests.post", return_value=Mock(status_code=503, text="x")), \
+            patch("time.sleep", return_value=None) as sleeper1:
+        GeminiProvider(api_key="k")._try_model("m", {}, tag="t")
+    assert sleeper1.call_count == 5
+
+
 def t_groq_rotation():
     from unittest.mock import Mock, patch
 
@@ -1611,6 +1635,7 @@ def main() -> int:
         ("mux_builder", t_mux_builder),
         ("gemini_fallback_order", t_gemini_fallback_order),
         ("gemini_429_fast_failover", t_gemini_429_fast_failover),
+        ("gemini_key_sweep", t_gemini_key_sweep),
         ("image_chain", t_image_chain),
         ("image_builders", t_image_builders),
         ("autopost_builders", t_autopost_builders),
