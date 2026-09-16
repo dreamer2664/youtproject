@@ -19,6 +19,7 @@ import json
 import shlex
 import shutil
 import subprocess
+import time
 from pathlib import Path
 
 from config import Config
@@ -57,20 +58,34 @@ _FFMPEG_NOISE = (
 )
 
 
-def run(cmd: list[str], what: str) -> None:
-    """Run a command, raising a readable error on failure."""
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        tail = (result.stderr or "").strip().splitlines()[-12:]
+def run(cmd: list[str], what: str, heartbeat_every: float = 30.0) -> None:
+    """Run a command, raising a readable error on failure.
+
+    Long FFmpeg encodes print a heartbeat every `heartbeat_every`
+    seconds, so a 20-minute render never looks hung (communicate()
+    re-polled — no pipe deadlock possible).
+    """
+    start = time.monotonic()
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True)
+    while True:
+        try:
+            _, err = proc.communicate(timeout=heartbeat_every)
+            break
+        except subprocess.TimeoutExpired:
+            elapsed = time.monotonic() - start
+            print(f"    [ffmpeg:{what}] …still working ({elapsed:.0f}s elapsed)")
+    if proc.returncode != 0:
+        tail = (err or "").strip().splitlines()[-12:]
         raise AssemblyError(
-            f"{what} failed (exit {result.returncode}):\n  " + "\n  ".join(tail),
+            f"{what} failed (exit {proc.returncode}):\n  " + "\n  ".join(tail),
             cmd=cmd,
-            stderr=result.stderr or "",
+            stderr=err or "",
         )
     # Surface warnings (libass/font issues hide here) instead of swallowing
     # them — minus known-harmless noise, capped so one chatty filter can't
     # flood the console.
-    err = (result.stderr or "").strip()
+    err = (err or "").strip()
     if err:
         shown = 0
         hidden = 0
@@ -144,6 +159,9 @@ def resolve_encoder_args(setting: str) -> list[str]:
                 print(f"  [encoder] {setting} unavailable — falling back to CPU (libx264).")
             if setting == "auto" and name != "cpu":
                 print(f"  [encoder] auto: using {name} ({_ENCODER_ARGS[name][0]}).")
+            if name == "cpu":
+                print("  [encoder] using CPU (libx264)" +
+                      (" — no GPU encoder found" if setting == "auto" else "") + ".")
             args = ["-c:v", _ENCODER_ARGS[name][0], *_ENCODER_ARGS[name][1]]
             _ENCODER_CACHE[setting] = args
             return list(args)

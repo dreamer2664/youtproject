@@ -100,7 +100,7 @@ DEFAULTS: dict[str, Any] = {
         # "auto" = fastest hardware encoder this FFmpeg offers (NVENC >
         # QuickSync > VideoToolbox), falling back to libx264; or force one:
         # "nvenc", "qsv", "videotoolbox". Garbage -> "cpu".
-        "encoder": "cpu",
+        "encoder": "auto",
     },
     "subtitles": {
         # Word-timed subtitles, burned into the video. A captions.srt is also
@@ -517,9 +517,9 @@ class Config:
 
     @property
     def encoder(self) -> str:
-        """Video encoder; garbage in -> 'cpu' (never crashes)."""
-        name = str(self.data["video"].get("encoder", "cpu")).lower()
-        return name if name in ("cpu", "auto", "nvenc", "qsv", "videotoolbox") else "cpu"
+        """Video encoder; garbage in -> 'auto' (self-tests to CPU if needed)."""
+        name = str(self.data["video"].get("encoder", "auto")).lower()
+        return name if name in ("cpu", "auto", "nvenc", "qsv", "videotoolbox") else "auto"
 
     @property
     def thumb_width(self) -> int:

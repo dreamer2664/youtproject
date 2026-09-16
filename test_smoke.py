@@ -989,6 +989,33 @@ def t_gemini_sandwich():
     assert not set(links["gemini"].models) & set(links["gemini-reserve"].models)
 
 
+def t_run_heartbeat():
+    import io
+    import sys
+    from contextlib import redirect_stdout
+
+    from assembler import AssemblyError, run
+
+    # Slow command -> heartbeat lines, then success.
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        run([sys.executable, "-c", "import time;time.sleep(0.5)"],
+            "test", heartbeat_every=0.15)
+    assert "still working" in buf.getvalue(), buf.getvalue()
+    # Fast command -> silent success.
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        run([sys.executable, "-c", "pass"], "test")
+    assert buf.getvalue() == ""
+    # Failing command -> AssemblyError naming the step.
+    try:
+        run([sys.executable, "-c", "import sys;sys.exit(1)"], "boom")
+    except AssemblyError as exc:
+        assert "boom" in str(exc), exc
+    else:
+        raise AssertionError("expected AssemblyError")
+
+
 def t_heartbeat():
     """Heartbeat: unconfigured = silent no-op; pings the check-in URL;
     network faults swallowed; full URLs accepted."""
@@ -1115,11 +1142,11 @@ def t_encoder_setting():
     from assembler import _ENCODER_ARGS
 
     cfg = tmp_cfg()
-    assert cfg.encoder == "cpu"
+    assert cfg.encoder == "auto"  # GPU when available, CPU otherwise
     cfg.data["video"]["encoder"] = "NVENC"
     assert cfg.encoder == "nvenc"
     cfg.data["video"]["encoder"] = "nonsense"
-    assert cfg.encoder == "cpu"
+    assert cfg.encoder == "auto"
     assert _ENCODER_ARGS["cpu"][0] == "libx264"  # CPU path byte-identical
     assert _ENCODER_ARGS["nvenc"][0] == "h264_nvenc"
 
@@ -2003,6 +2030,7 @@ def main() -> int:
         ("script_chain_groq", t_script_chain_groq),
         ("slugify", t_slugify),
         ("encoder_setting", t_encoder_setting),
+        ("run_heartbeat", t_run_heartbeat),
         ("dry_run_batch", t_dry_run_batch),
         ("editorial", t_editorial),
         ("openrouter_lane", t_openrouter_lane),

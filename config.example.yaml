@@ -90,11 +90,10 @@ video:
   # Override one run with:  python main.py generate --style stickman
   style: "photoreal"
 
-  # Video encoder. "cpu" = libx264 veryfast (always works, default).
-  # "auto" = fastest hardware encoder this FFmpeg offers (NVENC >
+  # Video encoder. "auto" = fastest hardware encoder this FFmpeg offers (NVENC >
   # QuickSync > VideoToolbox), same output much faster on a GPU machine;
   # or force one: "nvenc", "qsv", "videotoolbox".
-  encoder: "cpu"
+  encoder: "auto"  # "cpu" = libx264 veryfast (always works, slower)
 
 subtitles:
   # TikTok-style karaoke captions: big centered text with a word-by-word
