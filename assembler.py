@@ -512,6 +512,17 @@ def assemble_video(
     if want_music or want_whoosh or want_pop:
         assets = ensure_assets(cfg.work_dir / "_fx")
     music_track = resolve_music(cfg, assets["music_loop"]) if want_music else None
+    if music_track is not None:
+        # License record: which track this video used (lives next to the mp4,
+        # so a Content-ID dispute is always answerable).
+        origin = ("built-in royalty-free loop"
+                  if music_track == assets.get("music_loop")
+                  else f"library file — check its license: {music_track.name}")
+        try:
+            out_path.with_suffix(".music.txt").write_text(
+                f"track: {music_track.name}\n{origin}\n", encoding="utf-8")
+        except OSError:
+            pass
 
     rungs = [
         ("full mix", dict(with_burn=True, with_progress=True, with_cta=True, with_candy=True)),

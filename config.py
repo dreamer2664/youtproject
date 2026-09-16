@@ -136,6 +136,20 @@ DEFAULTS: dict[str, Any] = {
         # (space/comma-separated) wins, else OPENROUTER_API_KEY (single).
         "openrouter_api_keys": [],
         "openrouter_model": "nvidia/nemotron-3-super-120b-a12b:free",
+        # Azure OpenAI on the $100 student credit (no card, credit can't
+        # overrun — exhausted credit disables services, no bill can appear).
+        # The agent only ever holds the endpoint key (tokens only, no VMs).
+        # Spend is triple-guarded: worst-case pre-pricing, USD caps below,
+        # and a JSONL ledger (`python main.py costs`). Unknown azure_model =
+        # lane refused. Env: AZURE_OPENAI_ENDPOINT / AZURE_OPENAI_KEY /
+        # AZURE_OPENAI_DEPLOYMENT / AZURE_OPENAI_MODEL win over these.
+        "azure_endpoint": "",
+        "azure_api_key": "",
+        "azure_deployment": "",
+        "azure_model": "",
+        "azure_api_version": "2024-08-01-preview",
+        "azure_max_usd_per_day": 1.0,
+        "azure_max_usd_per_month": 5.0,
         # Primary image provider + ordered fallbacks (IMAGE_PROVIDERS).
         # Fallbacks missing their key are skipped automatically, never fatal.
         "image_provider": "pollinations",
@@ -746,6 +760,56 @@ class Config:
             return max(10, min(600, int(self.data["ai"]["image_timeout"])))
         except (ValueError, TypeError):
             return 90
+
+    @property
+    def azure_endpoint(self) -> str:
+        return (
+            os.environ.get("AZURE_OPENAI_ENDPOINT")
+            or str(self.data["ai"].get("azure_endpoint") or "")
+        ).strip()
+
+    @property
+    def azure_api_key(self) -> str:
+        return (
+            os.environ.get("AZURE_OPENAI_KEY")
+            or str(self.data["ai"].get("azure_api_key") or "")
+        ).strip()
+
+    @property
+    def azure_deployment(self) -> str:
+        return (
+            os.environ.get("AZURE_OPENAI_DEPLOYMENT")
+            or str(self.data["ai"].get("azure_deployment") or "")
+        ).strip()
+
+    @property
+    def azure_model(self) -> str:
+        return (
+            os.environ.get("AZURE_OPENAI_MODEL")
+            or str(self.data["ai"].get("azure_model") or "")
+        ).strip()
+
+    @property
+    def azure_api_version(self) -> str:
+        return str(
+            self.data["ai"].get("azure_api_version")
+            or "2024-08-01-preview").strip()
+
+    @property
+    def azure_max_usd_per_day(self) -> float:
+        try:
+            value = float(self.data["ai"].get("azure_max_usd_per_day", 1.0))
+        except (TypeError, ValueError):
+            return 1.0
+        return value if value > 0 else 1.0
+
+    @property
+    def azure_max_usd_per_month(self) -> float:
+        try:
+            value = float(self.data["ai"].get("azure_max_usd_per_month", 5.0))
+        except (TypeError, ValueError):
+            return 5.0
+        return value if value > 0 else 5.0
 
     @property
     def image_provider(self) -> str:

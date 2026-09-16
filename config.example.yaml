@@ -233,6 +233,18 @@ ai:
     - ""
   openrouter_model: "nvidia/nemotron-3-super-120b-a12b:free"
 
+  # Azure OpenAI ($100 student credit): best-quality lane, spend-guarded.
+  # Needs a deployment in the Azure portal; the agent only ever holds the
+  # endpoint key below (tokens only — it cannot spin up VMs or services).
+  # Caps are enforced BEFORE every call; overruns fall back to free lanes.
+  # See `python main.py costs` for the live ledger.
+  azure_endpoint: ""
+  azure_api_key: ""
+  azure_deployment: ""
+  azure_model: ""            # base model id for pricing, e.g. gpt-4o-mini
+  azure_max_usd_per_day: 1.0
+  azure_max_usd_per_month: 5.0
+
   # Images walk a provider chain until one delivers: the primary first,
   # then each fallback in order. Providers missing their key are skipped
   # automatically, never fatal. Image dimensions follow video.format

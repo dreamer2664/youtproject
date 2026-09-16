@@ -700,13 +700,30 @@ class ChainedProvider:
 def get_provider(cfg: Config) -> ScriptProvider:
     """Primary + fallbacks as a chain; template is always last, never fatal."""
     primary = cfg.ai_provider
-    if primary not in ("gemini", "groq", "openrouter", "template"):
+    if primary not in ("azure", "gemini", "groq", "openrouter", "template"):
         primary = "gemini"
-    order = [primary] + [name for name in ("gemini", "groq", "openrouter", "template")
+    order = [primary] + [name for name in ("azure", "gemini", "groq", "openrouter", "template")
                          if name != primary]
     chain: list[tuple[str, object]] = []
     for name in order:
-        if name == "gemini" and cfg.gemini_api_key:
+        if name == "azure" and cfg.azure_api_key and cfg.azure_endpoint:
+            from azure_openai import (AzureOpenAIProvider, is_supported_model,
+                                      ledger_path_for)
+
+            if not is_supported_model(cfg.azure_model):
+                print(f"  [azure] model {cfg.azure_model!r} has no pinned price — "
+                      f"lane off (fail-closed).")
+            elif not cfg.azure_deployment.strip():
+                print("  [azure] deployment name missing — lane off.")
+            else:
+                chain.append(("azure", AzureOpenAIProvider(
+                    endpoint=cfg.azure_endpoint, api_key=cfg.azure_api_key,
+                    deployment=cfg.azure_deployment, model=cfg.azure_model,
+                    api_version=cfg.azure_api_version,
+                    ledger_path=ledger_path_for(cfg),
+                    max_usd_per_day=cfg.azure_max_usd_per_day,
+                    max_usd_per_month=cfg.azure_max_usd_per_month)))
+        elif name == "gemini" and cfg.gemini_api_key:
             chain.append(("gemini", GeminiProvider(cfg.gemini_api_keys, cfg.gemini_model)))
         elif name == "groq" and cfg.groq_api_keys:
             from groq import GroqProvider

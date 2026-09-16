@@ -724,6 +724,76 @@ def t_sentry():
     fake.set_tag.assert_called_with("command", "bot")
 
 
+def t_azure_budget():
+    """Azure lane: priced calls log to the ledger; caps and unknown models refuse."""
+    from unittest.mock import Mock, patch
+
+    from azure_openai import (AzureOpenAIProvider, BudgetExhausted,
+                              costs_report, is_supported_model, price_for,
+                              read_spend)
+
+    assert is_supported_model("gpt-4o-mini")
+    assert not is_supported_model("gpt-9-ultra")
+    expect = 1500 * 0.15 / 1e6 + 2500 * 0.60 / 1e6
+    assert abs(price_for("gpt-4o-mini", 1500, 2500) - expect) < 1e-9
+    try:
+        AzureOpenAIProvider(endpoint="https://x", api_key="k", deployment="d",
+                            model="gpt-9-ultra",
+                            ledger_path=Path("/nonexistent/l.jsonl"))
+    except RuntimeError as exc:
+        assert "no pinned price" in str(exc)
+    else:
+        raise AssertionError("unknown model should refuse")
+
+    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    prov = AzureOpenAIProvider(
+        endpoint="https://x.openai.azure.com", api_key="k", deployment="mini",
+        model="gpt-4o-mini", ledger_path=tmp / "azure_spend.jsonl")
+    body = {"choices": [{"message": {"content": '{"a": 1}'}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50}}
+    with patch("requests.post",
+               return_value=Mock(status_code=200, json=lambda: body,
+                                 text="{}")) as post:
+        assert prov.generate_text("hi", tag="t", json_mode=True) == '{"a": 1}'
+    assert post.call_args.kwargs["params"] == {"api-version": "2024-08-01-preview"}
+    report = costs_report(tmp / "azure_spend.jsonl")
+    assert report["calls_total"] == 1
+    assert read_spend(tmp / "azure_spend.jsonl")[0]["usd"] > 0
+
+    # A $0.0001 daily cap blocks even a tiny call (worst-case pricing).
+    poor = AzureOpenAIProvider(
+        endpoint="https://x", api_key="k", deployment="d", model="gpt-4o-mini",
+        ledger_path=tmp / "poor.jsonl", max_usd_per_day=0.0001)
+    with patch("requests.post") as post2:
+        try:
+            poor.generate_text("hi")
+        except BudgetExhausted:
+            pass
+        else:
+            raise AssertionError("cap should have blocked the call")
+    assert post2.call_count == 0  # refused BEFORE any network
+
+
+def t_music_rotation():
+    """Music picker: explicit file wins, else random library rotation, else built-in."""
+    from unittest.mock import patch
+
+    from audiofx import resolve_music
+
+    cfg = tmp_cfg()
+    lib = cfg.root / cfg.music_folder
+    lib.mkdir(parents=True, exist_ok=True)
+    for name in ("a.mp3", "b.mp3", "c.mp3"):
+        (lib / name).write_bytes(b"fake")
+    fallback = cfg.root / "loop.wav"
+    fallback.write_bytes(b"fake")
+    with patch("audiofx.random.choice", side_effect=lambda seq: seq[1]):
+        assert resolve_music(cfg, fallback).name == "b.mp3"
+    for name in ("a.mp3", "b.mp3", "c.mp3"):
+        (lib / name).unlink()
+    assert resolve_music(cfg, fallback) == fallback
+
+
 def t_groq_rotation():
     from unittest.mock import Mock, patch
 
@@ -1701,6 +1771,8 @@ def main() -> int:
         ("gemini_key_sweep", t_gemini_key_sweep),
         ("gemini_network", t_gemini_network),
         ("sentry", t_sentry),
+        ("azure_budget", t_azure_budget),
+        ("music_rotation", t_music_rotation),
         ("image_chain", t_image_chain),
         ("image_builders", t_image_builders),
         ("autopost_builders", t_autopost_builders),

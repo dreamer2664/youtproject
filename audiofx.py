@@ -183,7 +183,10 @@ def resolve_music(cfg: Config, fallback_loop: Path) -> Path:
             if p.is_file() and p.suffix.lower() in _AUDIO_SUFFIXES
         )
         if found:
-            print(f"      music     : {found[0].name} (from {cfg.music_folder}/)")
-            return found[0]
+            # Random rotation: every video gets its own vibe. The pick is
+            # logged to <video>.music.txt at render time (license record).
+            track = random.choice(found)
+            print(f"      music     : {track.name} (from {cfg.music_folder}/)")
+            return track
     print("      music     : built-in royalty-free loop")
     return fallback_loop

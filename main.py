@@ -1036,6 +1036,24 @@ def cmd_published(cfg, args) -> int:
     return 0
 
 
+def cmd_costs(cfg, args) -> int:
+    """Azure OpenAI spend vs caps (the $100-credit trust dashboard)."""
+    from azure_openai import costs_report, ledger_path_for
+
+    path = ledger_path_for(cfg)
+    report = costs_report(path)
+    print(f"Azure OpenAI spend  (ledger: {path})")
+    print(f"  today : ${report['today_usd']:.4f} ({report['calls_today']} calls) — "
+          f"cap ${cfg.azure_max_usd_per_day:.2f}/day")
+    print(f"  month : ${report['month_usd']:.4f} ({report['calls_total']} calls total) — "
+          f"cap ${cfg.azure_max_usd_per_month:.2f}/month")
+    if not cfg.azure_api_key or not cfg.azure_endpoint:
+        print("  lane  : not configured (set ai.azure_endpoint/api_key/deployment/model)")
+    else:
+        print(f"  lane  : {cfg.azure_model} on {cfg.azure_deployment} — "
+              f"caps enforced, overruns fall back to free lanes")
+    return 0
+
 def cmd_errors(cfg, args) -> int:
     from datetime import datetime
 
@@ -1256,6 +1274,7 @@ def main() -> int:
     p.add_argument("url", help="the YouTube URL, e.g. https://youtu.be/....")
 
     p = sub.add_parser("errors", help="full text of recent failures (for debugging)")
+    sub.add_parser("costs", help="Azure OpenAI spend vs caps")
     p.add_argument("--count", type=int, default=3, help="how many failures to show")
 
     sub.add_parser("queue", help="show the queue")
@@ -1302,6 +1321,7 @@ def main() -> int:
         "published": cmd_published,
         "queue": cmd_queue,
         "errors": cmd_errors,
+        "costs": cmd_costs,
         "voices": cmd_voices,
         "autopost": cmd_autopost,
     }
