@@ -274,6 +274,30 @@ def build_platform_caption(meta: dict, platform: str) -> str:
     return caption.strip() + "\n"
 
 
+_HASH_TITLE = re.compile(r"^[0-9a-f]{6,64}$")
+_HASHTAG = re.compile(r"#\S+")
+
+
+def clean_title(raw: str, topic: str) -> str:
+    """Final YouTube title: no hashtags, never a bare hash/ID (pure, tested).
+
+    The LLM loves appending "#facts #viral" to titles (they then get cut
+    off mid-tag by the 100-char limit), and one 2026-09-14 video shipped
+    with a bare job-id hash as its title. Both are packaging malpractice,
+    so both are fixed here: hashtags stripped, hash-like / empty titles
+    rebuilt from the topic. Callers print when the guard triggers.
+    """
+    title = _HASHTAG.sub("", raw or "").strip()
+    title = re.sub(r"\s+", " ", title)
+    if (not title or title.lower() == "untitled"
+            or _HASH_TITLE.match(title.replace(" ", ""))):
+        fallback = re.sub(r"\s+", " ", (topic or "")).strip()
+        if fallback:
+            fallback = fallback[0].upper() + fallback[1:]
+        return fallback[:YOUTUBE_TITLE_LIMIT] or "Untitled"
+    return title[:YOUTUBE_TITLE_LIMIT]
+
+
 def build_package(job: Job, cfg: Config) -> Path:
     """Create upload/<id>/ for one generated job. Returns the kit folder."""
     video_path = Path(job.video_file)
@@ -284,7 +308,10 @@ def build_package(job: Job, cfg: Config) -> Path:
         raise FileNotFoundError(f"metadata file missing: {meta_path}")
 
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    title = str(meta.get("title", "") or "Untitled")[:YOUTUBE_TITLE_LIMIT]
+    raw_title = str(meta.get("title", "") or "")
+    title = clean_title(raw_title, job.topic)
+    if title != raw_title.strip()[:YOUTUBE_TITLE_LIMIT]:
+        print(f"  [package] ⚠️ title guard: {raw_title!r} -> {title!r}")
     meta["title"] = title
     tags = fit_tags(meta.get("tags") or [])
 

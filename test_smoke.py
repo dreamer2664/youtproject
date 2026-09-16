@@ -951,6 +951,21 @@ def t_voice_ssml():
     assert len(calls) == 2 and not calls[1].startswith("<speak")
 
 
+def t_title_guard():
+    from package import clean_title
+
+    # LLM hashtag tails stripped (they used to truncate mid-tag at 100 chars).
+    assert clean_title("Why Honey Doesn't Expire #facts #science #viral", "t") == \
+        "Why Honey Doesn't Expire"
+    # Bare hash (shipped live 2026-09-14) rebuilt from the topic.
+    assert clean_title("6924cd26281d", "why honey never expires") == \
+        "Why honey never expires"
+    assert clean_title("", "the immortal jellyfish") == "The immortal jellyfish"
+    assert clean_title("Untitled", "") == "Untitled"
+    assert clean_title("  Spaced   Out  Title  ", "t") == "Spaced Out Title"
+    assert len(clean_title("x" * 150, "t")) == 100
+
+
 def t_heartbeat():
     """Heartbeat: unconfigured = silent no-op; pings the check-in URL;
     network faults swallowed; full URLs accepted."""
@@ -1957,6 +1972,7 @@ def main() -> int:
         ("stock_lane", t_stock),
         ("director", t_director),
         ("voice_ssml", t_voice_ssml),
+        ("title_guard", t_title_guard),
         ("autopost_builders", t_autopost_builders),
         ("groq_rotation", t_groq_rotation),
         ("script_chain_groq", t_script_chain_groq),
