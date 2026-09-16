@@ -295,7 +295,6 @@ def _build_mux_cmd(
     burn_path: Path | None,
     cta_overlay: tuple[str, float] | None,
     with_burn: bool,
-    with_progress: bool,
     with_cta: bool,
     with_candy: bool,
 ) -> list[str]:
@@ -395,13 +394,9 @@ def _build_mux_cmd(
         from subtitles import filter_args
 
         vf_parts.append(filter_args(burn_path, cfg.format))
-    if cfg.progress_enabled and with_progress:
-        bar_h = cfg.progress_height
-        bar_y = 0 if cfg.progress_position == "top" else f"ih-{bar_h}"
-        vf_parts.append(
-            f"drawbox=x=0:y={bar_y}:w='iw*t/{total_seconds:.3f}':h={bar_h}"
-            f":c={cfg.progress_color}:t=fill"
-        )
+    # NOTE: no drawbox here on purpose — drawbox w/h evaluate ONCE (verified
+    # on FFmpeg 7.0.2), so the progress bar rides the .ass burn-in instead
+    # (subtitles.progress_ass_line). Plans below shed burn/CTA/candy only.
     if cta_overlay is not None and with_cta and _ffmpeg_has_filter("drawtext"):
         font_arg = _drawtext_font_arg()
         if font_arg is not None:
@@ -543,11 +538,10 @@ def assemble_video(
             pass
 
     rungs = [
-        ("full mix", dict(with_burn=True, with_progress=True, with_cta=True, with_candy=True)),
-        ("without the end-card text", dict(with_burn=True, with_progress=True, with_cta=False, with_candy=True)),
-        ("without end-card and progress bar", dict(with_burn=True, with_progress=False, with_cta=False, with_candy=True)),
-        ("without burned subtitles", dict(with_burn=False, with_progress=False, with_cta=False, with_candy=True)),
-        ("plain video + narration", dict(with_burn=False, with_progress=False, with_cta=False, with_candy=False)),
+        ("full mix", dict(with_burn=True, with_cta=True, with_candy=True)),
+        ("without the end-card text", dict(with_burn=True, with_cta=False, with_candy=True)),
+        ("without burned subtitles", dict(with_burn=False, with_cta=False, with_candy=True)),
+        ("plain video + narration", dict(with_burn=False, with_cta=False, with_candy=False)),
     ]
     # Build every command up front and drop duplicates: when a feature is
     # already off in the config, its rung is identical to an earlier one and

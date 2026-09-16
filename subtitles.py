@@ -368,12 +368,43 @@ def _karaoke_style(video_format: str) -> str:
     )
 
 
+def ass_colour(hex_color: str) -> str:
+    """0xRRGGBB (or #RRGGBB / RRGGBB) -> ASS &HAABBGGRR& (pure, tested)."""
+    clean = hex_color.strip().lower().removeprefix("0x").removeprefix("#")
+    if len(clean) != 6 or any(c not in "0123456789abcdef" for c in clean):
+        clean = "ffd700"  # gold fallback — never crashes on garbage
+    return f"&H00{clean[4:6]}{clean[2:4]}{clean[0:2]}&".upper()
+
+
+def progress_ass_line(duration: float, width: int, height: int,
+                      color: str = "0xFFD700", bar_h: int = 12,
+                      position: str = "bottom") -> str:
+    """Full-duration Dialogue drawing the animated progress bar (pure, tested).
+
+    drawbox width/height are evaluated ONCE (verified on FFmpeg 7.0.2: a
+    w='iw*t/D' bar renders full-width and static), so the bar rides the
+    subtitle burn-in instead: a full-width gold rect sliding in from the
+    left via \\move across the whole duration. Same pixels as intended.
+    """
+    if duration <= 0 or width <= 0:
+        return ""
+    total_ms = max(1, int(round(duration * 1000)))
+    y = 0 if position == "top" else max(0, height - bar_h)
+    return (
+        f"Dialogue: 0,0:00:00.00,{ass_timestamp(duration)},Karaoke,,0,0,0,,"
+        f"{{\\an7\\bord0\\shad0\\move({-width},{y},0,{y},0,{total_ms})"
+        f"\\p1\\c{ass_colour(color)}}}"
+        f"m 0 0 l {width} 0 l {width} {bar_h} l 0 {bar_h}{{\\p0}}"
+    )
+
+
 def write_ass(
     events: list[KaraokeEvent],
     path: Path,
     video_format: str,
     width: int,
     height: int,
+    progress: str | None = None,
 ) -> Path:
     """Write karaoke events as an .ass file styled for the video size."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -400,5 +431,7 @@ def write_ass(
             f"Dialogue: 0,{ass_timestamp(event.start)},{ass_timestamp(event.end)},"
             f"Karaoke,,0,0,0,,{event.text}"
         )
+    if progress:
+        lines.append(progress)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path

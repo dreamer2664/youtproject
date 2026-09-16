@@ -8,7 +8,7 @@ module rebuilds every garnish OUTSIDE FFmpeg:
     project-local fonts/arialbd.ttf (no fontconfig involved), overlaid with
     movie+overlay on the plain -vf path — the same path the Ken Burns
     segments already use successfully;
-  * progress bar -> drawbox on that same -vf path (needs no fonts);
+  * progress bar -> gold PNG + overlay with animated x (drawbox w/h\n    evaluate once, so drawbox can never animate — verified 7.0.2);
   * music bed, whooshes, CTA pop, ducking, fade-out -> pre-mixed in numpy to
     a single WAV that is muxed with -map (no -af, no -filter_complex).
 
@@ -458,6 +458,27 @@ def mix_audio_py(
 # Rung assembly
 # ---------------------------------------------------------------------------
 
+def _parse_hex_color(value: str) -> tuple[int, int, int]:
+    """0xRRGGBB-ish -> (r, g, b); gold on garbage (pure, tested)."""
+    clean = str(value or "").strip().lower().removeprefix("0x").removeprefix("#")
+    if len(clean) != 6:
+        return (255, 215, 0)
+    try:
+        return (int(clean[0:2], 16), int(clean[2:4], 16), int(clean[4:6], 16))
+    except ValueError:
+        return (255, 215, 0)
+
+
+def _save_bar_png(path: Path, width: int, bar_h: int, color: str) -> Path:
+    """Solid gold (or configured) bar PNG for the overlay (needs Pillow)."""
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (max(1, int(width)), max(1, int(bar_h))),
+              _parse_hex_color(color)).save(path)
+    return path
+
+
 def prepare_pygarnish(
     *,
     work_dir: Path,
@@ -521,8 +542,13 @@ def prepare_pygarnish(
                        fontsize=cta_fs, top_y=cfg.height - 320)
         cta = (cta_png, cta_start)
 
+    bar_png = None
+    if cfg.progress_enabled:
+        bar_png = work_dir / "pyg_bar.png"
+        _save_bar_png(bar_png, cfg.width, cfg.progress_height,
+                      cfg.progress_color)
     return {"mixed_wav": mixed_wav, "overlays": overlays, "cta": cta,
-            "with_progress": bool(cfg.progress_enabled)}
+            "progress_bar": bar_png}
 
 
 def build_pygarnish_mux_cmd(
@@ -534,12 +560,13 @@ def build_pygarnish_mux_cmd(
     total_seconds: float,
     overlays: list[tuple[Path, float, float]],
     cta: tuple[Path, float] | None,
-    with_progress: bool,
+    progress_bar: Path | None,
 ) -> list[str]:
     """Final-mux command with zero crash filters (pure constructor).
 
-    movie+overlay chains on -vf, drawbox progress, pre-mixed single audio
-    input: no -filter_complex, no -af, no subtitles, no drawtext.
+    movie+overlay chains on -vf (overlay x/y DO animate per frame),
+    pre-mixed single audio input: no -filter_complex, no -af, no
+    subtitles, no drawtext, no drawbox.
     """
     from assembler import resolve_encoder_args
     from subtitles import esc_subs_path
@@ -567,12 +594,16 @@ def build_pygarnish_mux_cmd(
     if cta is not None:
         cta_png, cta_start = cta
         _overlay(cta_png, f"gte(t,{cta_start:.3f})")
-    if with_progress:
-        bar_h = cfg.progress_height
-        bar_y = 0 if cfg.progress_position == "top" else f"ih-{bar_h}"
-        box = (f"drawbox=x=0:y={bar_y}:w='iw*t/{total_seconds:.3f}':h={bar_h}"
-               f":c={cfg.progress_color}:t=fill")
-        chain.append(f"{label}{box}" if label != "[in]" else box)
+    if progress_bar is not None:
+        bar_y = 0 if cfg.progress_position == "top" else cfg.height - cfg.progress_height
+        tag = f"[wm{counter}]"
+        out = f"[v{counter}]"
+        counter += 1
+        chain.append(f"movie={esc_subs_path(progress_bar)}{tag}")
+        chain.append(
+            f"{label}{tag}overlay=x='-{cfg.width}+{cfg.width}*t/{total_seconds:.3f}'"
+            f":y={bar_y}:enable='between(t,0,{total_seconds:.3f})'{out}")
+        label = out
     if chain:
         cmd += ["-vf", ";".join(chain)]
 

@@ -414,7 +414,8 @@ def t_generate_rejects_bad_count():
 
 
 def t_mux_builder():
-    """The final-mux command builder: full mix has every garnish, the
+    """The final-mux command builder: full mix has burn + CTA + candy (the
+    progress bar rides the .ass burn-in now — drawbox can't animate), the
     minimal mix is narration-only, and the CTA pop follows the end-card
     (no card -> no pop). Offline: builds commands, runs nothing."""
     from assembler import _build_mux_cmd, _drawtext_font_arg, _ffmpeg_has_filter
@@ -430,22 +431,21 @@ def t_mux_builder():
         cta_overlay=("FOLLOW FOR MORE!", 3.5),
     )
     full = _build_mux_cmd(
-        **base, with_burn=True, with_progress=True, with_cta=True,
-        with_candy=True)
+        **base, with_burn=True, with_cta=True, with_candy=True)
     vf = full[full.index("-vf") + 1]
-    assert "subtitles=" in vf and "drawbox" in vf, vf
+    assert "subtitles=" in vf and "drawbox" not in vf, vf
     if _ffmpeg_has_filter("drawtext") and _drawtext_font_arg() is not None:
         assert "drawtext" in vf, vf
     graph = full[full.index("-filter_complex") + 1]
     assert "amerge" in graph, graph
     assert full.count("-i") == 5  # video + narration + music + whoosh + pop
 
-    nocta = _build_mux_cmd(**base, with_burn=True, with_progress=True,
+    nocta = _build_mux_cmd(**base, with_burn=True,
                            with_cta=False, with_candy=True)
     assert nocta.count("-i") == 4  # pop dropped with the card
     assert "drawtext" not in nocta[nocta.index("-vf") + 1]
 
-    mini = _build_mux_cmd(**base, with_burn=False, with_progress=False,
+    mini = _build_mux_cmd(**base, with_burn=False,
                           with_cta=False, with_candy=False)
     assert "-vf" not in mini
     mgraph = mini[mini.index("-filter_complex") + 1]
@@ -1014,6 +1014,48 @@ def t_run_heartbeat():
         assert "boom" in str(exc), exc
     else:
         raise AssertionError("expected AssemblyError")
+
+
+def t_progress_bar():
+    import tempfile
+    from pathlib import Path
+
+    from pygarnish import _parse_hex_color, build_pygarnish_mux_cmd
+    from subtitles import ass_colour, progress_ass_line, write_ass
+
+    assert ass_colour("0xFFD700") == "&H0000D7FF&"
+    assert ass_colour("#ff0000") == "&H000000FF&"
+    assert ass_colour("garbage") == "&H0000D7FF&"  # gold fallback
+    assert _parse_hex_color("0xFFD700") == (255, 215, 0)
+    assert _parse_hex_color("nope") == (255, 215, 0)
+    line = progress_ass_line(60.0, 1080, 1920)
+    assert line.startswith("Dialogue: 0,0:00:00.00,0:01:00.00,"), line
+    assert "\\move(-1080,1908,0,1908,0,60000)" in line, line
+    assert "\\p1\\c&H0000D7FF&" in line, line
+    assert "m 0 0 l 1080 0 l 1080 12 l 0 12" in line, line
+    assert progress_ass_line(0, 1080, 1920) == ""
+    top = progress_ass_line(10.0, 1080, 1920, position="top")
+    assert "\\move(-1080,0,0,0,0,10000)" in top, top
+    # write_ass carries it as the final event.
+    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    out = write_ass([], tmp / "t.ass", "portrait", 1080, 1920, progress=line)
+    text = out.read_text(encoding="utf-8")
+    assert "PlayResX: 1080" in text and "PlayResY: 1920" in text
+    assert "\\move(-1080,1908,0,1908,0,60000)" in text
+    # pygarnish fallback path: bar overlay present/omitted cleanly.
+    cfg = tmp_cfg()
+    cmd = build_pygarnish_mux_cmd(
+        concat_txt=tmp / "c.txt", mixed_wav=tmp / "m.wav",
+        out_path=tmp / "o.mp4", cfg=cfg, total_seconds=10.0,
+        overlays=[], cta=None, progress_bar=tmp / "bar.png")
+    joined = " ".join(cmd)
+    assert "drawbox" not in joined, joined
+    assert "overlay=x='-1080+1080*t/10.000'" in joined, joined
+    plain = build_pygarnish_mux_cmd(
+        concat_txt=tmp / "c.txt", mixed_wav=tmp / "m.wav",
+        out_path=tmp / "o.mp4", cfg=cfg, total_seconds=10.0,
+        overlays=[], cta=None, progress_bar=None)
+    assert "overlay=" not in " ".join(plain)
 
 
 def t_heartbeat():
@@ -1939,12 +1981,13 @@ def t_pygarnish():
         concat_txt=tmp / "c.txt", mixed_wav=tmp / "m.wav",
         out_path=tmp / "o.mp4", cfg=cfg, total_seconds=10.0,
         overlays=[(tmp / "cue1.png", 1.0, 2.5)],
-        cta=(tmp / "cta.png", 6.5), with_progress=True)
+        cta=(tmp / "cta.png", 6.5), progress_bar=(tmp / "bar.png"))
     joined = " ".join(cmd)
     assert "-filter_complex" not in cmd and "-af" not in cmd
     assert "subtitles=" not in joined and "drawtext" not in joined
     vf = cmd[cmd.index("-vf") + 1]
-    assert "movie=" in vf and "overlay=" in vf and "drawbox" in vf, vf
+    assert "movie=" in vf and "overlay=" in vf and "drawbox" not in vf, vf
+    assert "overlay=x='-1080+1080*t/10.000'" in vf, vf
     assert "between(t,1.000,2.500)" in vf and "gte(t,6.500)" in vf
     assert cmd[-1].endswith("o.mp4")
 
@@ -2031,6 +2074,7 @@ def main() -> int:
         ("slugify", t_slugify),
         ("encoder_setting", t_encoder_setting),
         ("run_heartbeat", t_run_heartbeat),
+        ("progress_bar", t_progress_bar),
         ("dry_run_batch", t_dry_run_batch),
         ("editorial", t_editorial),
         ("openrouter_lane", t_openrouter_lane),

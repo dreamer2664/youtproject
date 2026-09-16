@@ -455,6 +455,7 @@ def cmd_generate(cfg, args) -> int:
                     build_cues,
                     build_karaoke_events,
                     max_chars_for,
+                    progress_ass_line,
                     write_ass,
                     write_srt,
                 )
@@ -471,8 +472,15 @@ def cmd_generate(cfg, args) -> int:
                 print(f"      subtitles : {len(cues)} cues -> {srt_path.name}")
                 events = build_karaoke_events(narrations, timings, starts,
                                               durations, HEAD_TAIL)
+                progress_line = None
+                if cfg.progress_enabled:
+                    progress_line = progress_ass_line(
+                        sum(durations), cfg.width, cfg.height,
+                        cfg.progress_color, cfg.progress_height,
+                        cfg.progress_position)
                 ass_path = write_ass(events, out_path.with_suffix(".ass"),
-                                     cfg.format, cfg.width, cfg.height)
+                                     cfg.format, cfg.width, cfg.height,
+                                     progress=progress_line)
                 karaoke_name = ass_path.name
                 print(f"      karaoke   : {len(events)} word events -> {ass_path.name}")
                 if _ffmpeg_has_filter("subtitles"):
