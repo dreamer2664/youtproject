@@ -27,13 +27,19 @@ from pathlib import Path
 
 import requests
 
+from stock import pexels_fetch
+
 from config import IMAGE_PROVIDERS as PROVIDERS, Config
 
 ENDPOINT = "https://image.pollinations.ai/prompt/{prompt}"
 
 GEMINI_IMAGE_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 # Current lane first, legacy lane as backup (404 advances, like text models).
-GEMINI_IMAGE_MODELS = ["gemini-3.1-flash-image-preview", "gemini-2.5-flash-image"]
+GEMINI_IMAGE_MODELS = [
+    "gemini-3.1-flash-image-preview",  # 2026-09: newest render brain
+    "gemini-2.5-flash-image",  # valid ID, quota-gated (429) on free keys
+    "nano-banana-pro-preview",  # valid ID, quota-gated (429) on free keys
+]
 
 # Cycled through when a scene needs several images. All framings are
 # subject-agnostic on purpose — they must make sense appended to any prompt.
@@ -147,6 +153,8 @@ def provider_ready(name: str, cfg: Config) -> tuple[bool, str]:
     if name == "gemini":
         return (bool(cfg.gemini_api_key),
                 "key present" if cfg.gemini_api_key else "no Gemini key")
+    if name == "pexels":
+        return (bool(cfg.pexels_api_key), "no Pexels key")
     return False, "unknown provider"
 
 
@@ -344,10 +352,16 @@ def _gemini_fetch(prompt: str, dest: Path, cfg: Config, seed: int, attempts: int
     # signature parity with the other providers.
     del seed
     dest.parent.mkdir(parents=True, exist_ok=True)
-    key = cfg.gemini_api_key
+    # 2026-09-16: image quota is per-key (429 seen on key 1 while other
+    # keys were fresh) — cycle ALL keys instead of pinning the first.
+    pool = [cfg.gemini_api_key, *cfg.gemini_api_keys]
+    keys = list(dict.fromkeys(key for key in pool if key))
+    if not keys:
+        raise RuntimeError("no Gemini key")
     last_error = "unknown"
     for model in GEMINI_IMAGE_MODELS:
         for attempt in range(1, attempts + 1):
+            key = keys[(attempt - 1) % len(keys)]
             try:
                 response = requests.post(
                     GEMINI_IMAGE_URL.format(model=model),
@@ -389,6 +403,7 @@ def _gemini_fetch(prompt: str, dest: Path, cfg: Config, seed: int, attempts: int
 _FETCH = {
     "pollinations": _pollinations_fetch,
     "gemini": _gemini_fetch,
+    "pexels": pexels_fetch,
 }
 
 

@@ -15,15 +15,19 @@ class OpenRouterProvider(OpenAICompatProvider):
     name = "openrouter"
     api_url = "https://openrouter.ai/api/v1/chat/completions"
     debug_file = "openrouter_last.txt"
-    DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
-    # Verified Sep 2026: nemotron + lfm returned exact JSON; glm + gemma
-    # are valid IDs on congested pools (429, not 404) at probe time.
-    # inkling:free excluded: 403 unless called from an agentic harness.
+    DEFAULT_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
+    # Re-surveyed live 2026-09-16 (exact-JSON probes): the 550B ultra is
+    # the smartest free model anywhere and answers in ~2s; lightning +
+    # nex-pro + super-120b trail close; gemma/glm are valid IDs on
+    # congested pools (429, not 404); lfm ballast. inkling IDs excluded:
+    # 403 unless called from an agentic harness.
     FALLBACK_MODELS = [
+        "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "nvidia/nemotron-3.5-lightning:free",
+        "nex-agi/nex-n2.5-pro:free",
         "nvidia/nemotron-3-super-120b-a12b:free",
-        "z-ai/glm-5.2:free",
-        "google/gemma-4-31b-it:free",
-        "liquid/lfm-2.5-2.6b:free",
+        "google/gemma-4-31b:free", "z-ai/glm-5.2:free",
+        "liquid/lfm-2.6b:free",
     ]
     no_key_hint = ("Get free ones at https://openrouter.ai/keys, then set "
                    "ai.openrouter_api_keys in config.yaml or export OPENROUTER_KEYS.")

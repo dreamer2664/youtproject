@@ -20,10 +20,9 @@ class PollinationsTextProvider(OpenAICompatProvider):
     api_url = "https://text.pollinations.ai/openai"
     debug_file = "pollinations_last.txt"
     DEFAULT_MODEL = "openai"
-    FALLBACK_MODELS = [
-        "openai",
-        "mistral",
-    ]
+    # 2026-09-16: ?model=mistral 404s ("legacy API") and /models lists
+    # only openai-fast — mistral removed; retries carry the lane now.
+    FALLBACK_MODELS = ["openai"]
     no_key_hint = "no key needed — anonymous free tier"
 
     def __init__(self, model: str = "") -> None:

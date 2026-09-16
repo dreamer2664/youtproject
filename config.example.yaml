@@ -214,14 +214,14 @@ ai:
   # the built-in fallback chain tries pinned IDs in order, starting with
   # "gemini-flash-lite-latest" (verified answering, Sep 2026).
   # You can also set that ID explicitly here to skip straight to it.
-  gemini_model: "gemini-flash-latest"
+  gemini_model: "gemini-3.8-flash"
 
   # Free Groq keys (https://console.groq.com/keys) — script/topic/factcheck
   # fallback after Gemini, with key rotation spreading the free-tier quota.
   # Several keys = several quotas. Env GROQ_API_KEYS (comma-separated) wins.
   groq_api_keys:
     - ""
-  groq_model: "qwen/qwen3.8-27b"
+  groq_model: "openai/gpt-oss-120b"
 
   # Editorial passes after factcheck: punch-up (retention) then decringe
   # (taste veto). Skipped automatically without an LLM key.
@@ -231,7 +231,7 @@ ai:
   # last LLM resort before the offline template.
   openrouter_api_keys:
     - ""
-  openrouter_model: "nvidia/nemotron-3-super-120b-a12b:free"
+  openrouter_model: "nvidia/nemotron-3-ultra-550b-a55b:free"
 
   # Azure OpenAI ($100 student credit): best-quality lane, spend-guarded.
   # Needs a deployment in the Azure portal; the agent only ever holds the
@@ -249,8 +249,11 @@ ai:
   # then each fallback in order. Providers missing their key are skipped
   # automatically, never fatal. Image dimensions follow video.format
   # automatically (landscape 1280x720, portrait 720x1280).
-  image_provider: "pollinations"   # or "gemini"
-  image_fallbacks: ["gemini"]
+  image_provider: "pexels"   # or "pollinations" or "gemini"
+  image_fallbacks: ["pollinations", "gemini"]
+  # Free key from https://www.pexels.com/api (no card) — real stock
+  # photos as the primary image lane; lane skipped when empty.
+  pexels_api_key: ""
   # Seconds to wait per image before giving up.
   image_timeout: 90
   # Pollinations model. "flux" is free and unlimited (recommended).

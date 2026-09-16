@@ -193,7 +193,7 @@ Everything lives in `config.yaml`. The important keys:
 | `subtitles.enabled` | Karaoke captions (word highlight) burned in. Leave on. |
 | `disclosure.append_to_description` | Adds the AI-disclosure footer to descriptions. Leave on. |
 | `ai.provider` | `gemini` (good scripts) or `template` (keyless fallback). |
-| `ai.gemini_model` | `gemini-flash-latest` tracks the current model automatically. |
+| `ai.gemini_model` | `gemini-3.8-flash` (re-surveyed 2026-09-16, newest-first fallbacks). |
 
 Every run setting has a CLI override too (`--seconds`, `--format`,
 `--images-per-scene`, `--style`, `--no-subs`, `--topic`), so you can mix

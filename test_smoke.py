@@ -457,25 +457,28 @@ def t_mux_builder():
 def t_gemini_fallback_order():
     from scriptgen import GeminiProvider
 
-    # Empirically verified 2026-09-15: the 2.5 IDs 404 ("no longer
-    # available"), gemini-3-flash 404s on v1beta, and the rolling full-flash
-    # alias plus 3.1-flash-lite 503 under afternoon load — while
-    # flash-lite-latest answers 200. Keep it first; reorder only on
-    # fresh evidence.
-    assert GeminiProvider.FALLBACK_MODELS[0] == "gemini-flash-lite-latest"
-    assert len(set(GeminiProvider.FALLBACK_MODELS)) == len(GeminiProvider.FALLBACK_MODELS)
+    # Re-surveyed live 2026-09-16: 2.5 IDs 404 despite being listed;
+    # 3-flash-preview answers in ~1s, 3.5-flash in ~16s, lite always;
+    # 3.8 + flash-latest 503 under load; pro/omni 429 on tiny quotas.
+    # Newest-first, proven workers as catchers. Reorder only on probes.
+    assert GeminiProvider.FALLBACK_MODELS == [
+        "gemini-3.8-flash", "gemini-3.5-flash", "gemini-3-flash-preview",
+        "gemini-flash-latest", "gemini-flash-lite-latest",
+        "gemini-3.1-flash-lite",
+    ]
 
 
 def t_image_chain():
     from images import describe_chain, provider_ready, resolve_chain
 
     cfg = tmp_cfg()
-    assert cfg.image_provider == "pollinations"
-    assert cfg.image_fallbacks == ["gemini"]
+    assert cfg.image_provider == "pexels"
+    assert cfg.image_fallbacks == ["pollinations", "gemini"]
     assert cfg.image_model == "flux"
-    assert resolve_chain(cfg) == ["pollinations", "gemini"]
+    assert resolve_chain(cfg) == ["pexels", "pollinations", "gemini"]
     assert provider_ready("pollinations", cfg) == (True, "anonymous")
     assert provider_ready("gemini", cfg)[0] is False
+    assert provider_ready("pexels", cfg) == (False, "no Pexels key")
     assert provider_ready("huggingface", cfg) == (False, "unknown provider")
     assert "skipped" in describe_chain(cfg)
     cfg.data["ai"]["image_provider"] = "nonsense"  # garbage -> pollinations
@@ -821,10 +824,131 @@ def t_pollinations_text():
             return Mock(status_code=404, text="nope", json=lambda: {})
         return Mock(status_code=200, json=lambda: body, text="{}")
 
+    # Only one text model exists now ("openai" alias; mistral 404s as
+    # legacy) — a 404 ends the lane instead of failing over.
     with patch("requests.post", side_effect=fake_post):
-        out = PollinationsTextProvider().generate_text("hi", tag="t")
-    assert out == '{"title": "T"}'
-    assert calls == ["openai", "mistral"], calls
+        try:
+            PollinationsTextProvider().generate_text("hi", tag="t")
+        except RuntimeError as exc:
+            assert "unavailable" in str(exc), exc
+        else:
+            raise AssertionError("expected RuntimeError on single-model 404")
+    assert calls == ["openai"], calls
+
+
+def t_stock():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import Mock, patch
+
+    from stock import pexels_fetch, pexels_params, pick_photo
+
+    assert pexels_params("cat night", portrait=True, page=2) == {
+        "query": "cat night", "orientation": "portrait",
+        "size": "medium", "per_page": 3, "page": 2}
+    assert pick_photo([], 0) is None
+    assert pick_photo([{"id": 1}, {"id": 2}], 3)["id"] == 2
+    # No key -> clean failure so the chain moves to the next provider.
+    cfg = tmp_cfg()
+    try:
+        pexels_fetch("a cat", Path("x.jpg"), cfg, 0, 1)
+    except RuntimeError as exc:
+        assert "no Pexels key" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError without a key")
+    # Search + download round-trip (LLM planner forced to heuristic).
+    cfg.data["ai"]["pexels_api_key"] = "k"
+    search = Mock(status_code=200)
+    search.json.return_value = {"photos": [
+        {"id": 11, "photographer": "A",
+         "src": {"portrait": "http://img/p.jpg"}}]}
+    jpg = Mock(status_code=200)
+    jpg.content = b"\xff\xd8\xff" + b"0" * 3000
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp) / "s.jpg"
+        with patch("requests.get", side_effect=[search, jpg]) as get, \
+                patch("scriptgen.get_provider", side_effect=RuntimeError("no llm")):
+            out = pexels_fetch("a cat at night, wide establishing shot",
+                               dest, cfg, 0, 2)
+        assert out == dest and dest.stat().st_size > 2000
+        assert get.call_args_list[0].kwargs["params"]["query"] == "cat night"
+        assert get.call_args_list[0].kwargs["headers"] == {"Authorization": "k"}
+    # Empty results shorten the query once, then fail cleanly.
+    empty = Mock(status_code=200)
+    empty.json.return_value = {"photos": []}
+    with patch("requests.get", return_value=empty), \
+            patch("scriptgen.get_provider", side_effect=RuntimeError("no llm")), \
+            patch("time.sleep"):
+        try:
+            pexels_fetch("a cat at night", Path("y.jpg"), cfg, 0, 2)
+        except RuntimeError as exc:
+            assert "no photos" in str(exc), exc
+        else:
+            raise AssertionError("expected RuntimeError on empty results")
+
+
+def t_director():
+    from unittest.mock import patch
+
+    from director import _CACHE, heuristic_keywords, plan_query
+
+    assert heuristic_keywords(
+        "A glowing Japanese vending machine at night, wide establishing shot"
+    ) == "glowing japanese vending machine"
+    assert heuristic_keywords("a an the shot view") == "cinematic b-roll"
+
+    class Stub:
+        def __init__(self):
+            self.calls = 0
+
+        def generate_text(self, prompt, temperature=0.0, tag=""):
+            self.calls += 1
+            assert "vending" in prompt
+            return '"Neon vending machines, rainy Tokyo street!"'
+
+    cfg = tmp_cfg()
+    stub = Stub()
+    with patch("scriptgen.get_provider", return_value=stub):
+        first = plan_query("Neon vending machines on a rainy Tokyo street", cfg)
+        second = plan_query("Neon vending machines on a rainy Tokyo street", cfg)
+    assert first == "neon vending machines rainy tokyo", first
+    assert second == first and stub.calls == 1  # second hit the cache
+    assert any("vending" in base for base in _CACHE)  # keyed by scene base
+
+
+def t_voice_ssml():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from voiceover import build_ssml, split_sentences, synthesise
+
+    assert split_sentences("Hello world. How are you? Fine!") == [
+        "Hello world.", "How are you?", "Fine!"]
+    assert split_sentences("  ") == []
+    ssml = build_ssml("Fish & chips. Yum.", "en-X", "+40%", 250)
+    assert ssml.startswith("<speak") and 'rate="+40%"' in ssml
+    assert ssml.count('<break time="250ms"/>') == 1
+    assert "Fish &amp; chips" in ssml
+    # SSML rejected by the engine -> silent plain-text retry saves the scene.
+    cfg = tmp_cfg()
+    assert cfg.sentence_pause_ms == 250
+    calls = []
+
+    async def fake_synth(text, voice, rate, dest):
+        calls.append(text)
+        if text.startswith("<speak"):
+            raise RuntimeError("SSML no")
+        dest.write_bytes(b"x" * 2000)
+        return []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp) / "s.mp3"
+        with patch("voiceover._synth", side_effect=fake_synth), \
+                patch("time.sleep"):
+            synthesise("Hello. World.", dest, cfg)
+        assert dest.stat().st_size == 2000
+    assert len(calls) == 2 and not calls[1].startswith("<speak")
 
 
 def t_heartbeat():
@@ -876,12 +1000,12 @@ def t_groq_rotation():
         result = GroqProvider(api_keys=["k1", "k2"])._complete(
             "hi", temperature=0.0, json_mode=False, tag="t")
     assert result == "hello" and post.call_count == 2
-    assert post.call_args_list[1].kwargs["json"]["model"] == "openai/gpt-oss-120b"
-    # 404 -> next model tried (qwen default, then 120b).
+    assert post.call_args_list[1].kwargs["json"]["model"] == "qwen/qwen3.8-27b"
+    # 404 -> next model tried (120b default, then qwen).
     with patch("requests.post", side_effect=[Mock(status_code=404, text="gone"), ok()]) as post:
         GroqProvider(api_keys=["k"])._complete("hi", temperature=0.0, json_mode=False, tag="t")
     bodies = [call.kwargs["json"] for call in post.call_args_list]
-    assert [body["model"] for body in bodies] == ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
+    assert [body["model"] for body in bodies] == ["openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
     # Org-level 429 names the organization: every key shares that fate,
     # so remaining keys are skipped and the next model pool is tried.
     org_429 = Mock(status_code=429, text="Rate limit reached for model `m` "
@@ -891,21 +1015,21 @@ def t_groq_rotation():
             "hi", temperature=0.0, json_mode=False, tag="t")
     assert result == "hello" and post.call_count == 2
     second = post.call_args_list[1]
-    assert second.kwargs["json"]["model"] == "openai/gpt-oss-120b"
+    assert second.kwargs["json"]["model"] == "qwen/qwen3.8-27b"
     assert second.kwargs["headers"] == {"Authorization": "Bearer k1"}
     # 5xx is server-side: no key will fix it, next model at once.
     with patch("requests.post", side_effect=[Mock(status_code=500, text="err"), ok()]) as post:
         GroqProvider(api_keys=["k1", "k2"])._complete(
             "hi", temperature=0.0, json_mode=False, tag="t")
     assert [call.kwargs["json"]["model"] for call in post.call_args_list] == [
-        "qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
+        "openai/gpt-oss-120b", "qwen/qwen3.8-27b"]
     # Two hung requests in a row: next model, not every key x 60 s.
     from requests.exceptions import Timeout
     with patch("requests.post", side_effect=[Timeout(), Timeout(), ok()]) as post:
         result = GroqProvider(api_keys=["k1", "k2", "k3"])._complete(
             "hi", temperature=0.0, json_mode=False, tag="t")
     assert result == "hello" and post.call_count == 3
-    assert post.call_args_list[2].kwargs["json"]["model"] == "openai/gpt-oss-120b"
+    assert post.call_args_list[2].kwargs["json"]["model"] == "qwen/qwen3.8-27b"
     # gpt-oss gets hidden reasoning + JSON mode passes response_format through.
     with patch("requests.post", return_value=ok()) as post:
         GroqProvider(api_keys=["k"], model="openai/gpt-oss-120b")._complete(
@@ -922,7 +1046,7 @@ def t_groq_rotation():
             pass
         else:
             raise AssertionError("expected RuntimeError on full 429 sweep")
-    assert post.call_count == 4  # 2 models x 2 keys
+    assert post.call_count == 6  # 3 models x 2 keys
 
 
 def t_script_chain_groq():
@@ -1044,13 +1168,13 @@ def t_openrouter_lane():
         result = OpenRouterProvider(api_keys=["k1", "k2"])._complete(
             "hi", 0.0, False, "t")
     assert result == "hello" and post.call_count == 2
-    assert post.call_args_list[1].kwargs["json"]["model"] == "z-ai/glm-5.2:free"
+    assert post.call_args_list[1].kwargs["json"]["model"] == "nvidia/nemotron-3.5-lightning:free"
     # plain 429 (own per-key RPM) still rotates keys on the same model.
     with patch("requests.post", side_effect=[Mock(status_code=429, text="slow"),
                                              ok()]) as post:
         OpenRouterProvider(api_keys=["k1", "k2"])._complete("hi", 0.0, False, "t")
     calls = post.call_args_list
-    assert calls[1].kwargs["json"]["model"] == "nvidia/nemotron-3-super-120b-a12b:free"
+    assert calls[1].kwargs["json"]["model"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
     assert calls[1].kwargs["headers"]["Authorization"] == "Bearer k2"
     # chain: openrouter sits after groq, before template.
     cfg = tmp_cfg()
@@ -1830,6 +1954,9 @@ def main() -> int:
         ("heartbeat", t_heartbeat),
         ("image_chain", t_image_chain),
         ("image_builders", t_image_builders),
+        ("stock_lane", t_stock),
+        ("director", t_director),
+        ("voice_ssml", t_voice_ssml),
         ("autopost_builders", t_autopost_builders),
         ("groq_rotation", t_groq_rotation),
         ("script_chain_groq", t_script_chain_groq),

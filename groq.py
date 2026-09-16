@@ -15,14 +15,15 @@ class GroqProvider(OpenAICompatProvider):
     name = "groq"
     api_url = "https://api.groq.com/openai/v1/chat/completions"
     debug_file = "groq_last.txt"
-    DEFAULT_MODEL = "qwen/qwen3.8-27b"
-    # qwen: own 8k-TPM pool, ~12 ms, clean JSON mode + tool calls.
-    # 120b: fallback, needs reasoning hidden (see _tweak_body).
-    # compound-mini excluded: 120b-backed, shares that pool, and goes
-    # 200-with-empty when dry.
+    DEFAULT_MODEL = "openai/gpt-oss-120b"
+    # Probed live 2026-09-16: 120b answers instantly (biggest brain on
+    # the free tier, reasoning hidden — see _tweak_body); qwen 8B next
+    # (fast, but its TPM pool is shared org-wide, not per-key); 20b is
+    # last-resort ballast. compound-mini excluded: 120b-backed, shares
+    # that pool, and goes 200-with-empty when dry.
     FALLBACK_MODELS = [
-        "qwen/qwen3.8-27b",
-        "openai/gpt-oss-120b",
+        "openai/gpt-oss-120b", "qwen/qwen3.8-27b",
+        "openai/gpt-oss-20b",
     ]
     no_key_hint = ("Get free ones at https://console.groq.com/keys, then set "
                    "ai.groq_api_keys in config.yaml or export GROQ_API_KEYS.")

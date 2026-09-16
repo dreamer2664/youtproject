@@ -44,7 +44,7 @@ STYLES = ("photoreal", "cartoon", "stickman")
 # (Hugging Face was removed Sep 2026: they retired serverless image
 # inference — api-inference DNS is dead and the router answers "model
 # deprecated / not supported" for the FLUX/SDXL lanes.)
-IMAGE_PROVIDERS = ("pollinations", "gemini")
+IMAGE_PROVIDERS = ("pexels", "pollinations", "gemini")
 
 # Buffer autopost targets (autopost.py). Order in config = posting order.
 BUFFER_SERVICES = ("youtube", "tiktok", "instagram")
@@ -59,6 +59,11 @@ DEFAULTS: dict[str, Any] = {
         # Narration speed for edge-tts: "+40%" is brisk TikTok pacing (~180 wpm),
         # "+0%" is normal, "-10%" is slow. Range -50%..+100%.
         "speech_rate": "+40%",
+        # Milliseconds of silence edge-tts inserts between sentences
+        # (SSML breaks). Kills the machine-gun "bursts" delivery; a
+        # plain-text retry keeps old behavior if SSML is ever rejected.
+        # 0 = legacy behavior. ElevenLabs path is untouched (already human).
+        "sentence_pause_ms": 250,
         # ElevenLabs premium voice (https://elevenlabs.io/app/settings/api-keys):
         # used instead of edge-tts when keys + voice_id are set, with word
         # timings from the with-timestamps endpoint. Any failure falls back
@@ -121,13 +126,13 @@ DEFAULTS: dict[str, Any] = {
         # so five keys is roughly 5x the free quota. Env: GEMINI_API_KEYS
         # (space/comma-separated) wins, else GEMINI_API_KEY (single).
         "gemini_api_keys": [],
-        "gemini_model": "gemini-flash-latest",
+        "gemini_model": "gemini-3.8-flash",
         # Free Groq keys (https://console.groq.com/keys) — script/topic/
         # factcheck fallback after Gemini, with key rotation spreading the
         # free-tier quota. Env: GROQ_API_KEYS (comma-separated) wins, else
         # GROQ_API_KEY (single), else this list.
         "groq_api_keys": [],
-        "groq_model": "qwen/qwen3.8-27b",
+        "groq_model": "openai/gpt-oss-120b",
         # Editorial passes after factcheck: punch-up (retention) then
         # decringe (taste veto). Skipped automatically without an LLM key.
         "editorial_passes": True,
@@ -135,7 +140,7 @@ DEFAULTS: dict[str, Any] = {
         # last LLM resort before the offline template. Env: OPENROUTER_KEYS
         # (space/comma-separated) wins, else OPENROUTER_API_KEY (single).
         "openrouter_api_keys": [],
-        "openrouter_model": "nvidia/nemotron-3-super-120b-a12b:free",
+        "openrouter_model": "nvidia/nemotron-3-ultra-550b-a55b:free",
         # Azure OpenAI on the $100 student credit (no card, credit can't
         # overrun — exhausted credit disables services, no bill can appear).
         # The agent only ever holds the endpoint key (tokens only, no VMs).
@@ -152,8 +157,8 @@ DEFAULTS: dict[str, Any] = {
         "azure_max_usd_per_month": 5.0,
         # Primary image provider + ordered fallbacks (IMAGE_PROVIDERS).
         # Fallbacks missing their key are skipped automatically, never fatal.
-        "image_provider": "pollinations",
-        "image_fallbacks": ["gemini"],
+        "image_provider": "pexels",
+        "image_fallbacks": ["pollinations", "gemini"],
         # Seconds to wait per image before giving up.
         "image_timeout": 90,
         # Pollinations model. "flux" is free and unlimited (recommended);
@@ -164,6 +169,10 @@ DEFAULTS: dict[str, Any] = {
         # anonymous ~1 req/15s limit to ~1 req/5s and removes the watermark.
         # Or export POLLINATIONS_TOKEN.
         "pollinations_token": "",
+        # Free key from https://www.pexels.com/api (no card) — enables the
+        # stock-photo lane: real photography instead of AI renders. Without
+        # it the lane is skipped silently. Or export PEXELS_API_KEY.
+        "pexels_api_key": "",
         # Free anonymous text lane (no key exists): last LLM resort before
         # the offline template. Mid-tier quality, but its own quota pool.
         "pollinations_model": "openai",
@@ -349,6 +358,15 @@ class Config:
     @property
     def voice(self) -> str:
         return self.data["channel"]["voice"]
+
+    @property
+    def sentence_pause_ms(self) -> int:
+        """SSML pause between sentences in ms (0 = legacy plain text)."""
+        try:
+            value = int(self.data["channel"].get("sentence_pause_ms", 250))
+        except (TypeError, ValueError):
+            return 250
+        return max(0, min(value, 2000))
 
     @property
     def speech_rate_pct(self) -> int:
@@ -741,11 +759,17 @@ class Config:
 
     @property
     def groq_model(self) -> str:
-        return str(self.data["ai"].get("groq_model") or "qwen/qwen3.8-27b")
+        return str(self.data["ai"].get("groq_model") or "openai/gpt-oss-120b")
 
     @property
     def editorial_enabled(self) -> bool:
         return bool(self.data["ai"].get("editorial_passes", True))
+
+    @property
+    def pexels_api_key(self) -> str:
+        """Free Pexels stock key (ai section). Env PEXELS_API_KEY wins."""
+        return os.environ.get("PEXELS_API_KEY", "").strip() or \
+            str(self.data.get("ai", {}).get("pexels_api_key", "") or "")
 
     @property
     def openrouter_api_keys(self) -> list[str]:
@@ -762,7 +786,7 @@ class Config:
     @property
     def openrouter_model(self) -> str:
         return str(self.data["ai"].get("openrouter_model")
-                   or "nvidia/nemotron-3-super-120b-a12b:free")
+                   or "nvidia/nemotron-3-ultra-550b-a55b:free")
 
     @property
     def image_width(self) -> int:

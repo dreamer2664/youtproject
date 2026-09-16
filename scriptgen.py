@@ -206,18 +206,19 @@ class GeminiProvider:
     MAX_DELAY = 45.0
     # Tried, in order, if the configured model keeps failing (5xx saturation
     # or 404 renames — Google retires model IDs regularly). ORDER IS
-    # EMPIRICAL, re-surveyed 2026-09-15: the 2.5 IDs 404 "no longer
-    # available", gemini-3-flash 404s on v1beta, and the rolling full-flash
-    # alias plus 3.1-flash-lite 503 under afternoon load — flash-lite-latest
-    # is the one answering right now, so it leads. Configured model first.
+    # EMPIRICAL, re-surveyed live 2026-09-16: the 2.5 IDs 404 despite being
+    # listed; 3.8-flash + flash-latest 503 under load; pro/omni IDs 429 on
+    # tiny free quotas; 3-flash-preview answers in ~1s, 3.5-flash in ~16s,
+    # lite always. Newest-first for the smartest script that answers; proven
+    # workers catch every miss (failover is seconds, not minutes).
     FALLBACK_MODELS = [
-        "gemini-flash-lite-latest",
+        "gemini-3.8-flash", "gemini-3.5-flash", "gemini-3-flash-preview",
+        "gemini-flash-latest", "gemini-flash-lite-latest",
         "gemini-3.1-flash-lite",
-        "gemini-flash-latest",
     ]
 
     def __init__(self, api_key: str | list[str],
-                 model: str = "gemini-flash-latest") -> None:
+                 model: str = "gemini-3.8-flash") -> None:
         if isinstance(api_key, str):
             api_key = [api_key]
         keys = [key.strip() for key in api_key if key and key.strip()]

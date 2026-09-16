@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,6 +101,30 @@ def _elevenlabs_synth(text: str, dest: Path, cfg: Config) -> list[WordTiming]:
     raise RuntimeError(f"elevenlabs failed ({last})")
 
 
+def split_sentences(text: str) -> list[str]:
+    """Narration -> sentences (pure, tested)."""
+    return [part for part in re.split(r"(?<=[.!?…])\s+", text.strip()) if part]
+
+
+def build_ssml(text: str, voice: str, rate: str, pause_ms: int) -> str:
+    """Narration -> SSML with a pause between sentences (pure, tested).
+
+    The <break> tags kill edge-tts's machine-gun "bursts" delivery. The
+    voice name rides along so the engine needs no extra configuration.
+    """
+    import xml.sax.saxutils as saxutils
+
+    sentences = split_sentences(text) or [text]
+    inner = f'<break time="{int(pause_ms)}ms"/>'.join(
+        saxutils.escape(sentence) for sentence in sentences)
+    return (
+        '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
+        f'xml:lang="en-US"><voice name="{saxutils.escape(voice)}">'
+        f'<prosody rate="{saxutils.escape(rate)}">{inner}</prosody>'
+        "</voice></speak>"
+    )
+
+
 async def _synth(text: str, voice: str, rate: str, dest: Path) -> list[WordTiming]:
     communicate = edge_tts.Communicate(text, voice, rate=rate, boundary="WordBoundary")
     timings: list[WordTiming] = []
@@ -137,15 +162,26 @@ def synthesise(
             print(f"  [voice] elevenlabs failed ({exc}) — "
                   f"falling back to edge-tts")
     last_error: Exception | None = None
+    use_ssml = cfg.sentence_pause_ms > 0
 
     for attempt in range(1, attempts + 1):
         try:
-            timings = asyncio.run(_synth(text, cfg.voice, cfg.speech_rate, dest))
+            if use_ssml:
+                payload = build_ssml(text, cfg.voice, cfg.speech_rate,
+                                   cfg.sentence_pause_ms)
+            else:
+                payload = text
+            timings = asyncio.run(_synth(payload, cfg.voice, cfg.speech_rate, dest))
             if dest.exists() and dest.stat().st_size > 1000:
                 return dest, timings
             raise RuntimeError("output file missing or empty")
         except Exception as exc:  # noqa: BLE001 - retry anything
             last_error = exc
+            if use_ssml:
+                # SSML rejected — drop to plain text and retry at once.
+                use_ssml = False
+                print(f"  [voice] SSML rejected ({exc}) — retrying as plain text")
+                continue
             print(f"  [voice] attempt {attempt}/{attempts} failed: {exc}")
             time.sleep(3 * attempt)
 
