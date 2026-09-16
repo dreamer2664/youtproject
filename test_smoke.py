@@ -794,6 +794,39 @@ def t_music_rotation():
     assert resolve_music(cfg, fallback) == fallback
 
 
+def t_pollinations_text():
+    """Pollinations lane: anonymous (no auth header), no response_format flag,
+    reasoning field ignored, 404 fails over to the next model."""
+    from unittest.mock import Mock, patch
+
+    from pollinations_text import PollinationsTextProvider
+
+    body = {"choices": [{"message": {"content": '{"title": "T"}',
+                                     "reasoning": "thinking..."}}]}
+    with patch("requests.post",
+               return_value=Mock(status_code=200, json=lambda: body,
+                                 text="{}")) as post:
+        text = PollinationsTextProvider().generate_text("hi", tag="t",
+                                                        json_mode=True)
+    assert text == '{"title": "T"}'
+    assert "Authorization" not in post.call_args.kwargs["headers"]
+    assert "response_format" not in post.call_args.kwargs["json"]
+    assert post.call_args.kwargs["json"]["private"] is True
+
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(kwargs["json"]["model"])
+        if len(calls) == 1:
+            return Mock(status_code=404, text="nope", json=lambda: {})
+        return Mock(status_code=200, json=lambda: body, text="{}")
+
+    with patch("requests.post", side_effect=fake_post):
+        out = PollinationsTextProvider().generate_text("hi", tag="t")
+    assert out == '{"title": "T"}'
+    assert calls == ["openai", "mistral"], calls
+
+
 def t_groq_rotation():
     from unittest.mock import Mock, patch
 
@@ -876,15 +909,15 @@ def t_script_chain_groq():
     from scriptgen import ChainedProvider, get_provider
 
     cfg = tmp_cfg()
-    assert [label for label, _ in get_provider(cfg).chain] == ["template"]
+    assert [label for label, _ in get_provider(cfg).chain] == ["pollinations", "template"]
     cfg.data["ai"]["groq_api_keys"] = ["k1", "k2"]
-    assert [label for label, _ in get_provider(cfg).chain] == ["groq", "template"]
+    assert [label for label, _ in get_provider(cfg).chain] == ["groq", "pollinations", "template"]
     cfg.data["ai"]["gemini_api_key"] = "g"
-    assert [label for label, _ in get_provider(cfg).chain] == ["gemini", "groq", "template"]
+    assert [label for label, _ in get_provider(cfg).chain] == ["gemini", "groq", "pollinations", "template"]
     cfg.data["ai"]["provider"] = "groq"
-    assert [label for label, _ in get_provider(cfg).chain] == ["groq", "gemini", "template"]
+    assert [label for label, _ in get_provider(cfg).chain] == ["groq", "gemini", "pollinations", "template"]
     cfg.data["ai"]["provider"] = "nonsense"  # garbage primary -> gemini first
-    assert [label for label, _ in get_provider(cfg).chain] == ["gemini", "groq", "template"]
+    assert [label for label, _ in get_provider(cfg).chain] == ["gemini", "groq", "pollinations", "template"]
     assert isinstance(get_provider(cfg), ChainedProvider)
 
 
@@ -1005,10 +1038,10 @@ def t_openrouter_lane():
     cfg.data["ai"]["groq_api_keys"] = ["q"]
     cfg.data["ai"]["openrouter_api_keys"] = ["o"]
     assert [label for label, _ in get_provider(cfg).chain] == [
-        "gemini", "groq", "openrouter", "template"]
+        "gemini", "groq", "openrouter", "pollinations", "template"]
     cfg.data["ai"]["groq_api_keys"] = []
     cfg.data["ai"]["gemini_api_key"] = ""
-    assert [label for label, _ in get_provider(cfg).chain] == ["openrouter", "template"]
+    assert [label for label, _ in get_provider(cfg).chain] == ["openrouter", "pollinations", "template"]
 
 
 def t_broll():
@@ -1773,6 +1806,7 @@ def main() -> int:
         ("sentry", t_sentry),
         ("azure_budget", t_azure_budget),
         ("music_rotation", t_music_rotation),
+        ("pollinations_text", t_pollinations_text),
         ("image_chain", t_image_chain),
         ("image_builders", t_image_builders),
         ("autopost_builders", t_autopost_builders),

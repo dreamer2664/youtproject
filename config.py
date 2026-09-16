@@ -164,6 +164,9 @@ DEFAULTS: dict[str, Any] = {
         # anonymous ~1 req/15s limit to ~1 req/5s and removes the watermark.
         # Or export POLLINATIONS_TOKEN.
         "pollinations_token": "",
+        # Free anonymous text lane (no key exists): last LLM resort before
+        # the offline template. Mid-tier quality, but its own quota pool.
+        "pollinations_model": "openai",
         # Parallel image downloads. The built-in pacer spaces request starts
         # (~1/15s anonymous Pollinations, ~1/5s with token), so extra workers
         # only overlap download time. Keep at 1.
@@ -834,6 +837,10 @@ class Config:
     @property
     def image_model(self) -> str:
         return str(self.data["ai"].get("image_model") or "flux")
+
+    @property
+    def pollinations_model(self) -> str:
+        return str(self.data["ai"].get("pollinations_model") or "openai")
 
     @property
     def pollinations_token(self) -> str:

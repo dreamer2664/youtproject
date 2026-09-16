@@ -700,9 +700,9 @@ class ChainedProvider:
 def get_provider(cfg: Config) -> ScriptProvider:
     """Primary + fallbacks as a chain; template is always last, never fatal."""
     primary = cfg.ai_provider
-    if primary not in ("azure", "gemini", "groq", "openrouter", "template"):
+    if primary not in ("azure", "gemini", "groq", "openrouter", "pollinations", "template"):
         primary = "gemini"
-    order = [primary] + [name for name in ("azure", "gemini", "groq", "openrouter", "template")
+    order = [primary] + [name for name in ("azure", "gemini", "groq", "openrouter", "pollinations", "template")
                          if name != primary]
     chain: list[tuple[str, object]] = []
     for name in order:
@@ -734,6 +734,11 @@ def get_provider(cfg: Config) -> ScriptProvider:
 
             chain.append(("openrouter", OpenRouterProvider(cfg.openrouter_api_keys,
                                                            cfg.openrouter_model)))
+        elif name == "pollinations":
+            from pollinations_text import PollinationsTextProvider
+
+            chain.append(("pollinations",
+                          PollinationsTextProvider(cfg.pollinations_model)))
         elif name == "template":
             chain.append(("template", TemplateProvider()))
     return ChainedProvider(chain)
