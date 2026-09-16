@@ -18,6 +18,7 @@ def check_script(script, cfg: Config) -> dict:
     if not (cfg.gemini_api_key or cfg.groq_api_keys):
         print("      factcheck : skipped (no Gemini/Groq key)")
         return {"checked": False, "reason": "no key"}
+    print("      factcheck : verifying claims...")
     try:
         return _check(script, cfg)
     except Exception as exc:  # noqa: BLE001 - fact-check must never kill a render

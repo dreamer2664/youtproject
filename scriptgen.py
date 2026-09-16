@@ -240,14 +240,34 @@ class GeminiProvider:
         # is the common case), minimum 3 attempts like the single-key days.
         failover_after = max(3, len(keys))
         tried_429 = 0
+        net_errors = 0
         for attempt in range(1, self.MAX_RETRIES + 1):
             key = keys[0]
-            response = requests.post(
-                self.URL.format(model=model),
-                params={"key": key},
-                json=payload,
-                timeout=180,
-            )
+            try:
+                response = requests.post(
+                    self.URL.format(model=model),
+                    params={"key": key},
+                    json=payload,
+                    timeout=60,
+                )
+            except requests.exceptions.ConnectionError as exc:
+                # DNS/refused/reset: the host itself is down — no other key
+                # or model on this host will answer. Abort Gemini at once
+                # so the provider chain (groq/...) picks up immediately.
+                return None, -1, f"Gemini unreachable: {exc}"
+            except requests.exceptions.RequestException as exc:
+                # Timeout (server stalled) or other transient: one spare key
+                # in case of a blip, then fail over to the next model. Never
+                # sleeps — a stalled host never recovers on a timescale
+                # worth sitting silent for.
+                net_errors += 1
+                last_status, last_error = 0, f"network error: {exc}"
+                print(f"  [{tag}] {model}: {last_error} — "
+                      f"trying {'next key' if net_errors < 2 else 'next model'}")
+                keys.append(keys.pop(0))
+                if net_errors >= 2:
+                    break
+                continue
             if response.status_code == 200:
                 return response.json(), 200, ""
 
@@ -309,6 +329,8 @@ class GeminiProvider:
 
             last_status, last_error = status, error
 
+            if status == -1:
+                raise RuntimeError(f"{error} — failing over to the next provider.")
             if status in (400, 401, 403):
                 hint = ""
                 if "API key not valid" in error:
@@ -320,7 +342,8 @@ class GeminiProvider:
                 print(f"  [{tag}] {model} is not available (404); trying the next model.")
                 continue
             if index + 1 < len(chain):
-                print(f"  [{tag}] {model} gave up (HTTP {status}); trying a fallback model.")
+                detail = last_error if status == 0 else f"HTTP {status}"
+                print(f"  [{tag}] {model} gave up ({detail}); trying a fallback model.")
 
         if last_status == 404:
             raise RuntimeError(
@@ -328,9 +351,10 @@ class GeminiProvider:
                 "renamed them again). Set ai.gemini_model to a current free-tier "
                 f"ID such as 'gemini-flash-lite-latest'. Last error: {last_error}"
             )
+        detail = last_error if last_status == 0 else f"HTTP {last_status}"
         raise RuntimeError(
             f"Gemini unavailable after trying {len(chain)} model(s) with retries "
-            f"(last HTTP {last_status}). This is free-tier saturation — wait a few "
+            f"(last: {detail}). This is free-tier saturation — wait a few "
             f"minutes and re-run; nothing was lost. {last_error}"
         )
 

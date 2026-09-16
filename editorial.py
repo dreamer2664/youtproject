@@ -76,6 +76,7 @@ def _punch_up(script, cfg: Config, provider) -> None:
         f"SCENES: {_scenes_payload(script)}\n"
         'Return ONLY JSON: {"scenes": [{"narration": "..."}]}'
     )
+    print("      editorial : punch-up pass...")
     raw = provider.generate_text(prompt, temperature=0.7, tag="punchup", json_mode=True)
     _apply(script, raw, "punch-up", 1.3)
 
@@ -94,5 +95,6 @@ def _decringe(script, cfg: Config, provider) -> None:
         f"SCENES: {_scenes_payload(script)}\n"
         'Return ONLY JSON: {"scenes": [{"narration": "..."}]}'
     )
+    print("      editorial : decringe pass...")
     raw = provider.generate_text(prompt, temperature=0.2, tag="decringe", json_mode=True)
     _apply(script, raw, "decringe", 1.1)

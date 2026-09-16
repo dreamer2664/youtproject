@@ -661,6 +661,47 @@ def t_gemini_key_sweep():
     assert sleeper1.call_count == 5
 
 
+def t_gemini_network():
+    """Network faults fail over fast: connection errors abort the provider,
+    timeouts get one spare key then the next model. No 180s silences."""
+    from unittest.mock import patch
+
+    import requests
+
+    from scriptgen import GeminiProvider
+
+    # Read timeouts: two attempts (spare key), then give up the model.
+    with patch("requests.post",
+               side_effect=requests.exceptions.ReadTimeout("stalled")) as post, \
+            patch("time.sleep", return_value=None) as sleeper:
+        result, status, error = GeminiProvider(
+            api_key=["k1", "k2", "k3"])._try_model("m", {}, tag="t")
+    assert result is None and status == 0 and "network error" in error
+    assert post.call_count == 2
+    assert sleeper.call_count == 0
+    used = [call.kwargs["params"]["key"] for call in post.call_args_list]
+    assert used == ["k1", "k2"], used
+
+    # Connection errors: host verdict, abort at once.
+    with patch("requests.post",
+               side_effect=requests.exceptions.ConnectionError("dns")):
+        result, status, error = GeminiProvider(
+            api_key=["k1", "k2"])._try_model("m", {}, tag="t")
+    assert result is None and status == -1 and "unreachable" in error
+
+    # And _post turns that into an immediate provider-level failure,
+    # so the chain (groq/...) picks up without trying dead models.
+    with patch("requests.post",
+               side_effect=requests.exceptions.ConnectionError("dns")) as post:
+        try:
+            GeminiProvider(api_key="k")._post({})
+        except RuntimeError as exc:
+            assert "unreachable" in str(exc), str(exc)
+        else:
+            raise AssertionError("_post should have raised")
+    assert post.call_count == 1
+
+
 def t_groq_rotation():
     from unittest.mock import Mock, patch
 
@@ -1636,6 +1677,7 @@ def main() -> int:
         ("gemini_fallback_order", t_gemini_fallback_order),
         ("gemini_429_fast_failover", t_gemini_429_fast_failover),
         ("gemini_key_sweep", t_gemini_key_sweep),
+        ("gemini_network", t_gemini_network),
         ("image_chain", t_image_chain),
         ("image_builders", t_image_builders),
         ("autopost_builders", t_autopost_builders),
