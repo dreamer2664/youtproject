@@ -966,6 +966,29 @@ def t_title_guard():
     assert len(clean_title("x" * 150, "t")) == 100
 
 
+def t_gemini_sandwich():
+    from scriptgen import GeminiProvider, get_provider
+
+    assert GeminiProvider.PRIMARY_MODELS == GeminiProvider.FALLBACK_MODELS[:3]
+    assert GeminiProvider.RESERVE_MODELS == GeminiProvider.FALLBACK_MODELS[3:]
+    assert not set(GeminiProvider.PRIMARY_MODELS) & set(GeminiProvider.RESERVE_MODELS)
+    assert GeminiProvider(["k"], models=["a", "b"]).models == ["a", "b"]
+    assert GeminiProvider(["k"]).models is None  # legacy: full chain
+    cfg = tmp_cfg()
+    cfg.data["ai"]["gemini_api_key"] = "g"
+    cfg.data["ai"]["groq_api_keys"] = ["q"]
+    cfg.data["ai"]["openrouter_api_keys"] = ["o"]
+    chain = get_provider(cfg).chain
+    assert [label for label, _ in chain] == [
+        "gemini", "groq", "openrouter", "gemini-reserve", "pollinations",
+        "template"]
+    links = dict(chain)
+    assert links["gemini"].models[0] == cfg.gemini_model  # configured first
+    assert links["gemini-reserve"].models == [
+        m for m in GeminiProvider.RESERVE_MODELS if m != cfg.gemini_model]
+    assert not set(links["gemini"].models) & set(links["gemini-reserve"].models)
+
+
 def t_heartbeat():
     """Heartbeat: unconfigured = silent no-op; pings the check-in URL;
     network faults swallowed; full URLs accepted."""
@@ -1072,11 +1095,11 @@ def t_script_chain_groq():
     cfg.data["ai"]["groq_api_keys"] = ["k1", "k2"]
     assert [label for label, _ in get_provider(cfg).chain] == ["groq", "pollinations", "template"]
     cfg.data["ai"]["gemini_api_key"] = "g"
-    assert [label for label, _ in get_provider(cfg).chain] == ["gemini", "groq", "pollinations", "template"]
+    assert [label for label, _ in get_provider(cfg).chain] == ["gemini", "groq", "gemini-reserve", "pollinations", "template"]
     cfg.data["ai"]["provider"] = "groq"
-    assert [label for label, _ in get_provider(cfg).chain] == ["groq", "gemini", "pollinations", "template"]
+    assert [label for label, _ in get_provider(cfg).chain] == ["groq", "gemini", "gemini-reserve", "pollinations", "template"]
     cfg.data["ai"]["provider"] = "nonsense"  # garbage primary -> gemini first
-    assert [label for label, _ in get_provider(cfg).chain] == ["gemini", "groq", "pollinations", "template"]
+    assert [label for label, _ in get_provider(cfg).chain] == ["gemini", "groq", "gemini-reserve", "pollinations", "template"]
     assert isinstance(get_provider(cfg), ChainedProvider)
 
 
@@ -1197,7 +1220,8 @@ def t_openrouter_lane():
     cfg.data["ai"]["groq_api_keys"] = ["q"]
     cfg.data["ai"]["openrouter_api_keys"] = ["o"]
     assert [label for label, _ in get_provider(cfg).chain] == [
-        "gemini", "groq", "openrouter", "pollinations", "template"]
+        "gemini", "groq", "openrouter", "gemini-reserve", "pollinations",
+        "template"]
     cfg.data["ai"]["groq_api_keys"] = []
     cfg.data["ai"]["gemini_api_key"] = ""
     assert [label for label, _ in get_provider(cfg).chain] == ["openrouter", "pollinations", "template"]
@@ -1973,6 +1997,7 @@ def main() -> int:
         ("director", t_director),
         ("voice_ssml", t_voice_ssml),
         ("title_guard", t_title_guard),
+        ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),
         ("groq_rotation", t_groq_rotation),
         ("script_chain_groq", t_script_chain_groq),

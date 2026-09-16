@@ -216,9 +216,14 @@ class GeminiProvider:
         "gemini-flash-latest", "gemini-flash-lite-latest",
         "gemini-3.1-flash-lite",
     ]
+    # Split for the provider sandwich (see get_provider): the best three
+    # run before the scarce Groq/OpenRouter brains, the rest only after.
+    PRIMARY_MODELS = FALLBACK_MODELS[:3]
+    RESERVE_MODELS = FALLBACK_MODELS[3:]
 
     def __init__(self, api_key: str | list[str],
-                 model: str = "gemini-3.8-flash") -> None:
+                 model: str = "gemini-3.8-flash",
+                 models: list[str] | None = None) -> None:
         if isinstance(api_key, str):
             api_key = [api_key]
         keys = [key.strip() for key in api_key if key and key.strip()]
@@ -231,6 +236,7 @@ class GeminiProvider:
         self.api_keys = keys
         self.api_key = keys[0]  # first key; kept for backward compat
         self.model = model
+        self.models = list(models) if models else None  # sandwich slice
 
     def _try_model(self, model: str, payload: dict, tag: str = "script") -> tuple[dict | None, int, str]:
         """One model, with retries across keys. Returns (result, status, error)."""
@@ -318,7 +324,11 @@ class GeminiProvider:
         return None, last_status, last_error
 
     def _post(self, payload: dict, tag: str = "script") -> dict:
-        chain = [self.model] + [m for m in self.FALLBACK_MODELS if m != self.model]
+        if self.models:
+            chain = list(self.models)
+        else:
+            chain = [self.model] + [m for m in self.FALLBACK_MODELS
+                                    if m != self.model]
         last_status, last_error = 0, ""
 
         for index, model in enumerate(chain):
@@ -725,7 +735,11 @@ def get_provider(cfg: Config) -> ScriptProvider:
                     max_usd_per_day=cfg.azure_max_usd_per_day,
                     max_usd_per_month=cfg.azure_max_usd_per_month)))
         elif name == "gemini" and cfg.gemini_api_key:
-            chain.append(("gemini", GeminiProvider(cfg.gemini_api_keys, cfg.gemini_model)))
+            chain.append(("gemini", GeminiProvider(
+                cfg.gemini_api_keys, cfg.gemini_model,
+                models=[cfg.gemini_model] + [
+                    m for m in GeminiProvider.PRIMARY_MODELS
+                    if m != cfg.gemini_model])))
         elif name == "groq" and cfg.groq_api_keys:
             from groq import GroqProvider
 
@@ -742,4 +756,18 @@ def get_provider(cfg: Config) -> ScriptProvider:
                           PollinationsTextProvider(cfg.pollinations_model)))
         elif name == "template":
             chain.append(("template", TemplateProvider()))
+    # Sandwich: Gemini's best three run first (huge quota), then the best
+    # scarce brains (Groq 120b, OpenRouter 550b), and only then Gemini's
+    # weaker reserves — so a slump costs brains, not minutes crawling
+    # through Lite models while a 550B brain sits idle. Inserted after the
+    # last scarce lane so an explicit --primary always keeps its place.
+    if any(label == "gemini" for label, _ in chain):
+        reserve = [m for m in GeminiProvider.RESERVE_MODELS
+                   if m != cfg.gemini_model]
+        if reserve:
+            link = ("gemini-reserve", GeminiProvider(
+                cfg.gemini_api_keys, cfg.gemini_model, models=reserve))
+            pos = max(i for i, (label, _) in enumerate(chain)
+                      if label in ("gemini", "groq", "openrouter")) + 1
+            chain.insert(pos, link)
     return ChainedProvider(chain)
