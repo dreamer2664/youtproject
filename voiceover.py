@@ -77,8 +77,10 @@ def _elevenlabs_synth(text: str, dest: Path, cfg: Config) -> list[WordTiming]:
                 f"{ELEVEN_TTS_URL}/{cfg.elevenlabs_voice_id}/with-timestamps",
                 headers={"xi-api-key": key, "Content-Type": "application/json"},
                 json={"text": text, "model_id": cfg.elevenlabs_model,
-                      "voice_settings": {"stability": 0.5,
-                                         "similarity_boost": 0.75}},
+                      "voice_settings": {"stability": cfg.elevenlabs_stability,
+                                         "similarity_boost": cfg.elevenlabs_similarity,
+                                         "style": cfg.elevenlabs_style,
+                                         "use_speaker_boost": True}},
                 timeout=180,
             )
         except Exception as exc:

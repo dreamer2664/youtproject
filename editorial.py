@@ -8,6 +8,7 @@ failure keeps the previous version with a printed note, never a crash.
 from __future__ import annotations
 
 import json
+import re
 
 from config import Config
 
@@ -16,7 +17,8 @@ def polish_script(script, cfg: Config, provider) -> None:
     """Punch-up then decringe, in place. Never raises, never breaks a render."""
     if not cfg.editorial_enabled:
         return
-    for stage, func in (("punch-up", _punch_up), ("decringe", _decringe)):
+    for stage, func in (("punch-up", _punch_up), ("hook fix", _fix_hook),
+                        ("decringe", _decringe)):
         try:
             func(script, cfg, provider)
         except Exception as exc:  # noqa: BLE001 - polish never kills a render
@@ -61,6 +63,66 @@ def _apply(script, raw: str, stage: str, max_growth: float) -> bool:
     return True
 
 
+_QUESTION_OPENERS = ("why ", "what ", "how ", "who ", "when ", "where ",
+                     "which ", "is ", "are ", "was ", "were ", "do ", "does ",
+                     "did ", "can ", "could ", "have ", "has ", "will ",
+                     "would ")
+
+
+def hook_violated(narration: str) -> bool:
+    """True if scene 1 opens with a bare question (pure, tested)."""
+    text = (narration or "").strip()
+    first = re.split(r"[.?!…]+", text, maxsplit=1)[0].strip()
+    if not first:
+        return False
+    lowered = first.lower()
+    if "did you know" in lowered:
+        return True
+    asked = len(first) < len(text) and text[len(first)] == "?"
+    return bool(asked and lowered.startswith(_QUESTION_OPENERS))
+
+
+def _fix_hook(script, cfg, provider) -> None:
+    """One targeted rewrite when scene 1 opens with a question.
+
+    The writer + punch-up prompts forbid question hooks, but models disobey
+    often enough that the rule needs teeth: this narrow single-line task
+    (same fact, no question mark) complies where broad rewrites don't.
+    Validation-gated like every stage — failures keep the original.
+    """
+    from scriptgen import extract_json
+
+    if not script.scenes or not hook_violated(script.scenes[0].narration):
+        return
+    text = script.scenes[0].narration.strip()
+    first = re.split(r"[.?!…]+", text, maxsplit=1)[0].strip()
+    rest = text[len(first):].lstrip(".?!… ").strip()
+    prompt = (
+        "Rewrite ONLY this Shorts opening line as a bold spoken claim or paradox.\n"
+        "Hard rules: NOT a question (no question mark anywhere); hook noun in the\n"
+        "first 5 words; same fact; under 25 words; speakable aloud; no hashtags.\n"
+        f"OPENING: {first}\n"
+        'Return ONLY JSON: {"line": "..."}'
+    )
+    print("      editorial : hook fix pass...")
+    try:
+        raw = provider.generate_text(prompt, temperature=0.5, tag="hookfix",
+                                     json_mode=True)
+        data = extract_json(raw)
+    except Exception as exc:  # noqa: BLE001 - polish never kills a render
+        print(f"      editorial : hook fix failed ({str(exc)[:100]}) — keeping previous.")
+        return
+    line = data.get("line") if isinstance(data, dict) else None
+    line = line.strip() if isinstance(line, str) else ""
+    if not line or "?" in line or len(line.split()) > 40:
+        print("      editorial : hook fix returned no usable line — keeping previous.")
+        return
+    if not line.endswith((".", "!", "…")):
+        line += "."
+    script.scenes[0].narration = line + (" " + rest if rest else "")
+    print(f"      editorial : hook fix applied ({first[:50]!r} -> {line[:50]!r}).")
+
+
 def _punch_up(script, cfg: Config, provider) -> None:
     """Retention edit: stronger hook, cliffhangers, payoff. Facts frozen."""
     prompt = (
@@ -79,6 +141,8 @@ def _punch_up(script, cfg: Config, provider) -> None:
         "- Concrete camera rule: swap abstract nouns for visible ones (animals,\n"
         "  objects, places) wherever the meaning survives.\n"
         "- Speakable aloud, present tense where possible, no hashtags/emoji.\n"
+        "- Keep varied sentence rhythm — mix punchy and flowing sentences,\n"
+        "  never 4+ choppy in a row. The voiceover must FLOW like speech.\n"
         "- Each scene within 20% of its current word count.\n"
         f"SCENES: {_scenes_payload(script)}\n"
         'Return ONLY JSON: {"scenes": [{"narration": "..."}]}'

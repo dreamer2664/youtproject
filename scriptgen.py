@@ -234,6 +234,9 @@ RETENTION ARCHITECTURE — follow every rule:
 - The hook's key noun must appear in the FIRST 5 WORDS. No greeting, no
   "in this video", no throat-clearing, no setup of any kind.
 - SHORT sentences: 12 words max each, one idea per sentence. Staccato rhythm.
+- RHYTHM: vary sentence length — mix punchy 4-7 word sentences with flowing
+  9-12 word ones joined by commas. Never stack 4+ choppy sentences in a
+  row. The voiceover must FLOW like speech, not machine-gun.
 - NO filler: cut every word that does not earn the next second of attention.
 - MICRO-TEASES: every scene except the last ends mid-tension — an unfinished
   idea, a "but...", a tease of what comes next. Never resolve early.

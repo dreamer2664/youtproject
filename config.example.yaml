@@ -50,6 +50,11 @@ channel:
   # EXAVITQu4vr4xnSDxMaL). Empty = ElevenLabs stays off.
   elevenlabs_voice_id: ""
   elevenlabs_model: "eleven_turbo_v2_5"
+  # Delivery tuning (voice_settings): steadier narration that does not
+  # machine-gun short sentences. 0..1 each; delete lines to reset.
+  elevenlabs_stability: 0.65
+  elevenlabs_similarity: 0.6
+  elevenlabs_style: 0.25
 
   # Spoken language, used to prompt the script writer.
   language: "English"

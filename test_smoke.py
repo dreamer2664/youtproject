@@ -1064,12 +1064,13 @@ def t_script_prompt_rules():
     cfg = tmp_cfg()
     prompt = build_script_prompt(cfg, "octopus arms", 65, 6, 169, 211, 28, 35)
     for rule in ("WRONG-BELIEF FLIP", "FIRST 5 WORDS", "MICRO-TEASES",
-                 "LOOP-BACK ENDING", "CONCRETE CAMERA RULE",
+                 "LOOP-BACK ENDING", "CONCRETE CAMERA RULE", "RHYTHM",
                  "stock-photo search", "no hashtags",
                  '"scenes": [', "octopus arms"):
         assert rule in prompt, rule
     assert "did you know" in prompt.lower()  # named only to ban it
     assert "NEVER a bare question" in prompt
+    assert "FLOW like speech" in prompt
 
 
 def t_topup_prompt():
@@ -1105,6 +1106,47 @@ def t_batch_topics():
         assert not line[0].isdigit()  # no numbering
     text = "\n".join(lines).lower()
     assert "facts about" not in text  # banned shape
+
+
+def t_hook_guard():
+    import types
+
+    from editorial import hook_violated, polish_script
+
+    assert hook_violated("Why do we close our eyes? Scientists disagree.")
+    assert hook_violated("Did you know ants farm? Wild.")
+    assert hook_violated("did you know this. really.")  # phrase banned unasked
+    assert not hook_violated("Your eyes slam shut when you sneeze. Why.")
+    assert not hook_violated("Why flamingos stand on one leg is physics. Next.")
+    assert not hook_violated("")
+
+    def script(*lines):
+        return types.SimpleNamespace(
+            scenes=[types.SimpleNamespace(narration=t) for t in lines])
+
+    class FakeProvider:
+        def __init__(self, replies):
+            self.replies = list(replies)
+            self.tags = []
+
+        def generate_text(self, prompt, temperature=0.7, tag="", json_mode=False):
+            self.tags.append(tag)
+            return self.replies.pop(0)
+
+    cfg = tmp_cfg()
+    keep = '{"scenes": [{"narration": "Why do we close our eyes? Scientists argue."}]}'
+    fixed = '{"scenes": [{"narration": "Your eyes slam shut. Scientists argue."}]}'
+    sc = script("Why do we close our eyes? Scientists argue.")
+    fp = FakeProvider([keep, '{"line": "Your eyes slam shut"}', fixed])
+    polish_script(sc, cfg, fp)
+    assert fp.tags == ["punchup", "hookfix", "decringe"], fp.tags
+    assert sc.scenes[0].narration == "Your eyes slam shut. Scientists argue."
+    # Clean hook: no hookfix call at all.
+    sc2 = script("Your eyes slam shut. Here is why.")
+    fp2 = FakeProvider(['{"scenes": [{"narration": "Your eyes slam shut. Here is why."}]}'] * 2)
+    polish_script(sc2, cfg, fp2)
+    assert fp2.tags == ["punchup", "decringe"], fp2.tags
+    assert sc2.scenes[0].narration == "Your eyes slam shut. Here is why."
 
 
 def t_heartbeat():
@@ -1281,6 +1323,7 @@ def t_editorial():
     polish_script(script("aaa aaa aaa.", "bbb bbb bbb."), cfg, fp)
     assert "question-hook" in fp.prompts[0] and "loop-back" in fp.prompts[0]
     assert "Concrete camera rule" in fp.prompts[0]
+    assert "FLOW like speech" in fp.prompts[0]
     # garbage then provider error: stages skip, previous kept, never raises.
     sc = script("aaa aaa aaa.", "bbb bbb bbb.")
     polish_script(sc, cfg, FakeProvider(["not json", RuntimeError("down")]))
@@ -1616,6 +1659,9 @@ def t_elevenlabs():
         assert [(t.word, t.start, t.end) for t in timings] == [("Hi", 0, 0.2),
                                                                ("yo", 0.3, 0.5)]
         assert "with-timestamps" in post.call_args.args[0]
+        settings = post.call_args.kwargs["json"]["voice_settings"]
+        assert settings == {"stability": 0.65, "similarity_boost": 0.6,
+                            "style": 0.25, "use_speaker_boost": True}, settings
     # Denied key -> edge-tts fallback still delivers.
     denied = Mock(status_code=401, text="bad key")
     with tempfile.TemporaryDirectory() as tmp, \
@@ -2134,6 +2180,7 @@ def main() -> int:
         ("script_prompt_rules", t_script_prompt_rules),
         ("topup_prompt", t_topup_prompt),
         ("batch_topics", t_batch_topics),
+        ("hook_guard", t_hook_guard),
         ("dry_run_batch", t_dry_run_batch),
         ("editorial", t_editorial),
         ("openrouter_lane", t_openrouter_lane),

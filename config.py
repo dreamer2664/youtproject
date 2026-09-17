@@ -74,6 +74,12 @@ DEFAULTS: dict[str, Any] = {
         # EXAVITQu4vr4xnSDxMaL). Empty = ElevenLabs stays off.
         "elevenlabs_voice_id": "",
         "elevenlabs_model": "eleven_turbo_v2_5",
+        # Delivery tuning (voice_settings): steady-but-alive narration.
+        # Higher stability drones, lower babbles; lower similarity smooths
+        # choppy artifacts; style adds natural flow (v2+ models only).
+        "elevenlabs_stability": 0.65,
+        "elevenlabs_similarity": 0.6,
+        "elevenlabs_style": 0.25,
         "language": "English",
         "category_id": "22",
         "default_tags": [],
@@ -408,6 +414,33 @@ class Config:
     def elevenlabs_model(self) -> str:
         return str(self.data["channel"].get("elevenlabs_model")
                    or "eleven_turbo_v2_5").strip()
+
+    @property
+    def elevenlabs_stability(self) -> float:
+        """Narration steadiness 0..1 (0.65: steady, not droning)."""
+        try:
+            value = float(self.data["channel"].get("elevenlabs_stability", 0.65))
+        except (TypeError, ValueError):
+            return 0.65
+        return max(0.0, min(1.0, value))
+
+    @property
+    def elevenlabs_similarity(self) -> float:
+        """Voice-match 0..1 (0.6 smooths choppy artifacts)."""
+        try:
+            value = float(self.data["channel"].get("elevenlabs_similarity", 0.6))
+        except (TypeError, ValueError):
+            return 0.6
+        return max(0.0, min(1.0, value))
+
+    @property
+    def elevenlabs_style(self) -> float:
+        """Style flow 0..1 (0.25 adds natural variation)."""
+        try:
+            value = float(self.data["channel"].get("elevenlabs_style", 0.25))
+        except (TypeError, ValueError):
+            return 0.25
+        return max(0.0, min(1.0, value))
 
     @property
     def youtube_api_keys(self) -> list[str]:
