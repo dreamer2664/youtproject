@@ -25,6 +25,8 @@ shot view angle angles perspective composition lighting establishing
 wide medium closeup close-up close extreme dramatic low high aerial
 side profile symmetrical centered symmetric shallow depth field moody
 new another other full scene
+cartoon vector anime illustration illustrations clipart painting paintings
+drawing drawings sketch sketches watercolor cgi 3d artwork digital
 """.split())
 
 _CACHE: dict[str, str] = {}

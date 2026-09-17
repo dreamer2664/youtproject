@@ -69,6 +69,23 @@ _QUESTION_OPENERS = ("why ", "what ", "how ", "who ", "when ", "where ",
                      "would ")
 
 
+def scrub_narration(text: str) -> str:
+    """Spoken-word cleanup: no dot-dot-dot pauses, no stage directions.
+
+    ONE function used by TTS and captioning alike (same words in, so word
+    timings stay aligned): "..." reads as dead air in every voice engine and
+    prints literally in captions, and "[pause]"-style asides are unspoken.
+    """
+    cleaned = re.sub(r"\[.*?\]", " ", text or "")
+    cleaned = cleaned.replace("\u2026", "...")
+    cleaned = re.sub(r"([?!])\.{2,}", r"\1", cleaned)
+    cleaned = re.sub(r"\.{2,}", ",", cleaned)
+    cleaned = re.sub(r",(\s*,)+", ",", cleaned)
+    cleaned = re.sub(r"(^|[.!?]\s*),\s*", r"\1", cleaned)
+    cleaned = re.sub(r",([A-Za-z])", r", \1", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip(" ,")
+
+
 def hook_violated(narration: str) -> bool:
     """True if scene 1 opens with a bare question (pure, tested)."""
     text = (narration or "").strip()
@@ -135,7 +152,7 @@ def _punch_up(script, cfg: Config, provider) -> None:
         "  Any question-hook ('did you know?', 'what if?') MUST be rewritten as\n"
         "  a bold claim. The hook noun lands in the first 5 words — delete ALL\n"
         "  throat-clearing before it.\n"
-        "- End scenes 1..N-1 mid-tension (unfinished idea, 'but...', tease of\n"
+        "- End scenes 1..N-1 mid-tension (unfinished idea, 'but then', tease of\n"
         "  what comes next). Last scene: full payoff + one loop-back line echoing\n"
         "  the hook, so replays feel rewarding.\n"
         "- Concrete camera rule: swap abstract nouns for visible ones (animals,\n"
@@ -143,6 +160,8 @@ def _punch_up(script, cfg: Config, provider) -> None:
         "- Speakable aloud, present tense where possible, no hashtags/emoji.\n"
         "- Keep varied sentence rhythm — mix punchy and flowing sentences,\n"
         "  never 4+ choppy in a row. The voiceover must FLOW like speech.\n"
+        "- No '...' or '\u2026' anywhere — the voice reads them as dead-air pauses.\n"
+        "  Write tension with words and commas, not dots.\n"
         "- Each scene within 20% of its current word count.\n"
         f"SCENES: {_scenes_payload(script)}\n"
         'Return ONLY JSON: {"scenes": [{"narration": "..."}]}'

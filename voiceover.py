@@ -23,6 +23,7 @@ import edge_tts
 import requests
 
 from config import Config
+from editorial import scrub_narration
 
 TICKS_PER_SECOND = 10_000_000
 ELEVEN_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
@@ -156,6 +157,7 @@ def synthesise(
     ElevenLabs first when configured, edge-tts otherwise (or on any
     ElevenLabs failure). Raises RuntimeError if every attempt fails.
     """
+    text = scrub_narration(text)  # same scrub as captions: timings stay aligned
     dest.parent.mkdir(parents=True, exist_ok=True)
     if _elevenlabs_available(cfg):
         try:

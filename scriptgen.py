@@ -237,16 +237,18 @@ RETENTION ARCHITECTURE — follow every rule:
 - RHYTHM: vary sentence length — mix punchy 4-7 word sentences with flowing
   9-12 word ones joined by commas. Never stack 4+ choppy sentences in a
   row. The voiceover must FLOW like speech, not machine-gun.
+- NEVER write '...' or '\u2026' — the voice reads them as dead-air pauses.
+  Write tension with words and commas, not dots.
 - NO filler: cut every word that does not earn the next second of attention.
 - MICRO-TEASES: every scene except the last ends mid-tension — an unfinished
-  idea, a "but...", a tease of what comes next. Never resolve early.
+  idea, a "but then", a tease of what comes next. Never resolve early.
 - One PATTERN INTERRUPT around the middle: a twist ("but here's what nobody
-  tells you..."), a rhetorical question, or a contrarian turn.
-- One OPEN LOOP before the payoff ("...and the last one changes everything").
+  tells you"), a rhetorical question, or a contrarian turn.
+- One OPEN LOOP before the payoff ("and the last one changes everything").
 - ESCALATE, never repeat: each scene deepens the mystery or raises the
   stakes. "That's not even the wildest part" energy — once, in own words.
 - LOOP-BACK ENDING: the final sentence echoes the hook WITH the payoff, so
-  replays feel rewarding ("...and that's why X will never look the same").
+  replays feel rewarding ("and that's why X will never look the same").
 - CONCRETE CAMERA RULE: name physical things (animals, objects, places,
   food) the camera can show. Every abstract idea must be anchored to
   something visible within the same scene.

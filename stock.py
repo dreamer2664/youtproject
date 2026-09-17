@@ -14,6 +14,7 @@ attempts) so the chain treats stock like any other provider.
 from __future__ import annotations
 
 import random
+import re
 import time
 from pathlib import Path
 
@@ -29,11 +30,38 @@ def pexels_params(query: str, *, portrait: bool, page: int, per_page: int = 3) -
             "size": "medium", "per_page": per_page, "page": max(1, page)}
 
 
-def pick_photo(photos: list[dict], seed: int) -> dict | None:
-    """Deterministic pick so retries walk through the results (pure, tested)."""
+def _alt_score(alt: str, query_words: list[str]) -> int:
+    """Query words visible in the photo's alt text (plural-tolerant)."""
+    tokens = [t for t in re.sub(r"[^a-z0-9 ]", "", (alt or "").lower()).split()
+              if len(t) > 2]
+    score = 0
+    for word in query_words:
+        if any(t == word or t.startswith(word) or word.startswith(t)
+               for t in tokens):
+            score += 1
+    return score
+
+
+def pick_photo(photos: list[dict], seed: int, query: str = "") -> dict | None:
+    """Best alt-text match wins; the seed only varies across good ones.
+
+    Zero-overlap photos are excluded while anything better exists (they are
+    the unrelated images this lane used to ship); when nothing matches — or
+    no query is given — legacy seed order applies, so this never blocks.
+    Pure, tested.
+    """
     if not photos:
         return None
-    return photos[seed % len(photos)]
+    if not query:
+        return photos[seed % len(photos)]
+    words = [w for w in re.sub(r"[^a-z0-9 ]", "", query.lower()).split()
+             if len(w) > 2]
+    scored = [(_alt_score(photo.get("alt") or "", words), i)
+              for i, photo in enumerate(photos)]
+    ranked = [i for _, i in sorted(scored, key=lambda t: (-t[0], t[1]))]
+    good = [i for i in ranked
+            if _alt_score(photos[i].get("alt") or "", words) > 0] or ranked
+    return photos[good[seed % len(good)]]
 
 
 def _is_image(body: bytes) -> bool:
@@ -53,11 +81,14 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
     portrait = cfg.format == "portrait"
     last_error = "unknown"
     for attempt in range(1, attempts + 1):
-        page = (seed + attempt - 1) % 4 + 1
+        # Page 1 first (most relevant); deeper pages only when earlier
+        # attempts failed — seed-scattered pages shipped unrelated photos.
+        page = 1 if attempt == 1 else (seed + attempt) % 4 + 1
         try:
             response = requests.get(
                 SEARCH_URL, headers={"Authorization": key},
-                params=pexels_params(query, portrait=portrait, page=page),
+                params=pexels_params(query, portrait=portrait, page=page,
+                                     per_page=5),
                 timeout=30)
         except Exception as exc:
             last_error = str(exc)[:120]
@@ -81,7 +112,7 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
                 query = " ".join(query.split()[:2])
                 continue
             raise RuntimeError(f"pexels: no photos for {query!r}")
-        photo = pick_photo(photos, seed + attempt)
+        photo = pick_photo(photos, seed + attempt, query)
         assert photo is not None
         src = photo.get("src") or {}
         url = (src.get("portrait") if portrait else src.get("landscape")) \

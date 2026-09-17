@@ -1065,6 +1065,7 @@ def t_script_prompt_rules():
     prompt = build_script_prompt(cfg, "octopus arms", 65, 6, 169, 211, 28, 35)
     for rule in ("WRONG-BELIEF FLIP", "FIRST 5 WORDS", "MICRO-TEASES",
                  "LOOP-BACK ENDING", "CONCRETE CAMERA RULE", "RHYTHM",
+                 "dead-air pauses",
                  "stock-photo search", "no hashtags",
                  '"scenes": [', "octopus arms"):
         assert rule in prompt, rule
@@ -1171,6 +1172,60 @@ def t_concept_dupe():
     # Short titles: exact only, never fuzzy.
     assert not is_same_topic("Pisa tower", "Eiffel tower")
     assert is_same_topic("Pisa tower", "pisa tower!")
+
+
+def t_scrub():
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from editorial import scrub_narration
+    from subtitles import build_cues, max_chars_for
+    from voiceover import synthesise
+
+    assert scrub_narration("Wait for it... the answer is blood.") == \
+        "Wait for it, the answer is blood."
+    assert scrub_narration("...and the last one changes everything") == \
+        "and the last one changes everything"
+    assert scrub_narration("Really?... Next scene.") == "Really? Next scene."
+    assert scrub_narration("Hold on\u2026 breathe.") == "Hold on, breathe."
+    assert scrub_narration("But [pause] then it moves.") == "But then it moves."
+    assert scrub_narration("Over....") == "Over"
+    assert scrub_narration("3.14 and U.S.A stay.") == "3.14 and U.S.A stay."
+    # Captions can never show dots: the scrub sits inside _word_times.
+    cues = build_cues(["Wait... what?"], [[(0.0, 0.4), (0.4, 0.9)]],
+                      [0.0], [2.0], max_chars_for("portrait"), 0.1)
+    text = " ".join(line for cue in cues for line in cue.lines)
+    assert "..." not in text and "\u2026" not in text, text
+    assert "Wait," in text, text
+    # TTS receives the same scrubbed words (timings stay aligned).
+    cfg = tmp_cfg()
+    cfg.data.setdefault("channel", {})["elevenlabs_api_keys"] = ["k1"]
+    cfg.data["channel"]["elevenlabs_voice_id"] = "v1"
+    with tempfile.TemporaryDirectory() as tmp, \
+            patch("voiceover._elevenlabs_synth", return_value=[]) as synth:
+        synthesise("Wait... go.", Path(tmp) / "s.mp3", cfg)
+    assert synth.call_args.args[0] == "Wait, go."
+
+
+def t_stock_pick():
+    from stock import pick_photo
+
+    photos = [{"id": 1, "alt": "green forest road"},
+              {"id": 2, "alt": "octopus swimming in deep water"},
+              {"id": 3, "alt": ""}]
+    # Best alt-text match wins regardless of position or seed...
+    assert pick_photo(photos, 0, "octopus water")["id"] == 2
+    assert pick_photo(photos, 5, "octopus water")["id"] == 2
+    # ...zero-overlap results are excluded while anything better exists...
+    assert pick_photo(photos, 1, "octopus")["id"] == 2
+    # ...plural-tolerant both directions...
+    assert pick_photo([{"id": 7, "alt": "ants carry leaves"}], 0, "ant")["id"] == 7
+    assert pick_photo([{"id": 8, "alt": "ant on a leaf"}], 0, "ants")["id"] == 8
+    # ...and legacy seed order applies when nothing matches (never blocks).
+    assert pick_photo(photos, 1, "zebra")["id"] == 2
+    assert pick_photo(photos, 0, "")["id"] == 1
+    assert pick_photo([], 0, "octopus") is None
 
 
 def t_heartbeat():
@@ -1348,6 +1403,7 @@ def t_editorial():
     assert "question-hook" in fp.prompts[0] and "loop-back" in fp.prompts[0]
     assert "Concrete camera rule" in fp.prompts[0]
     assert "FLOW like speech" in fp.prompts[0]
+    assert "dead-air pauses" in fp.prompts[0]
     # garbage then provider error: stages skip, previous kept, never raises.
     sc = script("aaa aaa aaa.", "bbb bbb bbb.")
     polish_script(sc, cfg, FakeProvider(["not json", RuntimeError("down")]))
@@ -2206,6 +2262,8 @@ def main() -> int:
         ("batch_topics", t_batch_topics),
         ("hook_guard", t_hook_guard),
         ("concept_dupe", t_concept_dupe),
+        ("scrub", t_scrub),
+        ("stock_pick", t_stock_pick),
         ("dry_run_batch", t_dry_run_batch),
         ("editorial", t_editorial),
         ("openrouter_lane", t_openrouter_lane),

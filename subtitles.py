@@ -20,6 +20,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from editorial import scrub_narration
+
 # Max characters per cue line cluster, and max seconds per cue.
 MAX_CHARS = {"landscape": 42, "portrait": 26}
 MAX_CUE_SECONDS = 2.8
@@ -73,7 +75,7 @@ def _word_times(
     Uses real voice timings when they plausibly match the text, else spreads
     words evenly across the narration span.
     """
-    words = narration.split()
+    words = scrub_narration(narration).split()  # same scrub as TTS: aligned
     span = max(0.5, scene_seconds - 2 * head_tail)
     use_real = (
         timings
