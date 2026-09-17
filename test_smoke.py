@@ -1149,6 +1149,30 @@ def t_hook_guard():
     assert sc2.scenes[0].narration == "Your eyes slam shut. Here is why."
 
 
+def t_concept_dupe():
+    from topics import is_same_topic
+
+    # Paraphrase dupe: same video, different words — must be caught.
+    assert is_same_topic("Why Honey Doesn't Expire", "Why Honey Never Expires")
+    assert is_same_topic("Why you cannot sneeze with your eyes open",
+                         "Why We Close Our Eyes When We Sneeze")
+    # Same story, same words — still caught.
+    assert is_same_topic("Why Flamingos Stand On One Leg",
+                         "why flamingos stand on one leg!")
+    # Different videos sharing one noun — NOT dupes.
+    assert not is_same_topic("How vending machines tell a real coin from a fake",
+                             "You Can Buy A Car In This Vending Machine In Japan")
+    assert not is_same_topic("The crab that wears a living sponge as camouflage",
+                             "The crab that farms its own food on its claws")
+    assert not is_same_topic("The octopus that walks on land between tide pools",
+                             "How an octopus thinks with its arms")
+    assert not is_same_topic("Why we say um and uh when we speak",
+                             "Why We Close Our Eyes When We Sneeze")
+    # Short titles: exact only, never fuzzy.
+    assert not is_same_topic("Pisa tower", "Eiffel tower")
+    assert is_same_topic("Pisa tower", "pisa tower!")
+
+
 def t_heartbeat():
     """Heartbeat: unconfigured = silent no-op; pings the check-in URL;
     network faults swallowed; full URLs accepted."""
@@ -2181,6 +2205,7 @@ def main() -> int:
         ("topup_prompt", t_topup_prompt),
         ("batch_topics", t_batch_topics),
         ("hook_guard", t_hook_guard),
+        ("concept_dupe", t_concept_dupe),
         ("dry_run_batch", t_dry_run_batch),
         ("editorial", t_editorial),
         ("openrouter_lane", t_openrouter_lane),

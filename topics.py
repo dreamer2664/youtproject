@@ -51,14 +51,55 @@ def normalize(topic: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+# Glue words with no topic identity. Negations (not/no/never) are CONTENT:
+# "never expires" and "expires" are opposite videos.
+_STOPWORDS = frozenset("""why what how when where who whom which whose
+    that this these those the a an of to in on at by for with from into out
+    up down over under again further then once and or but nor as than too
+    very just even also still such there here you your yours we our us they
+    them their it its is are was were be been being am do does did doing
+    doesnt dont didnt isnt arent could would should may might must shall
+    will can i me my mine he him his she her hers""".split())
+
+
+def _content_words(topic: str) -> list[str]:
+    """Rare-word core of a topic: normalized words minus glue/stopwords."""
+    return [w for w in normalize(topic).split()
+            if len(w) > 1 and w not in _STOPWORDS]
+
+
+def _shared_concepts(a: list[str], b: list[str]) -> int:
+    """Content words in common, tolerating inflections (expire/expires)."""
+    unmatched = list(b)
+    shared = 0
+    for word in a:
+        for i, other in enumerate(unmatched):
+            if word == other or SequenceMatcher(None, word, other).ratio() >= 0.85:
+                shared += 1
+                del unmatched[i]
+                break
+    return shared
+
+
 def is_same_topic(a: str, b: str, threshold: float = 0.8) -> bool:
-    """Same video concept? Exact match, or >=threshold similar when long."""
+    """Same video concept? Exact, >=threshold similar, or shared concept.
+
+    The concept net catches paraphrases ("doesn't expire" vs "never
+    expires"): 2+ shared content words covering half the smaller core.
+    Single shared nouns ("vending machine" x2) still pass as fresh.
+    """
     left, right = normalize(a), normalize(b)
     if left == right:
         return True
     if len(left) < 12 or len(right) < 12:
         return False  # short titles: fuzzy matching is too trigger-happy
-    return SequenceMatcher(None, left, right).ratio() >= threshold
+    if SequenceMatcher(None, left, right).ratio() >= threshold:
+        return True
+    core_a, core_b = _content_words(a), _content_words(b)
+    if len(core_a) < 2 or len(core_b) < 2:
+        return False
+    shared = _shared_concepts(core_a, core_b)
+    return shared >= 2 and shared / min(len(core_a), len(core_b)) >= 0.5
 
 
 def pop_fresh_topic(path: Path, used: list[str]) -> str | None:
