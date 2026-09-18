@@ -1120,6 +1120,14 @@ def t_hook_guard():
     assert not hook_violated("Your eyes slam shut when you sneeze. Why.")
     assert not hook_violated("Why flamingos stand on one leg is physics. Next.")
     assert not hook_violated("")
+    # v2.1 grabber rules: throat-clearing openers and bloated first lines.
+    assert hook_violated("Here's why sea otters hold hands when they sleep.")
+    assert hook_violated("Let me tell you something strange about honey.")
+    assert hook_violated("Sea otters hold hands while sleeping so they "
+                         "never drift apart from each other.")  # 14 words
+    assert not hook_violated("Sea otters hold hands to stay alive.")
+    assert not hook_violated("Clocks could have spun the other way. One man "
+                             "chose.")  # 8-word vivid scene
 
     def script(*lines):
         return types.SimpleNamespace(

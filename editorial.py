@@ -68,6 +68,11 @@ _QUESTION_OPENERS = ("why ", "what ", "how ", "who ", "when ", "where ",
                      "did ", "can ", "could ", "have ", "has ", "will ",
                      "would ")
 
+# Throat-clearing that wastes the 3 seconds where scrollers decide.
+_BANNED_HOOK_OPENERS = ("here's why", "here is why", "let me tell", "fun fact",
+                        "in this video", "today we", "today i", "imagine if",
+                        "believe it or not")
+
 
 def scrub_narration(text: str) -> str:
     """Spoken-word cleanup: no dot-dot-dot pauses, no stage directions.
@@ -87,7 +92,12 @@ def scrub_narration(text: str) -> str:
 
 
 def hook_violated(narration: str) -> bool:
-    """True if scene 1 opens with a bare question (pure, tested)."""
+    """True if scene 1's opening line breaks a hook rule (pure, tested).
+
+    Catches question hooks ("Why ...?"), throat-clearing openers ("Here's
+    why..."), and first sentences too bloated to grab a scroller (over 10
+    words) — the difference between a 42%-stayed video and a 28% one.
+    """
     text = (narration or "").strip()
     first = re.split(r"[.?!…]+", text, maxsplit=1)[0].strip()
     if not first:
@@ -95,16 +105,20 @@ def hook_violated(narration: str) -> bool:
     lowered = first.lower()
     if "did you know" in lowered:
         return True
+    if any(lowered.startswith(banned) for banned in _BANNED_HOOK_OPENERS):
+        return True
+    if len(first.split()) > 10:
+        return True
     asked = len(first) < len(text) and text[len(first)] == "?"
     return bool(asked and lowered.startswith(_QUESTION_OPENERS))
 
 
 def _fix_hook(script, cfg, provider) -> None:
-    """One targeted rewrite when scene 1 opens with a question.
+    """One targeted rewrite when scene 1's opening line breaks a hook rule.
 
-    The writer + punch-up prompts forbid question hooks, but models disobey
-    often enough that the rule needs teeth: this narrow single-line task
-    (same fact, no question mark) complies where broad rewrites don't.
+    The writer + punch-up prompts demand a grabber, but models disobey often
+    enough that the rule needs teeth: this narrow single-line task (boldest
+    grabber, 10 words, same fact) complies where broad rewrites don't.
     Validation-gated like every stage — failures keep the original.
     """
     from scriptgen import extract_json
@@ -115,9 +129,12 @@ def _fix_hook(script, cfg, provider) -> None:
     first = re.split(r"[.?!…]+", text, maxsplit=1)[0].strip()
     rest = text[len(first):].lstrip(".?!… ").strip()
     prompt = (
-        "Rewrite ONLY this Shorts opening line as a bold spoken claim or paradox.\n"
-        "Hard rules: NOT a question (no question mark anywhere); hook noun in the\n"
-        "first 5 words; same fact; under 25 words; speakable aloud; no hashtags.\n"
+        "Rewrite ONLY this Shorts opening line as the strongest possible "
+        "attention grabber.\n"
+        "Hard rules: NOT a question (no question mark anywhere); 10 words "
+        "maximum; the topic's key noun in the first 5 words; same fact; no "
+        "throat-clearing ('here's why', 'let me tell you', 'fun fact'); "
+        "speakable aloud; no hashtags.\n"
         f"OPENING: {first}\n"
         'Return ONLY JSON: {"line": "..."}'
     )
@@ -131,7 +148,7 @@ def _fix_hook(script, cfg, provider) -> None:
         return
     line = data.get("line") if isinstance(data, dict) else None
     line = line.strip() if isinstance(line, str) else ""
-    if not line or "?" in line or len(line.split()) > 40:
+    if not line or "?" in line or len(line.split()) > 14:
         print("      editorial : hook fix returned no usable line — keeping previous.")
         return
     if not line.endswith((".", "!", "…")):
@@ -148,7 +165,8 @@ def _punch_up(script, cfg: Config, provider) -> None:
         f"CHANNEL: {cfg.topic}. Tone: {cfg.tone}. Language: {cfg.language}.\n"
         "RULES (hard):\n"
         "- Keep the SAME facts, SAME scene count, SAME order. Never add new claims.\n"
-        "- Scene 1: hook in 3 seconds with a claim, paradox, or wrong-belief flip.\n"
+        "- Scene 1: grabber in under 3 seconds — a claim, paradox, or "
+        "wrong-belief flip in 10 words or fewer.\n"
         "  Any question-hook ('did you know?', 'what if?') MUST be rewritten as\n"
         "  a bold claim. The hook noun lands in the first 5 words — delete ALL\n"
         "  throat-clearing before it.\n"

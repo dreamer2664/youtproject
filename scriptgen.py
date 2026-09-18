@@ -204,6 +204,8 @@ def build_script_prompt(cfg, topic: str, target: int, scene_count: int,
     per-scene micro-teases, escalation + loop-back ending, concrete-camera
     rule, and stock-searchable image briefs (the director brain feeds
     Pexels now, not just AI renderers).
+    v2.1 (2026-09-18): grabber tightened — 9-word hook cap, banned
+    throat-clearing openers, promise sentence right after the hook.
     """
     art_brief = style_spec(cfg.style)["brief"]
     return f"""You are a script writer for a high-retention vertical video channel (TikTok, YouTube Shorts, Instagram Reels).
@@ -224,15 +226,21 @@ this range are rejected — count the words in each scene before returning: expa
 thin scenes with concrete detail, cut filler if running long.
 
 RETENTION ARCHITECTURE — follow every rule:
-- HOOK (first sentence, under 3 seconds). Pick the strongest shape that fits,
-  in this order of power. NEVER a bare question, NEVER "did you know":
+- HOOK (first sentence, 9 WORDS MAX — a grabber, not a summary). Pick the
+  strongest shape that fits, in this order of power. NEVER a bare question,
+  NEVER "did you know":
   1. WRONG-BELIEF FLIP ("Everything you know about X is wrong.")
   2. PARADOX ("The animal that survives being boiled alive.")
   3. STAKES ("This kills more people than sharks every year.")
-  4. COLD PAYOFF ("X can Y. Here is how.")
+  4. COLD PAYOFF ("Sea otters hold hands to stay alive.")
   5. VIVID SCENE ("Picture a lake that turns birds to stone.")
 - The hook's key noun must appear in the FIRST 5 WORDS. No greeting, no
-  "in this video", no throat-clearing, no setup of any kind.
+  "in this video", no throat-clearing, no setup of any kind. Banned openers:
+  "here's why", "let me tell you", "fun fact", "believe it or not". Prefer
+  "you/your" when the topic allows — direct address grips scrollers.
+- THE PROMISE (sentence 2, right after the hook): one short line that makes
+  staying feel worth it — name the weirdness or the stakes in concrete
+  words, never vaguely ("wait for it" is banned).
 - SHORT sentences: 12 words max each, one idea per sentence. Staccato rhythm.
 - RHYTHM: vary sentence length — mix punchy 4-7 word sentences with flowing
   9-12 word ones joined by commas. Never stack 4+ choppy sentences in a
