@@ -149,6 +149,62 @@ def recover_stuck_jobs(jobs) -> list:
             and getattr(job, "topic", "")]
 
 
+def halt_requested(cfg: Config) -> bool:
+    """True when a /stop flag is set (pure file check, tested)."""
+    return (cfg.root / "crew_stop").exists()
+
+
+def clear_stale_stop(cfg: Config) -> bool:
+    """Remove a stop flag left by a dead session (tested).
+
+    The flag only means "stop" while a loop that reads it is alive; a
+    leftover one would silently drain the first fresh topic of this
+    session. A live crew mission owns the flag and keeps it.
+    """
+    if not halt_requested(cfg):
+        return False
+    try:
+        from crew import mission_active
+
+        if mission_active(cfg):
+            return False
+    except Exception:  # noqa: BLE001 - unreadable mission state: clear anyway
+        pass
+    try:
+        (cfg.root / "crew_stop").unlink()
+    except OSError:
+        return False
+    return True
+
+
+def plan_recovery(stuck_jobs, done_topics, cap: int = 3) -> tuple[list, list]:
+    """(requeue, skipped-with-reasons) for interrupted renders (pure, tested).
+
+    Lesson from live data (2026-09-19): ten stuck jobs re-queued blindly
+    meant nine copies of the channel-topic default. So: duplicates collapse
+    to one, topics that already rendered successfully stay dead (the video
+    exists), and at most `cap` re-queue — a killed 10-video batch must not
+    silently eat the day. The rest are listed, re-sendable by hand.
+    """
+    from topics import is_same_topic
+
+    requeue: list[str] = []
+    skipped: list[tuple[str, str]] = []
+    for job in stuck_jobs:
+        topic = str(job.topic)
+        if any(is_same_topic(topic, kept) for kept in requeue):
+            skipped.append((topic, "duplicate"))
+            continue
+        if any(is_same_topic(topic, done) for done in done_topics):
+            skipped.append((topic, "already rendered"))
+            continue
+        if len(requeue) >= cap:
+            skipped.append((topic, "over cap — re-send it yourself"))
+            continue
+        requeue.append(topic)
+    return requeue, skipped
+
+
 def check_token(cfg: Config) -> str:
     """Validate the Telegram token. Returns the bot's @username."""
     return str(PhoneBot(cfg)._api("getMe").get("username") or "?")
@@ -301,7 +357,9 @@ class PhoneBot:
         elif action == "stop":
             (self.cfg.root / "crew_stop").write_text("stop", encoding="utf-8")
             print("  [bot] stop requested")
-            self.send_message(chat_id, "🛑 Stop requested — halting after the current video.")
+            self.send_message(chat_id, "🛑 Stop requested — the video in "
+                                       "flight finishes and gets sent; the "
+                                       "rest of the queue is cleared.")
         elif action == "log":
             from crew import mission_log_tail
 
@@ -525,6 +583,28 @@ class PhoneBot:
 
     def _worker(self) -> None:
         while True:
+            if halt_requested(self.cfg):
+                cleared = 0
+                while True:
+                    try:
+                        self.jobs.get_nowait()
+                    except Exception:  # noqa: BLE001 - queue.Empty
+                        break
+                    self.jobs.task_done()
+                    cleared += 1
+                try:
+                    (self.cfg.root / "crew_stop").unlink()
+                except OSError:
+                    pass
+                try:
+                    self.send_message(
+                        self.owner,
+                        f"🛑 Halted — cleared {cleared} queued render(s). "
+                        f"The video in flight (if any) still finishes and "
+                        f"is sent.")
+                except TelegramError:
+                    pass
+                continue
             chat_id, kind, text = self.jobs.get()
             try:
                 if kind == "jarvis":
@@ -547,6 +627,11 @@ class PhoneBot:
               "(a running render is abandoned; its files stay in out/).")
         worker = threading.Thread(target=self._worker, daemon=True)
         worker.start()
+
+        # A stop flag from a dead session must not drain this session's
+        # first fresh topic (it only means "stop" while its loop is alive).
+        if clear_stale_stop(self.cfg):
+            print("  [bot] cleared stale stop flag from a previous session.")
 
         # Skip anything sent while we were away — never auto-render stale
         # mail. But TELL the owner what was missed: silent drops are how a
@@ -578,16 +663,22 @@ class PhoneBot:
             queue = Queue(self.cfg.state_file)
             for job in stuck:
                 queue.update(job, status="failed",
-                             error="interrupted by restart — re-queued")
-            for job in stuck:
-                self.jobs.put((self.owner, "topic", job.topic))
+                             error="interrupted by restart")
+            done = [j.topic for j in queue.jobs
+                    if j.status in ("generated", "packaged", "published")]
+            requeue, skipped = plan_recovery(stuck, done)
+            for topic in requeue:
+                self.jobs.put((self.owner, "topic", topic))
             try:
-                self.send_message(
-                    self.owner,
-                    f"🔁 Recovered {len(stuck)} render(s) interrupted by the "
-                    f"last shutdown: "
-                    + "; ".join(str(j.topic)[:40] for j in stuck[:3])
-                    + ("…" if len(stuck) > 3 else ""))
+                text = (f"🔁 {len(stuck)} render(s) were interrupted by the "
+                        f"last shutdown.")
+                if requeue:
+                    text += (" Re-rendering " + "; ".join(
+                        t[:40] for t in requeue) + ".")
+                if skipped:
+                    text += (f" Skipped {len(skipped)} (duplicates or "
+                             f"already made) — re-send any you want.")
+                self.send_message(self.owner, text)
             except TelegramError:
                 pass
 

@@ -1523,6 +1523,81 @@ def t_bot_foundations():
     # And the failure notice went to the chat (no job was really created).
     assert any("failed" in text for text in sent)
 
+    # --- live incident 2026-09-19: 1 real topic + 9 copies of the
+    # channel-topic default re-queued blindly. plan_recovery must collapse.
+    from bot import clear_stale_stop, halt_requested, plan_recovery
+
+    def job(topic, status="queued"):
+        return types.SimpleNamespace(id="x", status=status, topic=topic)
+
+    incident = [job("why your brain deletes most of your childhood memories")] \
+        + [job("fun and useful facts, engaging and cool") for _ in range(9)]
+    done = ["Fun and useful facts, engaging and cool"]  # rendered once already
+    requeue, skipped = plan_recovery(incident, done)
+    assert requeue == ["why your brain deletes most of your childhood memories"]
+    assert len(skipped) == 9 and skipped[0][1] == "already rendered"
+    # Without a past success, the nine still collapse to ONE.
+    requeue, skipped = plan_recovery(incident, [])
+    assert requeue == ["why your brain deletes most of your childhood memories",
+                       "fun and useful facts, engaging and cool"]
+    assert len(skipped) == 8 and skipped[0][1] == "duplicate"
+    # Cap: five distinct interrupted renders -> three re-queued.
+    five = [job(t) for t in ("why cats purr", "how honey lasts forever",
+                             "sea otters hold hands",
+                             "the immortal jellyfish",
+                             "why clocks go clockwise")]
+    requeue, skipped = plan_recovery(five, [])
+    assert len(requeue) == 3 and len(skipped) == 2
+    assert skipped[0][1] == "over cap — re-send it yourself"
+
+    # --- halt flag: file check, stale cleanup, mission ownership --------
+    halt_cfg = tmp_cfg()
+    assert halt_requested(halt_cfg) is False
+    (halt_cfg.root / "crew_stop").write_text("stop", encoding="utf-8")
+    assert halt_requested(halt_cfg) is True
+    assert clear_stale_stop(halt_cfg) is True
+    assert halt_requested(halt_cfg) is False
+    assert clear_stale_stop(halt_cfg) is False  # nothing to clear
+    (halt_cfg.root / "crew_stop").write_text("stop", encoding="utf-8")
+    from unittest.mock import patch
+    with patch("crew.mission_active", return_value=True):
+        assert clear_stale_stop(halt_cfg) is False  # live mission keeps it
+    assert halt_requested(halt_cfg) is True
+    (halt_cfg.root / "crew_stop").unlink()
+
+    # --- worker honors the flag: pre-set stop drains the queue ---------
+    import threading
+    import time
+    from queue import Empty
+
+    stop_cfg = tmp_cfg()
+    stop_cfg.data["telegram"]["bot_token"] = "t"
+    stop_cfg.data["telegram"]["owner_id"] = 42
+    stop_cfg.data["telegram"]["enabled"] = True
+    stopped_bot = PhoneBot(stop_cfg)
+    halted_msgs = []
+    stopped_bot.send_message = lambda chat_id, text: halted_msgs.append(text)
+    rendered = []
+    stopped_bot._render_and_send = lambda chat_id, topic: rendered.append(topic)
+    for i in range(3):
+        stopped_bot.jobs.put((42, "topic", f"junk {i}"))
+    (stop_cfg.root / "crew_stop").write_text("stop", encoding="utf-8")
+    worker = threading.Thread(target=stopped_bot._worker, daemon=True)
+    worker.start()
+    for _ in range(40):  # wait for the drain (bounded poll)
+        if halted_msgs:
+            break
+        time.sleep(0.05)
+    try:
+        stopped_bot.jobs.get_nowait()
+        raised = False
+    except Empty:
+        raised = True
+    assert raised, "queue should be empty after halt"
+    assert not halt_requested(stop_cfg), "flag should be cleared after halt"
+    assert rendered == [], "nothing should have rendered"
+    assert any("Halted" in text and "3 queued" in text for text in halted_msgs)
+
     keystats_reset = __import__("keystats")
     keystats_reset._path = None
 
