@@ -18,7 +18,7 @@ def polish_script(script, cfg: Config, provider) -> None:
     if not cfg.editorial_enabled:
         return
     for stage, func in (("punch-up", _punch_up), ("hook fix", _fix_hook),
-                        ("decringe", _decringe)):
+                        ("title fix", _fix_title), ("decringe", _decringe)):
         try:
             func(script, cfg, provider)
         except Exception as exc:  # noqa: BLE001 - polish never kills a render
@@ -72,6 +72,65 @@ _QUESTION_OPENERS = ("why ", "what ", "how ", "who ", "when ", "where ",
 _BANNED_HOOK_OPENERS = ("here's why", "here is why", "let me tell", "fun fact",
                         "in this video", "today we", "today i", "imagine if",
                         "believe it or not")
+
+
+# Vague tails that parse slowly — the titles that earned 3-8 views while
+# short concrete ones earned 800-1,100 (channel analytics, 2026-09-19).
+_BANNED_TITLE_PHRASES = ("want you to", "don't want you", "they still want",
+                         "nobody tells you", "not what you think")
+
+
+def title_punch_violated(title: str) -> bool:
+    """True if the title parses too slowly to stop a scroller (pure, tested).
+
+    Live-data rule: 4-8 words with the concrete subject up front earned
+    800-1,100 views; 9-10 word titles with vague tails earned 3-8.
+    """
+    text = re.sub(r"\s*#\S+", "", title or "").strip()
+    if not text:
+        return False
+    if len(text.split()) > 8 or len(text) > 52:
+        return True
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in _BANNED_TITLE_PHRASES)
+
+
+def _fix_title(script, cfg: Config, provider) -> None:
+    """One targeted retitle when the title parses too slowly.
+
+    Highest-leverage line in the pipeline: the same video can 6x its views
+    from a title change alone (honey, 2026-09-19). Same narrow-single-line
+    pattern as the hook fix; validation-gated, failures keep the original.
+    """
+    from scriptgen import extract_json
+
+    title = getattr(script, "title", "") or ""
+    if not title or not title_punch_violated(title):
+        return
+    prompt = (
+        "Rewrite this YouTube Shorts title as a scroll-stopper.\n"
+        "Hard rules: 4-8 words; under 50 characters; Why/How when it fits; "
+        "the topic's concrete subject (animal, object, place) in the first "
+        "3 words; same fact; no hashtags; no vague tails like 'they don't "
+        "want you to know'.\n"
+        f"TITLE: {title}\n"
+        'Return ONLY JSON: {"title": "..."}'
+    )
+    print("      editorial : title fix pass...")
+    try:
+        raw = provider.generate_text(prompt, temperature=0.5, tag="titlefix",
+                                     json_mode=True)
+        data = extract_json(raw)
+    except Exception as exc:  # noqa: BLE001 - polish never kills a render
+        print(f"      editorial : title fix failed ({str(exc)[:100]}) — keeping previous.")
+        return
+    new = data.get("title") if isinstance(data, dict) else None
+    new = re.sub(r"\s*#\S+", "", new).strip() if isinstance(new, str) else ""
+    if not new or new.lower() == title.lower() or title_punch_violated(new):
+        print("      editorial : title fix returned no usable title — keeping previous.")
+        return
+    script.title = new
+    print(f"      editorial : title fix applied ({title[:40]!r} -> {new[:40]!r}).")
 
 
 def scrub_narration(text: str) -> str:

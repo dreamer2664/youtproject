@@ -1158,6 +1158,57 @@ def t_hook_guard():
     assert sc2.scenes[0].narration == "Your eyes slam shut. Here is why."
 
 
+def t_title_punch():
+    import types
+
+    from editorial import _fix_title, title_punch_violated
+
+    # The channel's own results table, 2026-09-19: winners pass...
+    assert not title_punch_violated("Why Cats Break The Laws Of Physics")
+    assert not title_punch_violated("How Honey Never Expires")
+    assert not title_punch_violated("Why We Close Our Eyes When We Sneeze")
+    assert not title_punch_violated("Why Cats Break Physics #facts #didyouknow")
+    assert not title_punch_violated("")
+    # ...losers flagged: vague tail, 9 words, 10 words, over 52 chars.
+    assert title_punch_violated("The Great Diamond Lie They Still Want You to Believe")
+    assert title_punch_violated("Why Your Keyboard Was Built to Slow You Down")  # 9
+    assert title_punch_violated("Why Cats Break The Laws Of Physics And Then Some")  # 11
+    # 8 words is the proven ceiling (sneeze: 8 words, 1,118 views) — passes.
+    assert not title_punch_violated("The Dark Reason Why Sea Otters Hold Hands")
+
+    class FakeProvider:
+        def __init__(self, replies):
+            self.replies = list(replies)
+            self.calls = 0
+
+        def generate_text(self, *args, **kwargs):
+            self.calls += 1
+            return self.replies.pop(0)
+
+    # Clean title: no provider call at all.
+    sc = types.SimpleNamespace(title="Why Cats Break The Laws Of Physics", scenes=[])
+    fp = FakeProvider([])
+    _fix_title(sc, tmp_cfg(), fp)
+    assert fp.calls == 0 and sc.title == "Why Cats Break The Laws Of Physics"
+    # Violating title retitled (hashtag tail stripped from the fix too).
+    sc = types.SimpleNamespace(
+        title="The Great Diamond Lie They Still Want You to Believe", scenes=[])
+    fp = FakeProvider(['{"title": "Why Diamonds Cost So Little #facts"}'])
+    _fix_title(sc, tmp_cfg(), fp)
+    assert sc.title == "Why Diamonds Cost So Little", sc.title
+    # LLM returns another slow title: original kept, never raises.
+    sc = types.SimpleNamespace(
+        title="The Great Diamond Lie They Still Want You to Believe", scenes=[])
+    fp = FakeProvider(
+        ['{"title": "The Terrible Diamond Secret Nobody Wants You To Know"}'])
+    _fix_title(sc, tmp_cfg(), fp)
+    assert sc.title == "The Great Diamond Lie They Still Want You to Believe"
+    # Missing title attribute (editorial fixtures): skipped silently.
+    sc = types.SimpleNamespace(scenes=[])
+    fp = FakeProvider([])
+    _fix_title(sc, tmp_cfg(), fp)
+    assert fp.calls == 0
+
 def t_concept_dupe():
     from topics import is_same_topic
 
@@ -2270,6 +2321,7 @@ def main() -> int:
         ("batch_topics", t_batch_topics),
         ("hook_guard", t_hook_guard),
         ("concept_dupe", t_concept_dupe),
+        ("title_punch", t_title_punch),
         ("scrub", t_scrub),
         ("stock_pick", t_stock_pick),
         ("dry_run_batch", t_dry_run_batch),

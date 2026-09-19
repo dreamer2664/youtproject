@@ -206,6 +206,9 @@ def build_script_prompt(cfg, topic: str, target: int, scene_count: int,
     Pexels now, not just AI renderers).
     v2.1 (2026-09-18): grabber tightened — 9-word hook cap, banned
     throat-clearing openers, promise sentence right after the hook.
+    v2.2 (2026-09-19): title formula from live analytics — 4-7 words,
+    concrete subject in the first 3 words (short titles outperformed
+    long vague ones by ~100x in views).
     """
     art_brief = style_spec(cfg.style)["brief"]
     return f"""You are a script writer for a high-retention vertical video channel (TikTok, YouTube Shorts, Instagram Reels).
@@ -266,13 +269,17 @@ RETENTION ARCHITECTURE — follow every rule:
 - image_prompt: 2-4 CONCRETE visible subjects (exact animals/objects/places +
   setting + one action) that a stock-photo search could find, then style:
   {art_brief}
-- title: curiosity-gap style, under 70 characters. No clickbait lies, no hashtags.
+- title: a scroll-stopper, 4-7 words, under 45 characters. Formula: Why/How +
+  the CONCRETE subject (animal, object, place) in the first 3 words + a
+  surprising twist. Model on "Why Cats Break The Laws Of Physics" and
+  "How Honey Never Expires". No vague tails ("they don't want you to know"),
+  no clickbait lies, no hashtags.
 - tags: 8 to 12 short search tags. Do not leave this empty.
 - Be factually careful. If a detail is uncertain, leave it out rather than invent it.
 
 Return ONLY a JSON object in exactly this shape:
 {{
-  "title": "engaging video title, under 70 characters",
+  "title": "scroll-stopper, 4-7 words, under 45 characters",
   "description": "2-4 sentence video description",
   "tags": ["up to 12 relevant tags"],
   "scenes": [
