@@ -38,3 +38,9 @@ OpenRouter daily cap — not script intelligence.
   Nothing else in the stack needs money.
 - Re-verify quotas quarterly — free tiers move (e.g. Gemini Pro left the
   free tier 2026-04-01, which is why no Pro model is in any chain).
+
+## Live usage
+
+`python main.py keys` shows every key: requests/characters spent today or
+this month, what's left of each free tier, and when it refills (self-counted
+ledger in work/usage_ledger.json — the APIs don't expose remaining quota).

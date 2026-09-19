@@ -25,6 +25,8 @@ import requests
 from config import Config
 from editorial import scrub_narration
 
+import keystats
+
 TICKS_PER_SECOND = 10_000_000
 ELEVEN_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
 
@@ -93,6 +95,7 @@ def _elevenlabs_synth(text: str, dest: Path, cfg: Config) -> list[WordTiming]:
             except ValueError as exc:
                 raise RuntimeError(
                     "elevenlabs returned a non-JSON payload") from exc
+            keystats.bump("elevenlabs", key, chars=len(text))
             return _elevenlabs_save(data, dest)
         last = f"HTTP {response.status_code}: {response.text[:150]}"
         if response.status_code in (401, 429):

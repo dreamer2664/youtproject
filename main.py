@@ -1187,6 +1187,14 @@ def cmd_voices(cfg, args) -> int:
     return 0
 
 
+def cmd_keys(cfg, args) -> int:
+    """API key dashboard: self-counted usage + free-tier refill times."""
+    from keystats import build_status
+
+    print(build_status(cfg))
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Free AI video generator (manual-upload edition).",
@@ -1303,6 +1311,7 @@ def main() -> int:
 
     p = sub.add_parser("errors", help="full text of recent failures (for debugging)")
     sub.add_parser("costs", help="Azure OpenAI spend vs caps")
+    sub.add_parser("keys", help="API key usage: requests spent, what's left, when quotas refill")
     p.add_argument("--count", type=int, default=3, help="how many failures to show")
 
     sub.add_parser("queue", help="show the queue")
@@ -1332,6 +1341,12 @@ def main() -> int:
         init_sentry(cfg, args.command)
     except Exception:  # noqa: BLE001 - reporting must never break dispatch
         pass
+    try:
+        import keystats
+
+        keystats.init(cfg)  # usage ledger for `python main.py keys`
+    except Exception:  # noqa: BLE001 - bookkeeping must never break dispatch
+        pass
 
     handlers = {
         "preflight": cmd_preflight,
@@ -1350,6 +1365,7 @@ def main() -> int:
         "queue": cmd_queue,
         "errors": cmd_errors,
         "costs": cmd_costs,
+        "keys": cmd_keys,
         "voices": cmd_voices,
         "autopost": cmd_autopost,
     }

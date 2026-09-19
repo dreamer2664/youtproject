@@ -18,6 +18,8 @@ from typing import Protocol
 
 import requests
 
+import keystats
+
 from config import Config
 from images import style_spec
 
@@ -369,6 +371,11 @@ class GeminiProvider:
                     break
                 continue
             if response.status_code == 200:
+                try:
+                    tok = (len(str(payload)) + len(response.text)) // 4
+                except TypeError:  # mocked transport in tests
+                    tok = 0
+                keystats.bump("gemini", key, req=1, tok=tok)
                 return response.json(), 200, ""
 
             last_status = response.status_code

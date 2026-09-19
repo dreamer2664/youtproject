@@ -12,6 +12,8 @@ import json
 
 import requests
 
+import keystats
+
 from config import Config
 from scriptgen import GeminiProvider
 
@@ -168,6 +170,11 @@ class OpenAICompatProvider(GeminiProvider):
                     continue
                 down = 0
                 status, text, payload = self._read_response(response)
+                try:
+                    tok = len(text) // 4 if status == 200 else 0
+                except TypeError:  # mocked transport in tests
+                    tok = 0
+                keystats.bump(self.name, key, req=1, tok=tok)
                 if status == 200:
                     try:
                         message = payload["choices"][0]["message"]

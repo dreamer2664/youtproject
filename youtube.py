@@ -15,6 +15,8 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
+import keystats
+
 API = "https://www.googleapis.com/youtube/v3/{}"
 # 403 reasons worth burning the next key on (quota, rate, or a project
 # where the API was never enabled — another key means another project).
@@ -118,6 +120,7 @@ class YouTubeClient:
                 continue
             if response.status_code == 200:
                 self.spent += cost
+                keystats.bump("youtube", key, units=cost)
                 try:
                     return response.json()
                 except ValueError as exc:

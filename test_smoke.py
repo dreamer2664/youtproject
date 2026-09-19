@@ -1241,6 +1241,7 @@ def t_vision():
 
     class FakeResp:
         status_code = 200
+        text = '{"safe": true, "relevant": true}'
 
         def json(self):
             return {"candidates": [{"content": {"parts": [
@@ -1365,6 +1366,81 @@ def t_no_gemini():
     labels = [label for label, _ in get_provider(cfg).chain]
     assert "gemini" not in labels, labels
     assert "groq" in labels and "template" in labels, labels
+
+def t_keystats():
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import Mock, patch
+
+    import keystats
+
+    # bump before init(): a no-op that never raises.
+    keystats._path = None
+    keystats.bump("gemini", "AIzaSyFULL-KEY-MATERIALL-x7f2", req=1)
+
+    cfg = tmp_cfg()
+    keystats.init(cfg)
+    keystats.bump("gemini", "AIzaSyFULL-KEY-MATERIALL-x7f2", req=1, tok=400)
+    keystats.bump("gemini", "AIzaSyFULL-KEY-MATERIALL-x7f2", req=1, tok=200)
+    keystats.bump("elevenlabs", "sk-full-secret-3d10", chars=6000)
+    events = keystats._load(keystats._path)
+    assert len(events) == 3
+    raw = keystats._path.read_text(encoding="utf-8")
+    # Full key material NEVER lands on disk — masked last-4 only.
+    assert "AIzaSyFULL" not in raw and "sk-full-secret" not in raw, raw
+    assert raw.count("...x7f2") == 2
+    sums = keystats.window_sum(events, "gemini",
+                               datetime.now(timezone.utc) - timedelta(hours=24))
+    assert sums["...x7f2"] == {"req": 2, "tok": 600, "chars": 0, "units": 0}
+    # Pruning: events older than the keep window vanish on write.
+    stale = {"t": (datetime.now(timezone.utc)
+                   - timedelta(days=40)).isoformat(),
+             "p": "gemini", "k": "...old1", "req": 9}
+    keystats._write(keystats._path, events + [stale])
+    assert all(event["k"] != "...old1"
+               for event in keystats._load(keystats._path))
+
+    # Dashboard: sections, masked keys, refill wording, no secrets.
+    cfg.data["ai"]["gemini_api_key"] = "AIzaSyFULL-KEY-MATERIALL-x7f2"
+    cfg.data["channel"]["elevenlabs_api_keys"] = ["sk-full-secret-3d10"]
+    out = keystats.build_status(cfg)
+    assert "GEMINI" in out and "...x7f2" in out and "resets" in out
+    assert "ELEVENLABS" in out and "6,000" in out and "4,000 left" in out
+    assert "AIzaSyFULL" not in out and "sk-full-secret" not in out
+    # Groq pool line: shared org-wide limit shows a total.
+    cfg.data["ai"]["groq_api_keys"] = ["gq-full-secret-bb18"]
+    out = keystats.build_status(cfg)
+    assert "GROQ" in out and "pool total" in out and "14,400" in out
+
+    # CLI entry: cmd_keys prints and returns 0.
+    import io
+    from contextlib import redirect_stdout
+    import main as main_mod
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        assert main_mod.cmd_keys(cfg, None) == 0
+    assert "GEMINI" in buf.getvalue()
+
+    # Integration: a real GeminiProvider 200 bumps the ledger.
+    payload_out = {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}
+    resp = Mock(status_code=200, text='{"candidates": []}')
+    resp.json = lambda: payload_out
+    with patch("requests.post", return_value=resp):
+        _, status, _ = __import__("scriptgen").GeminiProvider(
+            api_key="k-int9")._try_model("m", {"contents": []}, tag="t")
+    assert status == 200
+    last = keystats._load(keystats._path)[-1]
+    assert last["p"] == "gemini" and last["k"] == "...int9", last
+    # And the shared OpenAI-compat choke point (Groq) bumps its own lane.
+    groq_resp = Mock(status_code=200, text="ok")
+    groq_resp.json = lambda: {"choices": [{"message": {"content": "hello"}}]}
+    with patch("requests.post", return_value=groq_resp):
+        from groq import GroqProvider
+        GroqProvider(api_keys="gq-77").generate_text("hi")
+    last = keystats._load(keystats._path)[-1]
+    assert last["p"] == "groq" and last["k"] == "...q-77", last
+
+    keystats._path = None  # later tests bump no-op again
+
 
 def t_concept_dupe():
     from topics import is_same_topic
@@ -2480,6 +2556,7 @@ def main() -> int:
         ("concept_dupe", t_concept_dupe),
         ("vision", t_vision),
         ("no_gemini", t_no_gemini),
+        ("keystats", t_keystats),
         ("title_punch", t_title_punch),
         ("scrub", t_scrub),
         ("stock_pick", t_stock_pick),

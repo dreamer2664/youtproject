@@ -26,6 +26,8 @@ import threading
 
 import requests
 
+import keystats
+
 from config import Config
 
 URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
@@ -127,6 +129,11 @@ def check_image(body: bytes, query: str, cfg: Config,
                                      timeout=TIMEOUT)
             except requests.RequestException:
                 continue
+            try:
+                tok = len(resp.text) // 4 if resp.status_code == 200 else 0
+            except TypeError:  # mocked transport in tests
+                tok = 0
+            keystats.bump("gemini", key, req=1, tok=tok)
             if resp.status_code in (400, 401, 403):  # key problem: next key
                 continue
             if resp.status_code == 404:              # dead ID: next model

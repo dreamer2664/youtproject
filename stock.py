@@ -16,6 +16,8 @@ from __future__ import annotations
 import random
 import re
 import time
+
+import keystats
 from pathlib import Path
 
 import requests
@@ -130,6 +132,7 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
             last_error = str(exc)[:120]
             time.sleep(2 * attempt)
             continue
+        keystats.bump("pexels", key, req=1)
         if response.status_code == 429:
             last_error = "HTTP 429 (200/hour Pexels limit)"
             time.sleep(min(120.0, 15.0 * 2 ** (attempt - 1)))
