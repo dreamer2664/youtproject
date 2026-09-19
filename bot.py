@@ -42,7 +42,10 @@ MAX_CAPTION = 1000        # ... and file captions at 1024
 HELP_TEXT = """🎬 Send me any topic and I'll render a vertical video for it.
 
 Commands:
-/queue — what I'm working on right now
+/status — what I'm rendering right now + uptime
+/queue — the render history table
+/keys — API usage: what's left, when quotas refill
+/nogemini — toggle: render without Gemini (faster when it's flaky)
 /help — this message
 /send <id> — re-send a finished video
 
@@ -86,8 +89,14 @@ def parse_incoming(text: str) -> tuple[str, str]:
     low = text.lower()
     if low in ("/start", "/help"):
         return ("help", "")
-    if low in ("/queue", "/status"):
+    if low == "/queue":
         return ("queue", "")
+    if low == "/status":
+        return ("status", "")
+    if low == "/keys" or low.startswith("/keys "):
+        return ("keys", "")
+    if low == "/nogemini" or low.startswith("/nogemini "):
+        return ("nogemini", "")
     if low.startswith("/new"):
         topic = text[4:].strip()
         return ("topic", topic) if topic else ("help", "")
@@ -103,11 +112,41 @@ def parse_incoming(text: str) -> tuple[str, str]:
         return ("stop", "")
     if low == "/log" or low.startswith("/log "):
         return ("log", "")
-    if low.startswith("/send"):
+    if low == "/send" or low.startswith("/send "):
         return ("send", text[5:].strip())
     if text.startswith("/"):
         return ("help", "")
     return ("topic", text[:200])
+
+
+def summarize_stale(updates: list, owner_id: int) -> str:
+    """Owner messages skipped at startup, one line each (pure, tested).
+
+    The stale-drain exists so a restart never auto-renders old mail — but
+    dropping the owner's commands without a trace is how a phone workflow
+    loses trust. This lists what was missed; re-sending is one tap.
+    """
+    lines = []
+    for update in updates:
+        message = update.get("message") or {}
+        sender = (message.get("from") or {}).get("id")
+        text = str(message.get("text") or "").strip()
+        if sender == owner_id and text:
+            when = time.strftime("%H:%M",
+                                 time.localtime(message.get("date") or 0))
+            lines.append(f"  · {text[:80]} ({when})")
+    return "\n".join(lines[:8])
+
+
+def recover_stuck_jobs(jobs) -> list:
+    """Jobs a dead run left mid-render (pure, tested).
+
+    Only cmd_generate ever creates 'queued' jobs (at render start), so any
+    queued/rendering job at bot startup is provably an interrupted render.
+    """
+    return [job for job in jobs
+            if getattr(job, "status", "") in ("queued", "rendering")
+            and getattr(job, "topic", "")]
 
 
 def check_token(cfg: Config) -> str:
@@ -117,10 +156,13 @@ def check_token(cfg: Config) -> str:
 
 class PhoneBot:
     def __init__(self, cfg: Config, seconds: int | None = None,
-                 fmt: str | None = None) -> None:
+                 fmt: str | None = None, no_gemini: bool = False) -> None:
         self.cfg = cfg
         self.seconds = seconds
         self.fmt = fmt
+        self.no_gemini = no_gemini
+        self.current: dict | None = None  # {"topic": str, "started": float}
+        self.started = time.time()
         self.token = cfg.telegram_token
         self.owner = cfg.telegram_owner
         self.jobs: TQueue[tuple[int, str]] = TQueue()
@@ -197,6 +239,29 @@ class PhoneBot:
         action, arg = parse_incoming(text)
         if action == "help":
             self.send_message(chat_id, HELP_TEXT)
+        elif action == "status":
+            pending = self.jobs.qsize()
+            if self.current:
+                mins = int((time.time() - self.current["started"]) / 60)
+                text = (f"🎬 Rendering \"{self.current['topic'][:60]}\" "
+                        f"({mins} min in)" + (f", {pending} queued" if pending else ""))
+            else:
+                text = ("💤 Idle — nothing rendering"
+                        + (f", {pending} queued" if pending else ""))
+            up_min = int((time.time() - self.started) / 60)
+            text += (f"\n🤖 Up {up_min // 60}h {up_min % 60}m · Gemini "
+                     f"{'skipped' if self.no_gemini else 'on'} for renders.")
+            self.send_message(chat_id, text)
+        elif action == "keys":
+            from keystats import build_status
+
+            self.send_message(chat_id, build_status(self.cfg))
+        elif action == "nogemini":
+            self.no_gemini = not self.no_gemini
+            state = ("OFF — renders go straight to Groq/OpenRouter "
+                     "(fewer stalls)" if self.no_gemini
+                     else "ON — renders try Gemini first")
+            self.send_message(chat_id, f"♻️ Gemini {state}.")
         elif action == "queue":
             from crew import mission_status_text
 
@@ -362,9 +427,10 @@ class PhoneBot:
         before = {job.id for job in Queue(self.cfg.state_file).jobs}
         gen_args = argparse.Namespace(
             topic=topic, count=1, seconds=self.seconds, format=self.fmt,
-            images_per_scene=None, no_subs=False, style=None, keep_work=False,
-            keep_going=False, verbose=False,
+            images_per_scene=None, no_subs=False, no_gemini=self.no_gemini,
+            style=None, keep_work=False, keep_going=False, verbose=False,
         )
+        self.current = {"topic": topic, "started": time.time()}
         stop = threading.Event()
         heartbeat = threading.Thread(
             target=self._heartbeat,
@@ -380,6 +446,7 @@ class PhoneBot:
         finally:
             stop.set()
             heartbeat.join(timeout=5)
+            self.current = None
 
         new = [j for j in Queue(self.cfg.state_file).jobs if j.id not in before]
         job = new[-1] if new else None
@@ -481,15 +548,48 @@ class PhoneBot:
         worker = threading.Thread(target=self._worker, daemon=True)
         worker.start()
 
-        # Skip anything sent while we were away — never auto-render stale mail.
+        # Skip anything sent while we were away — never auto-render stale
+        # mail. But TELL the owner what was missed: silent drops are how a
+        # phone workflow loses trust (PC slept, messages vanished).
         offset = 0
+        pending: list = []
         try:
             pending = self._api("getUpdates", data={"timeout": 0})
-            if pending:
-                offset = pending[-1]["update_id"] + 1
-                print(f"  [bot] skipped {len(pending)} stale update(s).")
         except TelegramError as exc:
             print(f"  [bot] couldn't drain pending updates ({exc}); continuing.")
+        if pending:
+            offset = pending[-1]["update_id"] + 1
+            print(f"  [bot] skipped {len(pending)} stale update(s).")
+            stale = summarize_stale(pending, self.owner)
+            if stale:
+                try:
+                    self.send_message(
+                        self.owner,
+                        "🌙 While I was offline you sent "
+                        "(not rendered — re-send any you want):\n" + stale)
+                except TelegramError:
+                    pass
+
+        # Recover renders a dead run left mid-flight: mark them failed
+        # (clean history) and re-queue their topics. Only cmd_generate
+        # creates queued jobs, so these are provably interrupted renders.
+        stuck = recover_stuck_jobs(Queue(self.cfg.state_file).jobs)
+        if stuck:
+            queue = Queue(self.cfg.state_file)
+            for job in stuck:
+                queue.update(job, status="failed",
+                             error="interrupted by restart — re-queued")
+            for job in stuck:
+                self.jobs.put((self.owner, "topic", job.topic))
+            try:
+                self.send_message(
+                    self.owner,
+                    f"🔁 Recovered {len(stuck)} render(s) interrupted by the "
+                    f"last shutdown: "
+                    + "; ".join(str(j.topic)[:40] for j in stuck[:3])
+                    + ("…" if len(stuck) > 3 else ""))
+            except TelegramError:
+                pass
 
         print("  [bot] polling… (silence is normal — I'm waiting for your message)")
         polling_since = time.time()

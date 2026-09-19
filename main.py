@@ -1039,7 +1039,8 @@ def cmd_bot(cfg, args) -> int:
           f"style {cfg.style}.\n")
     from bot import PhoneBot
     try:
-        PhoneBot(cfg, seconds=args.seconds, fmt=args.format).run_forever()
+        PhoneBot(cfg, seconds=args.seconds, fmt=args.format,
+                 no_gemini=getattr(args, "no_gemini", False)).run_forever()
     except KeyboardInterrupt:
         print("\n  [bot] stopped. Bye!")
     return 0
@@ -1274,6 +1275,8 @@ def main() -> int:
                    help="orientation for bot renders")
     p.add_argument("--style", choices=["photoreal", "cartoon", "stickman"],
                    help="art direction for bot renders")
+    p.add_argument("--no-gemini", action="store_true", dest="no_gemini",
+                   help="bot renders skip Gemini (Groq/OpenRouter first)")
 
     p = sub.add_parser("crew", help="autonomous mission: the crew posts for N days")
     p.add_argument("--days", type=int, default=3, help="mission length")

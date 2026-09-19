@@ -1442,6 +1442,91 @@ def t_keystats():
     keystats._path = None  # later tests bump no-op again
 
 
+def t_bot_foundations():
+    import types
+
+    from bot import (PhoneBot, parse_incoming, recover_stuck_jobs,
+                     summarize_stale)
+
+    # Parser: new commands + the /send typo guard.
+    assert parse_incoming("/status") == ("status", "")
+    assert parse_incoming("/keys") == ("keys", "")
+    assert parse_incoming("/nogemini") == ("nogemini", "")
+    assert parse_incoming("/send ab12") == ("send", "ab12")
+    assert parse_incoming("/sendxyz") == ("help", "")  # typo, not send "yz"
+    assert parse_incoming("/queue") == ("queue", "")
+
+    # Stale summary: owner messages only, capped, timestamped.
+    updates = [
+        {"update_id": 1, "message": {"from": {"id": 42}, "date": 900,
+                                     "text": "why octopuses have three hearts"}},
+        {"update_id": 2, "message": {"from": {"id": 99}, "date": 901,
+                                     "text": "hack the planet"}},
+        {"update_id": 3, "message": {"from": {"id": 42}, "date": 902,
+                                     "text": ""}},
+    ]
+    summary = summarize_stale(updates, 42)
+    assert "octopuses" in summary and "hack" not in summary
+    assert len(summarize_stale(
+        [{"message": {"from": {"id": 42}, "date": 0, "text": f"t{i}"}}
+         for i in range(20)], 42).splitlines()) == 8  # capped at 8
+    assert summarize_stale([], 42) == ""
+
+    # Recovery: only interrupted renders (queued/rendering) come back.
+    jobs = [types.SimpleNamespace(id="a", status="queued", topic="cats"),
+            types.SimpleNamespace(id="b", status="rendering", topic="honey"),
+            types.SimpleNamespace(id="c", status="generated", topic="sneeze"),
+            types.SimpleNamespace(id="d", status="failed", topic="diamond"),
+            types.SimpleNamespace(id="e", status="queued", topic="")]
+    assert [j.topic for j in recover_stuck_jobs(jobs)] == ["cats", "honey"]
+
+    # Wiring: /keys, /status, /nogemini toggle + gen_args passthrough.
+    cfg = tmp_cfg()
+    cfg.data["telegram"]["bot_token"] = "t"
+    cfg.data["telegram"]["owner_id"] = 42
+    cfg.data["telegram"]["enabled"] = True
+    bot = PhoneBot(cfg)
+    sent = []
+    bot.send_message = lambda chat_id, text: sent.append(text)
+
+    bot.handle_message({"chat": {"id": 42}, "from": {"id": 42},
+                        "text": "/keys"})
+    assert any("API keys" in text for text in sent), sent[-3:]
+
+    bot.handle_message({"chat": {"id": 42}, "from": {"id": 42},
+                        "text": "/nogemini"})
+    assert bot.no_gemini is True
+    bot.handle_message({"chat": {"id": 42}, "from": {"id": 42},
+                        "text": "/status"})
+    assert any("Gemini skipped" in text for text in sent)
+    assert any("Idle" in text for text in sent)
+    bot.handle_message({"chat": {"id": 42}, "from": {"id": 42},
+                        "text": "/nogemini"})
+    assert bot.no_gemini is False
+
+    # The render path threads the toggle into cmd_generate's args and
+    # tracks the current render (heartbeat thread is stubbed out).
+    captured = {}
+
+    def fake_generate(cfg, args):
+        captured["args"] = args
+        bot.current = None  # what the real finally-block does
+
+    import main as main_mod
+    real_generate, main_mod.cmd_generate = main_mod.cmd_generate, fake_generate
+    bot.no_gemini = True
+    try:
+        bot._render_and_send(42, "why bees dance")
+    finally:
+        main_mod.cmd_generate = real_generate
+    assert captured["args"].no_gemini is True
+    # And the failure notice went to the chat (no job was really created).
+    assert any("failed" in text for text in sent)
+
+    keystats_reset = __import__("keystats")
+    keystats_reset._path = None
+
+
 def t_concept_dupe():
     from topics import is_same_topic
 
@@ -2557,6 +2642,7 @@ def main() -> int:
         ("vision", t_vision),
         ("no_gemini", t_no_gemini),
         ("keystats", t_keystats),
+        ("bot_foundations", t_bot_foundations),
         ("title_punch", t_title_punch),
         ("scrub", t_scrub),
         ("stock_pick", t_stock_pick),
