@@ -182,6 +182,11 @@ DEFAULTS: dict[str, Any] = {
         # Free anonymous text lane (no key exists): last LLM resort before
         # the offline template. Mid-tier quality, but its own quota pool.
         "pollinations_model": "openai",
+        # Vision QC (vision.py): a Gemini model checks each chosen stock
+        # photo for safety + relevance before it ships. ~21 small requests
+        # per video, fails open, cached, never blocks a render. Needs a
+        # Gemini key; off = current behaviour (alt-text ranking only).
+        "vision_qc": True,
         # Parallel image downloads. The built-in pacer spaces request starts
         # (~1/15s anonymous Pollinations, ~1/5s with token), so extra workers
         # only overlap download time. Keep at 1.
@@ -797,6 +802,10 @@ class Config:
     @property
     def editorial_enabled(self) -> bool:
         return bool(self.data["ai"].get("editorial_passes", True))
+
+    @property
+    def vision_qc(self) -> bool:
+        return bool(self.data["ai"].get("vision_qc", True))
 
     @property
     def pexels_api_key(self) -> str:

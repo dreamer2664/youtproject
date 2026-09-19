@@ -1209,6 +1209,163 @@ def t_title_punch():
     _fix_title(sc, tmp_cfg(), fp)
     assert fp.calls == 0
 
+def t_vision():
+    import types
+
+    import stock
+    import vision
+
+    # --- pure pieces --------------------------------------------------
+    assert vision._coerce({"safe": "false", "relevant": True}) == \
+        {"safe": False, "relevant": True, "reason": ""}
+    assert vision._coerce({"safe": False, "relevant": "no",
+                           "reason": "x" * 200})["reason"] == "x" * 80
+    assert vision._coerce("junk") == {"safe": True, "relevant": True,
+                                      "reason": ""}
+    ranked = stock.rank_photos(
+        [{"id": 1, "alt": "green forest road"},
+         {"id": 2, "alt": "octopus swimming in deep water"},
+         {"id": 3, "alt": ""}], "octopus water")
+    assert [photo["id"] for photo in ranked] == [2, 1, 3], ranked
+    # NSFW alt prefilter: announced-unsafe candidates never even download.
+    kept = stock.filter_unsafe(
+        [{"id": 1, "alt": "woman in bikini on beach"},
+         {"id": 2, "alt": "octopus swimming"}])
+    assert [photo["id"] for photo in kept] == [2]
+    assert stock.filter_unsafe([{"id": 9, "alt": "nude beach sign"}]) == []
+
+    # --- verdict parse + cache, over a fake transport ------------------
+    vision._state["fails"] = 0
+    cfg = tmp_cfg()
+    cfg.data["ai"]["gemini_api_key"] = "g1"
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"candidates": [{"content": {"parts": [
+                {"text": '{"safe": false, "relevant": true, '
+                         '"reason": "bikini pose"}'}]}}]}
+
+    posts = {"n": 0}
+
+    class FakeRequests:
+        def post(self, *a, **kw):
+            posts["n"] += 1
+            return FakeResp()
+
+    real_requests, vision.requests = vision.requests, FakeRequests()
+    jpeg = b"\xff\xd8\xff" + b"j" * 2500
+    verdict = vision.check_image(jpeg, "beach", cfg, photo_key="77")
+    assert verdict == {"safe": False, "relevant": True,
+                       "reason": "bikini pose"}, verdict
+    before = posts["n"]
+    assert vision.check_image(jpeg, "beach", cfg, photo_key="77") == verdict
+    assert posts["n"] == before  # cache hit: no second call
+
+    # --- circuit breaker: 3 dead calls -> QC stops touching the net ----
+    class DeadRequests:
+        def post(self, *a, **kw):
+            raise vision.requests.RequestException("down")
+
+    DeadRequests.RequestException = real_requests.RequestException
+    vision.requests = DeadRequests()
+    for _ in range(3):
+        assert vision.check_image(jpeg, "cat", cfg, photo_key="9") == \
+            {"safe": True, "relevant": True, "reason": ""}  # fail open
+    assert vision._state["fails"] == 3
+    breaker_posts = {"n": 0}
+
+    class CountingRequests(DeadRequests):
+        def post(self, *a, **kw):
+            breaker_posts["n"] += 1
+            raise real_requests.RequestException("down")
+
+    vision.requests = CountingRequests()
+    vision.check_image(jpeg, "dog", cfg, photo_key="10")
+    assert breaker_posts["n"] == 0  # breaker open: no request made
+
+    # --- pexels_fetch walks candidates on a vision rejection ----------
+    vision._state["fails"] = 0
+    vision.requests = real_requests
+    cfg2 = tmp_cfg()
+    cfg2.data["ai"]["pexels_api_key"] = "pk"
+    cfg2.data["ai"]["gemini_api_key"] = "g1"
+    import director
+    import tempfile
+    from pathlib import Path
+
+    real_plan, director.plan_query = director.plan_query, (
+        lambda prompt, cfg: "cat")
+    downloads = {"n": 0, "urls": []}
+    qc_seen = []
+
+    class Resp:
+        def __init__(self, payload=None, content=b""):
+            self.status_code = 200
+            self._payload, self.content = payload, content
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **kw):
+        if url == stock.SEARCH_URL:
+            return Resp(payload={"photos": [
+                {"id": 1, "alt": "cat sleeping on sofa",
+                 "src": {"portrait": "u1"}, "photographer": "A"},
+                {"id": 2, "alt": "cat playing with yarn ball",
+                 "src": {"portrait": "u2"}, "photographer": "B"},
+                {"id": 3, "alt": "bikini cat costume party",
+                 "src": {"portrait": "u3"}, "photographer": "C"},
+            ]})
+        downloads["n"] += 1
+        downloads["urls"].append(url)
+        return Resp(content=jpeg)
+
+    real_stock_requests, stock.requests = stock.requests, \
+        types.SimpleNamespace(get=fake_get)
+    real_check, vision.check_image = vision.check_image, (
+        lambda body, query, cfg, photo_key="":
+        qc_seen.append(photo_key)
+        or ({"safe": False, "relevant": True, "reason": "unsafe"}
+            if photo_key == "1"
+            else {"safe": True, "relevant": True, "reason": ""}))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "img.jpg"
+            stock.pexels_fetch("a cat scene", dest, cfg2, seed=1, attempts=1)
+            assert dest.read_bytes() == jpeg
+        # alt-prefiltered id 3 never downloaded; id 1 rejected by QC;
+        # id 2 accepted — exactly two downloads, in order.
+        assert downloads["urls"] == ["u1", "u2"], downloads
+        assert qc_seen == ["1", "2"], qc_seen
+    finally:
+        director.plan_query = real_plan
+        stock.requests = real_stock_requests
+        vision.check_image = real_check
+        vision._state["fails"] = 0
+
+
+def t_no_gemini():
+    import os
+
+    from scriptgen import get_provider
+
+    cfg = tmp_cfg()
+    cfg.data["ai"]["gemini_api_key"] = "g"
+    cfg.data["ai"]["groq_api_keys"] = ["q"]
+    assert any(label == "gemini" for label, _ in get_provider(cfg).chain)
+    # The --no-gemini override clears every key source (env beats config
+    # in config.py, so all three must go).
+    os.environ["GEMINI_API_KEY"] = "env-g"
+    for source in ("GEMINI_API_KEYS", "GEMINI_API_KEY"):
+        os.environ.pop(source, None)
+    cfg.data["ai"]["gemini_api_key"] = ""
+    cfg.data["ai"]["gemini_api_keys"] = []
+    labels = [label for label, _ in get_provider(cfg).chain]
+    assert "gemini" not in labels, labels
+    assert "groq" in labels and "template" in labels, labels
+
 def t_concept_dupe():
     from topics import is_same_topic
 
@@ -2321,6 +2478,8 @@ def main() -> int:
         ("batch_topics", t_batch_topics),
         ("hook_guard", t_hook_guard),
         ("concept_dupe", t_concept_dupe),
+        ("vision", t_vision),
+        ("no_gemini", t_no_gemini),
         ("title_punch", t_title_punch),
         ("scrub", t_scrub),
         ("stock_pick", t_stock_pick),

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import traceback
@@ -331,6 +332,14 @@ def cmd_generate(cfg, args) -> int:
         cfg.data["subtitles"]["enabled"] = False
     if args.style is not None:
         cfg.data["video"]["style"] = args.style
+    if getattr(args, "no_gemini", False):
+        # Drop Gemini from every lane this run. Env vars beat config
+        # edits (config.py property order), so all three sources go.
+        os.environ.pop("GEMINI_API_KEYS", None)
+        os.environ.pop("GEMINI_API_KEY", None)
+        cfg.data["ai"]["gemini_api_key"] = ""
+        cfg.data["ai"]["gemini_api_keys"] = []
+        print("  [chain] gemini skipped (--no-gemini)\n")
 
     print(
         f"Settings for this run: {cfg.format} {cfg.width}x{cfg.height}, "
@@ -728,7 +737,7 @@ def cmd_batch(cfg, args) -> int:
     gen_args = argparse.Namespace(
         topic=None, count=1, seconds=args.seconds, format=args.format,
         images_per_scene=args.images_per_scene, no_subs=args.no_subs,
-        style=args.style,
+        no_gemini=args.no_gemini, style=args.style,
         keep_work=args.keep_work, keep_going=True, verbose=args.verbose,
     )
     results: list[tuple[str, str, str]] = []  # topic, status, detail
@@ -865,7 +874,7 @@ def cmd_schedule(cfg, args) -> int:
         gen_args = argparse.Namespace(
             topic=topic, count=1, seconds=args.seconds, format=args.format,
             images_per_scene=args.images_per_scene, no_subs=args.no_subs,
-            style=args.style,
+            no_gemini=args.no_gemini, style=args.style,
             keep_work=args.keep_work, keep_going=True, verbose=args.verbose,
         )
         before = {job.id for job in Queue(cfg.state_file).jobs}
@@ -1202,6 +1211,8 @@ def main() -> int:
                    help="art direction: photoreal (default), cartoon, or "
                         "stickman whiteboard explainer")
     p.add_argument("--no-subs", action="store_true", help="skip subtitles for this run")
+    p.add_argument("--no-gemini", action="store_true", dest="no_gemini",
+                   help="skip Gemini this run (scripts fall straight to Groq/OpenRouter — faster when Gemini keys are flaky)")
     p.add_argument("--keep-work", action="store_true", help="keep intermediate files")
     p.add_argument("--keep-going", action="store_true", help="continue after a failure")
     p.add_argument("--verbose", action="store_true")
@@ -1217,6 +1228,7 @@ def main() -> int:
     p.add_argument("--images-per-scene", type=int, dest="images_per_scene")
     p.add_argument("--style", choices=["photoreal", "cartoon", "stickman"])
     p.add_argument("--no-subs", action="store_true")
+    p.add_argument("--no-gemini", action="store_true", dest="no_gemini")
     p.add_argument("--keep-work", action="store_true")
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--dry-run", action="store_true",
@@ -1239,6 +1251,7 @@ def main() -> int:
     p.add_argument("--images-per-scene", type=int, default=None)
     p.add_argument("--style", default=None, choices=["photoreal", "cartoon", "stickman"])
     p.add_argument("--no-subs", action="store_true")
+    p.add_argument("--no-gemini", action="store_true", dest="no_gemini")
     p.add_argument("--keep-work", action="store_true")
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--once", action="store_true",

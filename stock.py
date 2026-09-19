@@ -42,6 +42,43 @@ def _alt_score(alt: str, query_words: list[str]) -> int:
     return score
 
 
+# Alt text that announces unsafe content: Pexels alt usually names what is
+# in frame, and a false positive only costs one candidate (free belt before
+# the vision QC in vision.py).
+_UNSAFE_ALT = ("nude", "naked", "sexy", "lingerie", "bikini", "erotic",
+               "sensual", "topless", "nsfw", "porn")
+
+
+def filter_unsafe(photos: list[dict]) -> list[dict]:
+    """Drop photos whose alt text announces unsafe content (pure, tested)."""
+    return [photo for photo in photos
+            if not any(word in (photo.get("alt") or "").lower()
+                       for word in _UNSAFE_ALT)]
+
+
+def rank_photos(photos: list[dict], query: str) -> list[dict]:
+    """All candidates best-first by alt-text relevance (pure, tested).
+
+    Zero-overlap photos trail the ranked good ones only as a legacy
+    fallback — the pexels_fetch walk tries them last (or never, when
+    better ones exist), because they are the unrelated images this lane
+    used to ship.
+    """
+    if not photos or not query:
+        return list(photos)
+    words = [w for w in re.sub(r"[^a-z0-9 ]", "", query.lower()).split()
+             if len(w) > 2]
+    if not words:
+        return list(photos)
+    scored = sorted(
+        ((_alt_score(photo.get("alt") or "", words), i)
+         for i, photo in enumerate(photos)),
+        key=lambda t: (-t[0], t[1]))
+    good = [photos[i] for score, i in scored if score > 0]
+    rest = [photos[i] for score, i in scored if score <= 0]
+    return good + rest or list(photos)
+
+
 def pick_photo(photos: list[dict], seed: int, query: str = "") -> dict | None:
     """Best alt-text match wins; the seed only varies across good ones.
 
@@ -56,12 +93,11 @@ def pick_photo(photos: list[dict], seed: int, query: str = "") -> dict | None:
         return photos[seed % len(photos)]
     words = [w for w in re.sub(r"[^a-z0-9 ]", "", query.lower()).split()
              if len(w) > 2]
-    scored = [(_alt_score(photo.get("alt") or "", words), i)
-              for i, photo in enumerate(photos)]
-    ranked = [i for _, i in sorted(scored, key=lambda t: (-t[0], t[1]))]
-    good = [i for i in ranked
-            if _alt_score(photos[i].get("alt") or "", words) > 0] or ranked
-    return photos[good[seed % len(good)]]
+    ranked = rank_photos(photos, query)
+    good = [photo for photo in ranked
+            if _alt_score(photo.get("alt") or "", words) > 0]
+    pool = good or ranked
+    return pool[seed % len(pool)]
 
 
 def _is_image(body: bytes) -> bool:
@@ -103,7 +139,7 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
             time.sleep(2 * attempt)
             continue
         try:
-            photos = response.json().get("photos") or []
+            photos = filter_unsafe(response.json().get("photos") or [])
         except ValueError:
             photos = []
         if not photos:
@@ -112,25 +148,42 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
                 query = " ".join(query.split()[:2])
                 continue
             raise RuntimeError(f"pexels: no photos for {query!r}")
-        photo = pick_photo(photos, seed + attempt, query)
-        assert photo is not None
-        src = photo.get("src") or {}
-        url = (src.get("portrait") if portrait else src.get("landscape")) \
-            or src.get("large") or src.get("medium") or src.get("original")
-        if not url:
-            last_error = "photo had no download URL"
+        # Ranked candidates (best alt-text match first), rotated by seed so
+        # repeat renders vary; vision QC then walks the top three — a
+        # rejected photo means "next candidate", not "ship it anyway".
+        candidates = rank_photos(photos, query)
+        start = (seed + attempt) % len(candidates)
+        ordered = candidates[start:] + candidates[:start]
+        from vision import check_image
+        rejected = ""
+        for photo in ordered[:3]:
+            src = photo.get("src") or {}
+            url = (src.get("portrait") if portrait else src.get("landscape")) \
+                or src.get("large") or src.get("medium") or src.get("original")
+            if not url:
+                continue
+            try:
+                body_resp = requests.get(url, timeout=60)
+                body = body_resp.content
+            except Exception as exc:
+                last_error = f"download failed: {exc}"[:120]
+                continue
+            if not _is_image(body):
+                last_error = f"download was not an image ({len(body)} bytes)"
+                continue
+            verdict = check_image(body, query, cfg,
+                                  photo_key=str(photo.get("id")))
+            if not (verdict["safe"] and verdict["relevant"]):
+                rejected = verdict["reason"] or "unsafe or off-topic"
+                print(f"  [image] vision QC rejected photo {photo.get('id')} "
+                      f"({rejected}) — next candidate")
+                continue
+            dest.write_bytes(body)
+            credit = photo.get("photographer") or "unknown"
+            print(f"  [image] pexels: {query!r} (photo {photo.get('id')} "
+                  f"by {credit})")
+            return dest
+        if rejected:
+            last_error = f"vision QC rejected all candidates ({rejected})"
             continue
-        try:
-            body_resp = requests.get(url, timeout=60)
-            body = body_resp.content
-        except Exception as exc:
-            last_error = f"download failed: {exc}"[:120]
-            continue
-        if not _is_image(body):
-            last_error = f"download was not an image ({len(body)} bytes)"
-            continue
-        dest.write_bytes(body)
-        credit = photo.get("photographer") or "unknown"
-        print(f"  [image] pexels: {query!r} (photo {photo.get('id')} by {credit})")
-        return dest
     raise RuntimeError(f"pexels failed after {attempts} attempts: {last_error}")
