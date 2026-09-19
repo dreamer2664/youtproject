@@ -77,6 +77,13 @@ def slugify(title: str, fallback: str) -> str:
     return slug or fallback
 
 
+# Spoken/typed stop variants (live incident 2026-09-19: a transcribed
+# "Stop" became a render topic, froze mid-render, and recovery kept
+# resurrecting it at every restart).
+_SPOKEN_STOPS = ("stop", "stop it", "stopp", "stop everything",
+                 "stop the video", "stop rendering")
+
+
 def parse_incoming(text: str) -> tuple[str, str]:
     """Pure command parser (unit-tested). Returns (action, argument).
 
@@ -106,7 +113,7 @@ def parse_incoming(text: str) -> tuple[str, str]:
         return ("crew", text[5:].strip())
     # Bare "stop" (no slash): the user means /stop, not a video titled Stop.
     # (A mistyped topic here costs a 20-minute render; the reverse costs nothing.)
-    if low == "stop":
+    if low in _SPOKEN_STOPS:
         return ("stop", "")
     if low == "/stop" or low.startswith("/stop "):
         return ("stop", "")
@@ -192,6 +199,9 @@ def plan_recovery(stuck_jobs, done_topics, cap: int = 3) -> tuple[list, list]:
     skipped: list[tuple[str, str]] = []
     for job in stuck_jobs:
         topic = str(job.topic)
+        if parse_incoming(topic)[0] != "topic":
+            skipped.append((topic, "command, not a topic"))
+            continue
         if any(is_same_topic(topic, kept) for kept in requeue):
             skipped.append((topic, "duplicate"))
             continue
@@ -415,6 +425,21 @@ class PhoneBot:
                 self.jobs.put((chat_id, "jarvis", task))
                 self.send_message(chat_id, f"🎙️ Heard: \"{topic}\"\n🧠 On it.")
                 return
+        # Same parser as text: a spoken "stop" stops the bot (it used to
+        # render a video titled Stop), commands get command replies.
+        action, arg = parse_incoming(topic)
+        if action == "stop":
+            (self.cfg.root / "crew_stop").write_text("stop", encoding="utf-8")
+            print("  [bot] stop requested (voice)")
+            self.send_message(chat_id, "🛑 Stop requested — the video in "
+                                       "flight finishes and gets sent; the "
+                                       "rest of the queue is cleared.")
+            return
+        if action != "topic":
+            self.send_message(chat_id, f"🎙️ Heard: \"{topic[:120]}\" — that "
+                                       "sounds like a command, not a topic. "
+                                       "Say or text a topic to render one.")
+            return
         position = self.jobs.qsize()
         self.jobs.put((chat_id, "topic", topic))
         self.send_message(chat_id, f"🎙️ Heard: \"{topic}\"")

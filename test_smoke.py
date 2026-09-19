@@ -1598,6 +1598,37 @@ def t_bot_foundations():
     assert rendered == [], "nothing should have rendered"
     assert any("Halted" in text and "3 queued" in text for text in halted_msgs)
 
+    # --- voice notes: a spoken "stop" stops the bot, not renders "Stop".
+    from unittest.mock import patch as mock_patch
+
+    voice_cfg = tmp_cfg()
+    voice_cfg.data["telegram"]["bot_token"] = "t"
+    voice_cfg.data["telegram"]["owner_id"] = 42
+    voice_cfg.data["telegram"]["enabled"] = True
+    vbot = PhoneBot(voice_cfg)
+    vbot.sent = []
+    vbot.send_message = lambda chat_id, text: vbot.sent.append(text)
+
+    def fake_voice(heard):
+        return mock_patch("voice.download_telegram_voice",
+                          return_value=Path("x.ogg")), \
+            mock_patch("voice.transcribe", return_value=heard)
+
+    dl, tr = fake_voice("Stop")
+    with dl, tr:
+        vbot._handle_voice(42, "fid")
+    assert vbot.jobs.qsize() == 0, "spoken Stop must not queue a render"
+    assert halt_requested(voice_cfg) is True, "spoken Stop must set the flag"
+    assert any("Stop requested" in t for t in vbot.sent)
+    (voice_cfg.root / "crew_stop").unlink()
+
+    dl, tr = fake_voice("why octopuses have three hearts")
+    with dl, tr:
+        vbot._handle_voice(42, "fid")
+    assert vbot.jobs.qsize() == 1
+    chat_id, kind, topic = vbot.jobs.get_nowait()
+    assert kind == "topic" and topic == "why octopuses have three hearts"
+
     keystats_reset = __import__("keystats")
     keystats_reset._path = None
 
