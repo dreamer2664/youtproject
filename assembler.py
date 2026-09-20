@@ -26,7 +26,12 @@ from config import Config
 
 # Scene gets this much silence before/after narration: enough that speech is
 # never clipped, tight enough that the pacing stays snappy for Shorts.
-HEAD_TAIL = 0.25
+# Live-data note (2026-09-20): at 0.25 the 2xHEAD_TAIL gap at every scene
+# boundary (0.5s + TTS clip padding) read as "the voice stops for a second"
+# 2-3 times per video. 0.10 makes the boundary a natural conversational
+# breath (~0.3s total). Subtitle cue offsets share this constant (main.py
+# passes it into build_cues/build_karaoke_events), so captions stay aligned.
+HEAD_TAIL = 0.10
 MIN_SCENE_SECONDS = 1.0
 
 

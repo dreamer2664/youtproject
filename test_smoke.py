@@ -1633,6 +1633,21 @@ def t_bot_foundations():
     keystats_reset._path = None
 
 
+def t_scene_pacing():
+    """The voice must FLOW: scene-boundary silence stays a natural breath.
+
+    Live incident 2026-09-20: HEAD_TAIL=0.25 meant 0.5s of inserted silence
+    at every scene seam (plus TTS clip padding) — heard as the voice
+    stopping for a second, 2-3 times per video. This pins the contract.
+    """
+    from assembler import HEAD_TAIL, MIN_SCENE_SECONDS
+
+    boundary = 2 * HEAD_TAIL
+    assert 0.15 <= boundary <= 0.30, boundary   # a breath, not a stall
+    assert int(HEAD_TAIL * 1000) >= 80          # onset still protected
+    assert MIN_SCENE_SECONDS >= 1.0             # ultra-short scenes banned
+
+
 def t_concept_dupe():
     from topics import is_same_topic
 
@@ -2749,6 +2764,7 @@ def main() -> int:
         ("no_gemini", t_no_gemini),
         ("keystats", t_keystats),
         ("bot_foundations", t_bot_foundations),
+        ("scene_pacing", t_scene_pacing),
         ("title_punch", t_title_punch),
         ("scrub", t_scrub),
         ("stock_pick", t_stock_pick),
