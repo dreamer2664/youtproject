@@ -627,9 +627,31 @@ def assemble_video(
         if index > 0:
             print(f"      mux       : full mix crashes this FFmpeg build — finished {label}.")
             print(f"                  video is complete otherwise; tech details in {debug_path.name}")
+            if audio_candy_lost(label):
+                try:
+                    out_path.with_suffix(".nomusic.txt").write_text(
+                        f"music + sound effects lost: mux degraded to '{label}'\n"
+                        f"FFmpeg filter failure — details in {debug_path.name}\n",
+                        encoding="utf-8")
+                except OSError:
+                    pass
+                print("      mux       : \u26a0 MUSIC + sound effects are MISSING "
+                      "from this render — if you hear no music, this is why "
+                      f"({debug_path.name}).")
         return out_path
     assert last_exc is not None, "mux ladder ended without trying anything"
     raise last_exc
+
+
+# Mux-ladder rungs that ship WITHOUT the music/sfx mix (live visibility
+# gap 2026-09-20: renders silently landed here and "there's no music").
+_MUSIC_LOST_RUNGS = ("plain video + narration", "emergency direct mux",
+                     "last-resort mp3 mux")
+
+
+def audio_candy_lost(label: str) -> bool:
+    """True when a mux-ladder rung ships without the music/sfx mix."""
+    return label in _MUSIC_LOST_RUNGS
 
 
 def _ffmpeg_has_filter(name: str) -> bool:

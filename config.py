@@ -231,8 +231,10 @@ DEFAULTS: dict[str, Any] = {
         "enabled": True,
         "file": "",
         "folder": "music",
-        # Bed loudness in dB. -24 is subtle, -18 is clearly present.
-        "level_db": -24,
+        # Bed loudness in dB. -24 proved inaudible under the narration
+        # (live verdict 2026-09-20: "there's still no music at all"), -18
+        # is clearly present. Ducking handles the clash with speech.
+        "level_db": -14,
         # Dip the bed while the narrator speaks. Falls back to a static
         # bed if this FFmpeg lacks sidechaincompress.
         "duck": True,
@@ -583,7 +585,7 @@ class Config:
     @property
     def music_level_db(self) -> int:
         try:
-            return int(self.data.get("music", {}).get("level_db", -24))
+            return int(self.data.get("music", {}).get("level_db", -14))
         except (ValueError, TypeError):
             return -24
 

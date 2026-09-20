@@ -1065,7 +1065,7 @@ def t_script_prompt_rules():
     prompt = build_script_prompt(cfg, "octopus arms", 65, 6, 169, 211, 28, 35)
     for rule in ("WRONG-BELIEF FLIP", "FIRST 5 WORDS", "MICRO-TEASES",
                  "LOOP-BACK ENDING", "CONCRETE CAMERA RULE", "RHYTHM",
-                 "dead-air pauses",
+                 "dead-air pauses", "COMPLETE sentences",
                  "stock-photo search", "no hashtags",
                  '"scenes": [', "octopus arms"):
         assert rule in prompt, rule
@@ -1646,6 +1646,58 @@ def t_scene_pacing():
     assert 0.15 <= boundary <= 0.30, boundary   # a breath, not a stall
     assert int(HEAD_TAIL * 1000) >= 80          # onset still protected
     assert MIN_SCENE_SECONDS >= 1.0             # ultra-short scenes banned
+
+
+def t_scene_sentences():
+    from scriptgen import Scene, Script, merge_incomplete_scenes
+
+    def mk(*narrations):
+        return Script(title="t", description="", tags=[],
+                      scenes=[Scene(narration=n, image_prompt=f"img{i}")
+                              for i, n in enumerate(narrations)])
+
+    # Hanging scene swallows its successor; earlier image_prompt kept.
+    sc = mk("The tower leans because", "soft soil gave way. True story.",
+            "It still stands today.")
+    assert merge_incomplete_scenes(sc) == 1
+    assert len(sc.scenes) == 2
+    assert sc.scenes[0].narration == ("The tower leans because "
+                                      "soft soil gave way. True story.")
+    assert sc.scenes[0].image_prompt == "img0"
+    assert sc.scenes[1].narration == "It still stands today."
+    # Complete scenes untouched — . ! ? … and trailing quotes all terminal.
+    sc = mk("It leans.", 'He said "wow"?', "So wild\u2026", "Still up!")
+    assert merge_incomplete_scenes(sc) == 0 and len(sc.scenes) == 4
+    # Commas are not sentence ends.
+    sc = mk("It leans because of soil,", "Rains made it worse.")
+    assert merge_incomplete_scenes(sc) == 1
+    # A chain of hanging scenes collapses into one.
+    sc = mk("A", "B", "C.")
+    assert merge_incomplete_scenes(sc) == 2
+    assert [s.narration for s in sc.scenes] == ["A B C."]
+    # A hanging LAST scene folds into the previous one.
+    sc = mk("Full sentence.", "But then it")
+    assert merge_incomplete_scenes(sc) == 1
+    assert sc.scenes[0].narration == "Full sentence. But then it"
+    # Single hanging scene with nothing to join: left alone, no crash.
+    sc = mk("just hanging")
+    assert merge_incomplete_scenes(sc) == 0
+
+
+def t_music_audible():
+    from assembler import audio_candy_lost
+
+    # -24 proved inaudible in the field; -14 is the audible default.
+    assert tmp_cfg().music_level_db == -14
+    assert tmp_cfg().music_enabled is True
+    # Which degraded mux rungs mean the music/sfx are gone?
+    assert audio_candy_lost("full mix") is False
+    assert audio_candy_lost("without the end-card text") is False
+    assert audio_candy_lost("without burned subtitles") is False
+    assert audio_candy_lost("python garnish mix (no ffmpeg filters)") is False
+    assert audio_candy_lost("plain video + narration") is True
+    assert audio_candy_lost("emergency direct mux") is True
+    assert audio_candy_lost("last-resort mp3 mux") is True
 
 
 def t_concept_dupe():
@@ -2765,6 +2817,8 @@ def main() -> int:
         ("keystats", t_keystats),
         ("bot_foundations", t_bot_foundations),
         ("scene_pacing", t_scene_pacing),
+        ("scene_sentences", t_scene_sentences),
+        ("music_audible", t_music_audible),
         ("title_punch", t_title_punch),
         ("scrub", t_scrub),
         ("stock_pick", t_stock_pick),

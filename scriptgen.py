@@ -43,6 +43,46 @@ class Script:
         return round(words / words_per_minute * 60.0, 1)
 
 
+def _ends_sentence(narration: str) -> bool:
+    """True when the narration ends with sentence-final punctuation."""
+    text = (narration or "").strip()
+    while text and text[-1] in "\"')]}\u00bb\u201d\u2019":
+        text = text[:-1].rstrip()
+    return bool(text) and text[-1] in ".!?\u2026"
+
+
+def merge_incomplete_scenes(script: Script) -> int:
+    """Join scenes whose narration ends mid-sentence (pure, tested).
+
+    Live incident 2026-09-20: when the writer split a sentence across two
+    scenes, each half became its own voice clip — the voice stopped
+    abruptly at the boundary and the sentence hung. A hanging scene now
+    swallows its successor (narrations concatenated, the earlier scene's
+    image_prompt kept — it introduced the sentence); a hanging LAST scene
+    folds into the previous one. Returns the number of merges.
+    """
+    merged = 0
+    i = 0
+    while i < len(script.scenes):
+        scene = script.scenes[i]
+        if scene.narration.strip() and not _ends_sentence(scene.narration):
+            if i + 1 < len(script.scenes):
+                scene.narration = (f"{scene.narration.rstrip()} "
+                                   f"{script.scenes[i + 1].narration.lstrip()}").strip()
+                del script.scenes[i + 1]
+                merged += 1
+                continue  # joined text may still hang — re-check this scene
+            if i > 0:  # last scene hangs -> fold into the previous one
+                prev = script.scenes[i - 1]
+                prev.narration = (f"{prev.narration.rstrip()} "
+                                  f"{scene.narration.lstrip()}").strip()
+                del script.scenes[i]
+                merged += 1
+                continue
+        i += 1
+    return merged
+
+
 class ScriptProvider(Protocol):
     name: str
 
@@ -266,6 +306,7 @@ RETENTION ARCHITECTURE — follow every rule:
   food) the camera can show. Every abstract idea must be anchored to
   something visible within the same scene.
 {end_rule(cfg.cta_enabled)}
+- Every scene's narration is 1-3 COMPLETE sentences, ending with '.', '!' or '?' — NEVER split a sentence across two scenes (each scene is voiced as a separate clip; a split sentence audibly breaks mid-word).
 - narration: plain spoken prose for a voiceover. No stage directions, no quotes
   inside the text, no markdown, no emoji.
 - image_prompt: 2-4 CONCRETE visible subjects (exact animals/objects/places +

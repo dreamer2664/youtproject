@@ -387,6 +387,12 @@ def cmd_generate(cfg, args) -> int:
             from editorial import polish_script
 
             polish_script(script, cfg, provider)
+            from scriptgen import merge_incomplete_scenes
+
+            merges = merge_incomplete_scenes(script)
+            if merges:
+                print(f"      editorial : merged {merges} scene(s) that "
+                      f"split a sentence across scenes")
             from cta import commit_cta, next_cta
 
             # commit=False: the rotation counter only advances once this
