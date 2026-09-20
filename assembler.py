@@ -583,6 +583,13 @@ def assemble_video(
     if want_music or want_whoosh or want_pop:
         assets = ensure_assets(cfg.work_dir / "_fx")
     music_track = resolve_music(cfg, assets["music_loop"]) if want_music else None
+    bed_verdict = ""
+    if music_track is not None and music_track == assets.get("music_loop"):
+        from audiofx import ensure_audible_loop
+
+        music_track, bed_verdict = ensure_audible_loop(cfg.work_dir / "_fx")
+        print(f"      music     : bed at {cfg.music_level_db}dB (config), "
+              f"duck {'on' if cfg.music_duck else 'off'} — {bed_verdict}")
     if music_track is not None:
         # License record: which track this video used (lives next to the mp4,
         # so a Content-ID dispute is always answerable).
@@ -591,9 +598,21 @@ def assemble_video(
                   else f"library file — check its license: {music_track.name}")
         try:
             out_path.with_suffix(".music.txt").write_text(
-                f"track: {music_track.name}\n{origin}\n", encoding="utf-8")
+                f"track: {music_track.name}\n{origin}\n"
+                f"level: {cfg.music_level_db}dB, duck "
+                f"{'on' if cfg.music_duck else 'off'}\n"
+                + (f"audit: {bed_verdict}\n" if bed_verdict else ""),
+                encoding="utf-8")
         except OSError:
             pass
+        if bed_verdict.startswith("SUSPECT"):
+            try:
+                out_path.with_suffix(".nomusic.txt").write_text(
+                    f"music bed suspect: {bed_verdict}\n", encoding="utf-8")
+            except OSError:
+                pass
+            print("      music     : \u26a0 BED MAY BE SILENT — "
+                  "this render likely has no music (see .nomusic.txt).")
 
     rungs = [
         ("full mix", dict(with_burn=True, with_cta=True, with_candy=True)),

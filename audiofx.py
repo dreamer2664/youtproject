@@ -165,6 +165,60 @@ def ensure_assets(cache_dir: Path) -> dict[str, Path]:
     return assets
 
 
+def wav_rms(path: Path) -> float:
+    """RMS of a WAV file, 0.0 when unreadable (tested).
+
+    The answer to "is the track silent?" — measured, not assumed.
+    """
+    import contextlib
+    import wave
+
+    import numpy as np
+
+    try:
+        with contextlib.closing(wave.open(str(path))) as w:
+            frames = w.readframes(w.getnframes())
+        data = np.frombuffer(frames, dtype=np.int16).astype(np.float64) / 32768.0
+        if not data.size:
+            return 0.0
+        return float(np.sqrt(np.mean(data ** 2)))
+    except Exception:  # noqa: BLE001 - unreadable = unverifiable = 0.0
+        return 0.0
+
+
+# A healthy synthesized chord pad measures ~0.08 RMS; digital silence
+# measures < 0.001. Anything under this is a broken bed file.
+SILENT_RMS = 0.005
+
+
+def ensure_audible_loop(cache_dir: Path) -> tuple[Path, str]:
+    """ensure_assets + silence audit for the built-in bed (tested).
+
+    The loop cache is render-once-reuse-forever — a corrupted or silent
+    cached music_loop.wav would mute EVERY future video with no error
+    anywhere in the pipeline (live suspicion 2026-09-20: "no music" across
+    20 renders). This measures the file; a silent one is regenerated once
+    on the spot; a still-silent result is reported as SUSPECT so the
+    render log says so instead of shipping quiet mystery.
+    """
+    assets = ensure_assets(cache_dir)
+    loop = assets["music_loop"]
+    rms = wav_rms(loop)
+    if rms >= SILENT_RMS:
+        return loop, f"ok (rms {rms:.3f})"
+    try:
+        loop.unlink()
+    except OSError:
+        pass
+    assets = ensure_assets(cache_dir)
+    loop = assets["music_loop"]
+    rms = wav_rms(loop)
+    if rms >= SILENT_RMS:
+        return loop, f"regenerated — cached file was silent (rms {rms:.3f})"
+    return loop, (f"SUSPECT — regenerated file still near-silent "
+                  f"(rms {rms:.3f}); set music.file to a real track")
+
+
 def resolve_music(cfg: Config, fallback_loop: Path) -> Path:
     """Pick the music bed: music.file > first audio in music/ > built-in."""
     custom = str(cfg.music_file or "").strip()

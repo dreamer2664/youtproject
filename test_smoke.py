@@ -1679,7 +1679,7 @@ def t_scene_sentences():
                       scenes=[Scene(narration=n, image_prompt=f"img{i}")
                               for i, n in enumerate(narrations)])
 
-    # Hanging scene swallows its successor; earlier image_prompt kept.
+    # Accidental split (next starts lowercase): swallowed, prompt kept.
     sc = mk("The tower leans because", "soft soil gave way. True story.",
             "It still stands today.")
     assert merge_incomplete_scenes(sc) == 1
@@ -1691,31 +1691,77 @@ def t_scene_sentences():
     # Complete scenes untouched — . ! ? … and trailing quotes all terminal.
     sc = mk("It leans.", 'He said "wow"?', "So wild\u2026", "Still up!")
     assert merge_incomplete_scenes(sc) == 0 and len(sc.scenes) == 4
-    # Commas are not sentence ends.
-    sc = mk("It leans because of soil,", "Rains made it worse.")
+    # Commas are not sentence ends (lowercase continuation -> merge;
+    # three scenes so the floor allows it).
+    sc = mk("It leans because of soil,", "rains made it worse.", "It stands.")
     assert merge_incomplete_scenes(sc) == 1
-    # A period is not completeness either: conjunction-FINAL scenes still
-    # hang (live case: "...the tower was leaning because." + next scene).
-    sc = mk("The tower was leaning because.", "The soil shifts as it settles.")
+    # Conjunction-FINAL hanging + lowercase continuation -> merge.
+    sc = mk("The tower was leaning because.", "the soil shifts.", "It stands.")
     assert merge_incomplete_scenes(sc) == 1
-    assert sc.scenes[0].narration == ("The tower was leaning because. "
-                                      "The soil shifts as it settles.")
-    # Known limit, documented: a hang ending on a NOUN ("...because soft
-    # soil.") is not catchable by a final-word heuristic — the writer
-    # prompt's complete-sentence rule is the defense there.
+    # A 2-scene script never merges (the floor): collapsing to one scene
+    # is exactly the 2026-09-20 regression, accidental or not.
+    sc = mk("It leans because of soil,", "rains made it worse.")
+    assert merge_incomplete_scenes(sc) == 0
+    # DELIBERATE teases are not splits: colon endings and Capitalized
+    # continuations stay separate scenes (v2 collapsed whole scripts —
+    # live regression 2026-09-20: 6 scenes merged into 1, one image for
+    # 27 seconds).
+    sc = mk("But here's the twist:", "In 1902 a doctor took it.")
+    assert merge_incomplete_scenes(sc) == 0
+    sc = mk("The tower was leaning because.", "The soil shifts.")
+    assert merge_incomplete_scenes(sc) == 0  # capitalized = new sentence
+    sc = mk("But then it gets stranger", "Much stranger.")
+    assert merge_incomplete_scenes(sc) == 0
     sc = mk("The soil shifts.", "And the tower survives.")
     assert merge_incomplete_scenes(sc) == 0  # complete sentences stay
-    # A chain of hanging scenes collapses into one.
-    sc = mk("A", "B", "C.")
-    assert merge_incomplete_scenes(sc) == 2
-    assert [s.narration for s in sc.scenes] == ["A B C."]
-    # A hanging LAST scene folds into the previous one.
-    sc = mk("Full sentence.", "But then it")
-    assert merge_incomplete_scenes(sc) == 1
-    assert sc.scenes[0].narration == "Full sentence. But then it"
+    # Floor + cap: a fully-hanging lowercase chain can never collapse the
+    # script structure again.
+    sc = mk("A", "b", "c", "d", "e", "f.")
+    assert merge_incomplete_scenes(sc) == 3  # cap reached first
+    assert len(sc.scenes) == 3  # 6 -> 3, never fewer
     # Single hanging scene with nothing to join: left alone, no crash.
     sc = mk("just hanging")
     assert merge_incomplete_scenes(sc) == 0
+
+
+def t_music_audit():
+    import contextlib
+    import wave
+
+    import audiofx
+    from audiofx import (SILENT_RMS, ensure_audible_loop, ensure_assets,
+                         wav_rms)
+
+    cfg = tmp_cfg()
+    cache = cfg.work_dir / "_fx"
+    loop = ensure_assets(cache)["music_loop"]
+    # The synthesized loop is genuinely audible (the "silent track?"
+    # suspicion, settled by measurement).
+    assert wav_rms(loop) > SILENT_RMS, wav_rms(loop)
+    # A corrupted silent cache self-heals: audit regenerates the file.
+    with contextlib.closing(wave.open(str(loop), "wb")) as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(44100)
+        w.writeframes(b"\x00\x00" * 44100)
+    assert wav_rms(loop) < SILENT_RMS
+    path, verdict = ensure_audible_loop(cache)
+    assert verdict.startswith("regenerated"), verdict
+    assert wav_rms(path) > SILENT_RMS
+    # Healthy cache: ok verdict.
+    _, verdict = ensure_audible_loop(cache)
+    assert verdict.startswith("ok"), verdict
+    # Unreadable/missing file: 0.0, never raises.
+    assert wav_rms(cfg.work_dir / "nope.wav") == 0.0
+    # Pathological renderer: SUSPECT verdict, surfaced not swallowed.
+    real = audiofx._render_music_loop
+    audiofx._render_music_loop = lambda: ([0.0] * 100, [0.0] * 100)
+    try:
+        loop.unlink()
+        _, verdict = ensure_audible_loop(cache)
+        assert verdict.startswith("SUSPECT"), verdict
+    finally:
+        audiofx._render_music_loop = real
 
 
 def t_music_audible():
@@ -2853,6 +2899,7 @@ def main() -> int:
         ("bot_foundations", t_bot_foundations),
         ("scene_pacing", t_scene_pacing),
         ("audio_trim", t_audio_trim),
+        ("music_audit", t_music_audit),
         ("scene_sentences", t_scene_sentences),
         ("music_audible", t_music_audible),
         ("title_punch", t_title_punch),

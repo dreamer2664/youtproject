@@ -62,34 +62,38 @@ def _ends_sentence(narration: str) -> bool:
     return last_word not in _HANGING_ENDERS
 
 
-def merge_incomplete_scenes(script: Script) -> int:
-    """Join scenes whose narration ends mid-sentence (pure, tested).
+def merge_incomplete_scenes(script: Script, *, floor: int = 2,
+                            cap: int = 3) -> int:
+    """Join scenes that ACCIDENTALLY split one sentence (pure, tested).
 
-    Live incident 2026-09-20: when the writer split a sentence across two
-    scenes, each half became its own voice clip — the voice stopped
-    abruptly at the boundary and the sentence hung. A hanging scene now
-    swallows its successor (narrations concatenated, the earlier scene's
-    image_prompt kept — it introduced the sentence); a hanging LAST scene
-    folds into the previous one. Returns the number of merges.
+    Two live postmortems (2026-09-20): (1) a scene ending mid-sentence
+    sounds like the voice stopping mid-thought — merge it; (2) but the
+    retention prompts DELIBERATELY end scenes mid-tension (teases,
+    colons), and v2's punctuation-only check read those as splits and
+    collapsed a 6-scene script into ONE scene — one image held for 27
+    seconds, the "2 images in a 1:19 video" regression. v3 needs real
+    evidence of an accident: the scene hangs without terminal punctuation,
+    does NOT end in a colon (that is a tease by construction), and the
+    next scene starts LOWERCASE (a true sentence continuation). A floor
+    (never merge below N scenes) and a cap keep the structure intact no
+    matter what the model writes.
     """
     merged = 0
     i = 0
-    while i < len(script.scenes):
+    while i < len(script.scenes) and merged < cap:
         scene = script.scenes[i]
-        if scene.narration.strip() and not _ends_sentence(scene.narration):
-            if i + 1 < len(script.scenes):
-                scene.narration = (f"{scene.narration.rstrip()} "
-                                   f"{script.scenes[i + 1].narration.lstrip()}").strip()
-                del script.scenes[i + 1]
-                merged += 1
-                continue  # joined text may still hang — re-check this scene
-            if i > 0:  # last scene hangs -> fold into the previous one
-                prev = script.scenes[i - 1]
-                prev.narration = (f"{prev.narration.rstrip()} "
-                                  f"{scene.narration.lstrip()}").strip()
-                del script.scenes[i]
-                merged += 1
-                continue
+        text = (scene.narration or "").strip()
+        next_text = ((script.scenes[i + 1].narration or "").lstrip()
+                     if i + 1 < len(script.scenes) else "")
+        if (len(script.scenes) > floor and text
+                and not _ends_sentence(text)
+                and not text.endswith(":")
+                and next_text[:1].islower()):
+            scene.narration = (f"{scene.narration.rstrip()} "
+                               f"{next_text}").strip()
+            del script.scenes[i + 1]
+            merged += 1
+            continue  # the joined text may still hang — re-check
         i += 1
     return merged
 
