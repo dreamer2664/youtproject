@@ -24,6 +24,42 @@ from pathlib import Path
 
 from config import Config
 
+# Kept silence at the START/END of each TTS clip after trimming the
+# engine's baked-in padding. edge-tts ships ~0.10s head + ~0.30s tail of
+# silence per clip (measured live 2026-09-20); stacked across a scene
+# boundary that was a ~0.6s dead pause heard as "the voice stops for a
+# second". Trimming to these keeps + HEAD_TAIL makes the boundary a
+# natural ~0.35s conversational pause.
+CLIP_HEAD_KEEP = 0.05
+CLIP_TAIL_KEEP = 0.10
+
+
+def trim_audio_filter() -> str:
+    """-af chain trimming TTS-baked edge silence (pure, tested).
+
+    silenceremove only trims HEADS, so the tail is trimmed by reversing,
+    trimming, reversing back (areverse sandwich). Keeps CLIP_HEAD_KEEP /
+    CLIP_TAIL_KEEP of the engine's own padding.
+    """
+    return (f"silenceremove=start_periods=1:start_silence={CLIP_HEAD_KEEP:.2f}"
+            f":start_threshold=-45dB,areverse,"
+            f"silenceremove=start_periods=1:start_silence={CLIP_TAIL_KEEP:.2f}"
+            f":start_threshold=-45dB,areverse")
+
+
+def pad_audio_filter(head_tail: float, scene_seconds: float) -> str:
+    """-af chain for scene audio pads (pure, tested).
+
+    head delay + pad to the exact scene length. Run AFTER trim_audio_filter:
+    scene_seconds is computed from the TRIMMED clip, so apad only tops up
+    the deliberate head/tail breathing room (computing it from the raw clip
+    re-added every trimmed millisecond as fresh silence — measured live
+    2026-09-20: a 0.44s tail on a clip trimmed to 0.09s).
+    """
+    return (f"adelay={int(head_tail * 1000)}|{int(head_tail * 1000)},"
+            f"apad=whole_dur={scene_seconds:.3f}")
+
+
 # Scene gets this much silence before/after narration: enough that speech is
 # never clipped, tight enough that the pacing stays snappy for Shorts.
 # Live-data note (2026-09-20): at 0.25 the 2xHEAD_TAIL gap at every scene
@@ -221,7 +257,24 @@ def build_segments(
     sub_index = 0
 
     for s_num, (scene_images, audio) in enumerate(zip(images_by_scene, audio_paths), start=1):
-        narration_seconds = ffprobe_duration(audio)
+        # Trim the TTS engine's baked edge silence BEFORE measuring: the
+        # scene length (and so the video segment) must follow the speech,
+        # not the padding — otherwise apad re-adds every trimmed
+        # millisecond as fresh digital silence.
+        trimmed = audio
+        if _ffmpeg_has_filter("silenceremove"):
+            trimmed = work_dir / f"trimmed_{s_num:02d}.wav"
+            run(
+                [
+                    "ffmpeg", "-y", "-loglevel", "warning",
+                    "-i", str(audio),
+                    "-af", trim_audio_filter(),
+                    "-ar", "48000", "-ac", "2",
+                    str(trimmed),
+                ],
+                f"audio trim {s_num}/{total}",
+            )
+        narration_seconds = ffprobe_duration(trimmed)
         scene_seconds = max(MIN_SCENE_SECONDS, narration_seconds + 2 * HEAD_TAIL)
         scene_durations.append(scene_seconds)
 
@@ -269,14 +322,14 @@ def build_segments(
             )
             segments.append(segment)
 
-        # Pad narration so its length matches the video segment exactly.
+        # Pad the TRIMMED narration so its length matches the video segment
+        # exactly (adelay head + apad tail of HEAD_TAIL each).
         pad = work_dir / f"pad_{s_num:02d}.wav"
         run(
             [
                 "ffmpeg", "-y", "-loglevel", "warning",
-                "-i", str(audio),
-                "-af", f"adelay={int(HEAD_TAIL * 1000)}|{int(HEAD_TAIL * 1000)},"
-                       f"apad=whole_dur={scene_seconds:.3f}",
+                "-i", str(trimmed),
+                "-af", pad_audio_filter(HEAD_TAIL, scene_seconds),
                 "-ar", "48000", "-ac", "2",
                 str(pad),
             ],
@@ -367,8 +420,8 @@ def _build_mux_cmd(
         if music_idx is not None:
             parts.append(f"[{music_idx}:a]{exact},volume={cfg.music_level_db}dB[bed]")
             if ducking:
-                parts.append("[bed][nside]sidechaincompress=threshold=0.125"
-                             ":ratio=6:attack=20:release=400,"
+                parts.append("[bed][nside]sidechaincompress="
+                             f"{DUCK_PARAMS},"
                              "aformat=channel_layouts=stereo[duck]")
             else:
                 parts.append("[bed]anull[duck]")
@@ -642,6 +695,12 @@ def assemble_video(
     assert last_exc is not None, "mux ladder ended without trying anything"
     raise last_exc
 
+
+# Sidechain ducking shape. Was 6:1 / 400ms release: at -18dB the bed was
+# measured inaudible for the video's entire duration (the ducking never
+# released between sentences). 3:1 / 250ms keeps the bed present under
+# speech while still carving room for the voice.
+DUCK_PARAMS = "threshold=0.06:ratio=3:attack=20:release=250"
 
 # Mux-ladder rungs that ship WITHOUT the music/sfx mix (live visibility
 # gap 2026-09-20: renders silently landed here and "there's no music").

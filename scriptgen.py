@@ -43,12 +43,23 @@ class Script:
         return round(words / words_per_minute * 60.0, 1)
 
 
+# A terminal period is not proof of completeness: the writer sometimes
+# ends a scene on a conjunction ("...leans because soft soil.") — the
+# sentence hangs semantically and the voice stops mid-thought.
+_HANGING_ENDERS = ("because", "but", "and", "so", "which", "that", "when",
+                   "while", "since", "until", "unless")
+
+
 def _ends_sentence(narration: str) -> bool:
-    """True when the narration ends with sentence-final punctuation."""
+    """True when the narration ends a complete sentence."""
     text = (narration or "").strip()
     while text and text[-1] in "\"')]}\u00bb\u201d\u2019":
         text = text[:-1].rstrip()
-    return bool(text) and text[-1] in ".!?\u2026"
+    if not text or text[-1] not in ".!?\u2026":
+        return False
+    last_word = text[:-1].strip().split()[-1].lower().strip(",.;!?\u2026") \
+        if text[:-1].strip() else ""
+    return last_word not in _HANGING_ENDERS
 
 
 def merge_incomplete_scenes(script: Script) -> int:

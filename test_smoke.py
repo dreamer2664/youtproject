@@ -1648,6 +1648,29 @@ def t_scene_pacing():
     assert MIN_SCENE_SECONDS >= 1.0             # ultra-short scenes banned
 
 
+def t_audio_trim():
+    from assembler import (CLIP_HEAD_KEEP, CLIP_TAIL_KEEP, DUCK_PARAMS,
+                           HEAD_TAIL, pad_audio_filter, trim_audio_filter)
+
+    # The trim: areverse sandwich, keeps are small and bounded.
+    trims = trim_audio_filter()
+    assert trims.count("silenceremove") == 2 and trims.count("areverse") == 2
+    assert f"start_silence={CLIP_HEAD_KEEP:.2f}" in trims
+    assert f"start_silence={CLIP_TAIL_KEEP:.2f}" in trims
+    assert 0.03 <= CLIP_HEAD_KEEP <= 0.08
+    assert 0.05 <= CLIP_TAIL_KEEP <= 0.15
+    # The pad: NO trim here (trimming must happen before the scene length
+    # is measured, or apad re-adds the trimmed silence — live-measured
+    # 0.44s tail on a 0.09s-kept clip).
+    pads = pad_audio_filter(HEAD_TAIL, 4.2)
+    assert "silenceremove" not in pads
+    assert f"adelay={int(HEAD_TAIL * 1000)}" in pads
+    assert "apad=whole_dur=4.200" in pads
+    # Ducking: 3:1 with a short release (6:1/400ms crushed the bed flat).
+    assert "ratio=3" in DUCK_PARAMS and "release=250" in DUCK_PARAMS
+    assert "ratio=6" not in DUCK_PARAMS
+
+
 def t_scene_sentences():
     from scriptgen import Scene, Script, merge_incomplete_scenes
 
@@ -1671,6 +1694,17 @@ def t_scene_sentences():
     # Commas are not sentence ends.
     sc = mk("It leans because of soil,", "Rains made it worse.")
     assert merge_incomplete_scenes(sc) == 1
+    # A period is not completeness either: conjunction-FINAL scenes still
+    # hang (live case: "...the tower was leaning because." + next scene).
+    sc = mk("The tower was leaning because.", "The soil shifts as it settles.")
+    assert merge_incomplete_scenes(sc) == 1
+    assert sc.scenes[0].narration == ("The tower was leaning because. "
+                                      "The soil shifts as it settles.")
+    # Known limit, documented: a hang ending on a NOUN ("...because soft
+    # soil.") is not catchable by a final-word heuristic — the writer
+    # prompt's complete-sentence rule is the defense there.
+    sc = mk("The soil shifts.", "And the tower survives.")
+    assert merge_incomplete_scenes(sc) == 0  # complete sentences stay
     # A chain of hanging scenes collapses into one.
     sc = mk("A", "B", "C.")
     assert merge_incomplete_scenes(sc) == 2
@@ -1687,8 +1721,9 @@ def t_scene_sentences():
 def t_music_audible():
     from assembler import audio_candy_lost
 
-    # -24 proved inaudible in the field; -14 is the audible default.
-    assert tmp_cfg().music_level_db == -14
+    # -18 under 6:1 ducking measured inaudible; -12 is the default now
+    # (an explicit level_db in config.yaml still wins — by design).
+    assert tmp_cfg().music_level_db == -12
     assert tmp_cfg().music_enabled is True
     # Which degraded mux rungs mean the music/sfx are gone?
     assert audio_candy_lost("full mix") is False
@@ -2817,6 +2852,7 @@ def main() -> int:
         ("keystats", t_keystats),
         ("bot_foundations", t_bot_foundations),
         ("scene_pacing", t_scene_pacing),
+        ("audio_trim", t_audio_trim),
         ("scene_sentences", t_scene_sentences),
         ("music_audible", t_music_audible),
         ("title_punch", t_title_punch),
