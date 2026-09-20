@@ -1724,6 +1724,119 @@ def t_scene_sentences():
     assert merge_incomplete_scenes(sc) == 0
 
 
+def t_topic_hygiene():
+    from unittest.mock import patch
+
+    from topics import _clean, _looks_junky, pop_fresh_topic, propose_topics
+
+    # The live junk case and its family.
+    assert _looks_junky("The GENIUS Scale! FactTechz Short AMAZING FACTS Show #shorts")
+    assert _looks_junky("AMAZING facts you will not believe")
+    assert _looks_junky("best facts compilation part 1")
+    assert _looks_junky("why cats rule tiktok")
+    assert not _looks_junky("Why wombat poop comes out as perfect cubes")
+    # Curated-pack acronyms survive the lenient pop-time check.
+    assert _looks_junky("the 72 seconds that broke SETI")  # strict top-up check
+    assert not _looks_junky("the 72 seconds that broke SETI", strict_caps=False)
+    # _clean drops junk from LLM top-up output.
+    cleaned = _clean("Why cats always land on their feet\n"
+                     "AMAZING SECRET Show #shorts\n"
+                     "How honey never spoils\n", [])
+    assert cleaned == ["Why cats always land on their feet", "How honey never spoils"]
+    # pop skips junk lines (lenient check: hashtags/platform words).
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        backlog = Path(tmp) / "backlog.txt"
+        backlog.write_text("# comment\n"
+                           "the genius scale! amazing show #shorts\n"
+                           "Why the Leaning Tower never fell\n"
+                           "How octopuses taste with their arms\n",
+                           encoding="utf-8")
+        assert pop_fresh_topic(backlog, []) == "Why the Leaning Tower never fell"
+        assert pop_fresh_topic(backlog, []) == "How octopuses taste with their arms"
+        assert pop_fresh_topic(backlog, []) is None
+    # The top-up prompt carries the anti-junk rules.
+    class FakeProvider:
+        def __init__(self):
+            self.prompt = ""
+
+        def generate_text(self, prompt, **kwargs):
+            self.prompt = prompt
+            return "Why cats always land on their feet\nHow honey never spoils"
+
+    fake = FakeProvider()
+    with patch("scriptgen.get_provider", return_value=fake):
+        propose_topics(tmp_cfg(), 2, [])
+    assert "documentary" in fake.prompt and "ALL CAPS" in fake.prompt
+    assert "BANNED" in fake.prompt and "#shorts" not in fake.prompt.split("BANNED")[0]
+
+
+def t_title_optimize():
+    import types
+
+    from editorial import _optimize_title, _title_keywords, score_title
+
+    kws = ["stripes", "zebras", "flies"]
+    # Subject word + shape beats vague; 9-word sprawl loses points.
+    good = score_title("Why Zebras Have Stripes", kws)
+    vague = score_title("The Great Pattern Mystery", kws)
+    sprawl = score_title("Why Zebras Have Stripes That Keep Them Alive Today", kws)
+    assert good > vague and good > sprawl
+    # Violating shapes are unusable, hashtags are stripped first.
+    assert score_title("The Great Diamond Lie They Still Want You to Believe",
+                       kws) == -10
+    assert score_title("Why Zebras Have Stripes #facts #didyouknow", kws) == good
+    # Caps and exclamation hype lose points.
+    assert score_title("WHY ZEBRAS ARE AMAZING!", kws) < \
+        score_title("Why Zebras Are Amazing", kws)
+    # Keywords come from the narration, most frequent first.
+    kws2 = _title_keywords(["Zebras wear stripes to dodge flies. "
+                            "The stripes confuse biting flies."])
+    assert kws2[0] == "stripes" and "zebras" in kws2 and "flies" in kws2
+
+    class FakeProvider:
+        def __init__(self, replies):
+            self.replies = list(replies)
+            self.calls = 0
+
+        def generate_text(self, *args, **kwargs):
+            self.calls += 1
+            return self.replies.pop(0)
+
+    def script(title, narration):
+        return types.SimpleNamespace(
+            title=title,
+            scenes=[types.SimpleNamespace(narration=narration)])
+
+    narration = ("Zebras wear stripes to dodge flies. The stripes confuse "
+                 "biting flies.")
+    # A clear win swaps the title in.
+    sc = script("The Strange Mystery of Zebra Coats", narration)
+    fp = FakeProvider(['{"titles": ["Why Zebras Have Stripes", '
+                       '"Zebra Stripes Explained", "The Secret Pattern '
+                       'Nobody Understands Fully Here"]}'])
+    _optimize_title(sc, tmp_cfg(), fp)
+    assert sc.title == "Why Zebras Have Stripes", sc.title
+    # Already-good title: candidates must beat it by a margin or it stays.
+    sc = script("Why Zebras Have Stripes", narration)
+    fp = FakeProvider(['{"titles": ["Zebra Stripes Explained", '
+                       '"The Truth About Zebras"]}'])
+    _optimize_title(sc, tmp_cfg(), fp)
+    assert sc.title == "Why Zebras Have Stripes"
+    # Provider failure / bad JSON: keep, never raise.
+    sc = script("Why Zebras Have Stripes", narration)
+    fp = FakeProvider(["not json"])
+    _optimize_title(sc, tmp_cfg(), fp)
+    assert sc.title == "Why Zebras Have Stripes"
+    # No title attribute (editorial fixtures): no provider call at all.
+    sc = types.SimpleNamespace(scenes=[])
+    fp = FakeProvider([])
+    _optimize_title(sc, tmp_cfg(), fp)
+    assert fp.calls == 0
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -2900,6 +3013,8 @@ def main() -> int:
         ("scene_pacing", t_scene_pacing),
         ("audio_trim", t_audio_trim),
         ("music_audit", t_music_audit),
+        ("topic_hygiene", t_topic_hygiene),
+        ("title_optimize", t_title_optimize),
         ("scene_sentences", t_scene_sentences),
         ("music_audible", t_music_audible),
         ("title_punch", t_title_punch),

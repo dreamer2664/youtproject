@@ -18,7 +18,9 @@ def polish_script(script, cfg: Config, provider) -> None:
     if not cfg.editorial_enabled:
         return
     for stage, func in (("punch-up", _punch_up), ("hook fix", _fix_hook),
-                        ("title fix", _fix_title), ("decringe", _decringe)):
+                        ("title fix", _fix_title),
+                        ("title polish", _optimize_title),
+                        ("decringe", _decringe)):
         try:
             func(script, cfg, provider)
         except Exception as exc:  # noqa: BLE001 - polish never kills a render
@@ -131,6 +133,137 @@ def _fix_title(script, cfg: Config, provider) -> None:
         return
     script.title = new
     print(f"      editorial : title fix applied ({title[:40]!r} -> {new[:40]!r}).")
+
+
+# Real channel analytics, 2026-09-20 — the closest thing to training data
+# a free tier gets: few-shot examples drawn from what actually earned views.
+_WINNING_TITLES = (
+    "Why We Close Our Eyes When We Sneeze",     # 1,118 views
+    "Why Cats Break The Laws Of Physics",       # 989
+    "How Honey Never Expires",                  # 885 (retitle: 146 -> 885)
+    "The Strange Reason Clocks Go Clockwise",   # 817
+    "Why Zebras Have Stripes",                  # 492
+    "How The QWERTY Keyboard Was Born",         # 462 (retitle: 8 -> 462)
+)
+_FLOPPED_TITLES = (
+    "The Great Diamond Lie They Still Want You to Believe",  # 3 views
+    "Why Your Keyboard Was Built to Slow You Down",          # 9 words, 8 views
+)
+
+
+def _title_keywords(narrations: list[str]) -> list[str]:
+    """The script's subject words, most frequent first (pure, tested)."""
+    from collections import Counter
+
+    from topics import _content_words
+
+    counter: Counter = Counter()
+    for narration in narrations:
+        counter.update(word for word in _content_words(narration or "")
+                       if len(word) > 3)
+    return [word for word, _ in counter.most_common(4)]
+
+
+def score_title(title: str, keywords: list[str]) -> int:
+    """View-potential score for a title (pure, tested; higher = better).
+
+    Encodes the channel's live results: 4-7 words, <=45 chars, Why/How/The
+    opener, the subject word present (searchability — Shorts titles feed
+    YouTube search), no hype mechanics. Violating shapes score -10.
+    """
+    text = re.sub(r"\s*#\S+", "", title or "").strip()
+    if not text or title_punch_violated(text):
+        return -10
+    score = 0
+    words = text.split()
+    if 4 <= len(words) <= 7:
+        score += 2
+    elif len(words) >= 9:
+        score -= 3
+    if len(text) <= 45:
+        score += 1
+    elif len(text) > 55:
+        score -= 1
+    if text.startswith(("Why ", "How ", "The ", "What ")):
+        score += 2
+    lowered = text.lower()
+    for index, keyword in enumerate(keywords):
+        if keyword in lowered or keyword.rstrip("s") in lowered:
+            score += 2 if index == 0 else 1
+    if any(phrase in lowered for phrase in _BANNED_TITLE_PHRASES):
+        score -= 3
+    if any(word.isupper() and len(word) >= 3 for word in words):
+        score -= 2
+    if "!" in text:
+        score -= 1
+    return score
+
+
+def _optimize_title(script, cfg: Config, provider) -> None:
+    """Few-shot title rewrite: 5 candidates, best scorer wins (tested).
+
+    The free-tier equivalent of "train an AI on our titles": the model sees
+    this channel's real winners and flops, then a deterministic scorer
+    (score_title) picks the best candidate — swaps only on a clear win,
+    keeps the current title otherwise. Never raises; no title -> no call.
+    """
+    from scriptgen import extract_json
+
+    title = getattr(script, "title", "") or ""
+    if not title:
+        return
+    narrations = [scene.narration for scene in script.scenes] \
+        if getattr(script, "scenes", None) else []
+    keywords = _title_keywords(narrations)
+    if not keywords:
+        return
+    current = score_title(title, keywords)
+    prompt = (
+        "Rewrite this YouTube Shorts title to maximize views.\n"
+        f"CURRENT TITLE: {title}\n"
+        f"SUBJECT WORDS (the title must contain the main one): "
+        f"{', '.join(keywords)}\n"
+        f"OPENING LINES: {' '.join(narrations)[:280]}\n\n"
+        "PROVEN WINNERS on this channel (copy the style, never the words):\n"
+        + "\n".join(f"  - {won}" for won in _WINNING_TITLES)
+        + "\nFLOPPED (never write like this):\n"
+        + "\n".join(f"  - {lost}" for lost in _FLOPPED_TITLES)
+        + "\nRULES: 4-7 words; under 45 characters; Why/How/The opener; the "
+        "main subject word present (searchability); a curiosity gap with no "
+        "lies; no hashtags, no ALL CAPS, no quotes.\n"
+        'Return ONLY JSON: {"titles": ["candidate 1", "candidate 2", '
+        '"candidate 3", "candidate 4", "candidate 5"]}'
+    )
+    print("      editorial : title polish pass...")
+    try:
+        raw = provider.generate_text(prompt, temperature=0.7,
+                                     tag="titlepolish", json_mode=True)
+        data = extract_json(raw)
+    except Exception as exc:  # noqa: BLE001 - polish never kills a render
+        print(f"      editorial : title polish failed ({str(exc)[:100]}) — keeping previous.")
+        return
+    candidates = data.get("titles") if isinstance(data, dict) else None
+    if not isinstance(candidates, list):
+        print("      editorial : title polish returned no candidates — keeping previous.")
+        return
+    scored = []
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            candidate = re.sub(r"\s*#\S+", "", candidate).strip()
+            score = score_title(candidate, keywords)
+            if score > -10:
+                scored.append((score, candidate))
+    if not scored:
+        print("      editorial : title polish found no usable candidate — keeping previous.")
+        return
+    best_score, best = max(scored, key=lambda pair: pair[0])
+    if best_score >= current + 2:
+        print(f"      editorial : title polish applied (score {current}->"
+              f"{best_score}: {title[:38]!r} -> {best[:38]!r}).")
+        script.title = best
+    else:
+        print(f"      editorial : title polish kept current "
+              f"(best candidate scored {best_score} vs {current}).")
 
 
 def scrub_narration(text: str) -> str:

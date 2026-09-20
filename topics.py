@@ -102,6 +102,27 @@ def is_same_topic(a: str, b: str, threshold: float = 0.8) -> bool:
     return shared >= 2 and shared / min(len(core_a), len(core_b)) >= 0.5
 
 
+# LLM top-up junk (live case 2026-09-20: "The GENIUS Scale! FactTechz Short
+# AMAZING FACTS Show #shorts" reached a render): platform meta-words and
+# hashtag tails are junk at any strictness; ALL-CAPS hype only when the
+# text comes from the top-up (curated packs legitimately contain NASA, SETI).
+_JUNK_TOPIC_MARKERS = ("shorts", "tiktok", "compilation", "episode",
+                       "facts show", "part 1", "part 2")
+
+
+def _looks_junky(topic: str, strict_caps: bool = True) -> bool:
+    """True when a topic line is platform junk, not a video topic (tested)."""
+    low = topic.lower()
+    if "#" in low:
+        return True
+    if any(marker in low for marker in _JUNK_TOPIC_MARKERS):
+        return True
+    if strict_caps and any(word.isupper() and len(word) >= 3
+                           for word in topic.split()):
+        return True
+    return False
+
+
 def pop_fresh_topic(path: Path, used: list[str]) -> str | None:
     """Pop the first backlog topic the channel hasn't covered yet.
 
@@ -115,10 +136,14 @@ def pop_fresh_topic(path: Path, used: list[str]) -> str | None:
         return None
     fresh: str | None = None
     stale = 0
+    junk = 0
     rest: list[str] = []
     for topic in topics:
         if any(is_same_topic(topic, old) for old in used):
             stale += 1
+            continue
+        if _looks_junky(topic, strict_caps=False):
+            junk += 1
             continue
         if fresh is None:
             fresh = topic
@@ -126,6 +151,8 @@ def pop_fresh_topic(path: Path, used: list[str]) -> str | None:
         rest.append(topic)
     if stale:
         print(f"  [topics] dropped {stale} stale backlog topic(s) already covered.")
+    if junk:
+        print(f"  [topics] dropped {junk} junk topic(s) (hashtags/platform words).")
     save_backlog(path, rest)
     return fresh
 
@@ -141,6 +168,13 @@ Propose {count} SPECIFIC video topics. Each must be one concrete story, fact or
 question that fills a {cfg.target_seconds}-second Short — narrow and curiosity-driven.
 "Facts about X" is banned; proven shapes: "why X does Y", "the X that Y",
 "what happens when X", "how X really works".
+TONE: documentary curiosity, never hype — these are video TOPICS (ideas),
+not video titles. Match this register:
+  The shrimp that punches faster than a speeding bullet
+  Why wombat poop comes out as perfect cubes
+  How lie detectors actually work and why courts reject them
+BANNED: hashtags, channel names, exclamation marks, words in ALL CAPS, and
+the meta-words "Shorts", "TikTok", "show", "episode", "part 1", "compilation".
 Mix TWO flavours evenly: (1) pure-curiosity candy (animal superpowers, bizarre
 places, everyday mysteries) and (2) genuinely USEFUL explainers (how everyday
 systems work, body and brain mechanics, food science, money).
@@ -160,6 +194,8 @@ def _clean(raw: str, existing: list[str]) -> list[str]:
     for line in raw.splitlines():
         text = line.strip().lstrip("0123456789.)-•* \t").strip().strip("\"'").strip()
         if not text or len(text) > 140:
+            continue
+        if _looks_junky(text):
             continue
         if any(is_same_topic(text, old) for old in seen):
             continue
