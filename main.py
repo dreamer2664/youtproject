@@ -434,9 +434,17 @@ def cmd_generate(cfg, args) -> int:
             )
 
             print("  2/5 voiceover")
-            from voiceover import generate_scene_audio
+            from voiceover import (
+                generate_scene_audio, premium_budget_allows, record_premium_use,
+            )
 
-            audio_paths, timings = generate_scene_audio(script, cfg, job_dir / "audio")
+            use_premium = premium_budget_allows(cfg)
+            if not use_premium:
+                print("  [voice] today's premium budget is spent — edge-tts")
+            audio_paths, timings = generate_scene_audio(
+                script, cfg, job_dir / "audio", allow_premium=use_premium)
+            if use_premium:
+                record_premium_use(cfg)
 
             print("  3/5 images")
             from images import generate_scene_images

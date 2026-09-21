@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -38,8 +39,59 @@ class WordTiming:
     end: float
 
 
+# Keys that answered 401 (revoked/dead) — dropped for the rest of the
+# process so later scenes stop re-trying them (live log 2026-09-21: one
+# dead key was retried every scene, 3 wasted calls per render). A 429 is
+# quota, not death — those keys stay for the next day.
+_DEAD_ELEVEN_KEYS: set[str] = set()
+
+
+def _live_eleven_keys(cfg: Config) -> list[str]:
+    """Configured ElevenLabs keys minus this run's dead ones (pure, tested)."""
+    return [key for key in cfg.elevenlabs_api_keys
+            if key not in _DEAD_ELEVEN_KEYS]
+
+
 def _elevenlabs_available(cfg: Config) -> bool:
-    return bool(cfg.elevenlabs_api_keys and cfg.elevenlabs_voice_id)
+    return bool(_live_eleven_keys(cfg) and cfg.elevenlabs_voice_id)
+
+
+def _today() -> str:
+    from datetime import datetime
+
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def _budget_path(cfg: Config) -> Path:
+    return Path(cfg.work_dir) / "voice_budget.json"
+
+
+def _read_budget(path: Path, today: str) -> int:
+    """Premium videos already spent today; stale or missing file = 0 (tested)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return int(data.get("used", 0)) if data.get("date") == today else 0
+    except Exception:
+        return 0
+
+
+def premium_budget_allows(cfg: Config) -> bool:
+    """True when today's ElevenLabs video budget is not spent (tested).
+
+    ai.premium_voices caps how many videos per DAY use the premium voice
+    in the generate/batch lanes; the rest render on edge-tts so a
+    two-channel, 6-a-day cadence stays inside free-tier characters.
+    """
+    return _read_budget(_budget_path(cfg), _today()) < max(0, cfg.premium_voices)
+
+
+def record_premium_use(cfg: Config) -> None:
+    """Count one premium-voice video against today's budget."""
+    path = _budget_path(cfg)
+    used = _read_budget(path, _today()) + 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"date": _today(), "used": used}),
+                    encoding="utf-8")
 
 
 def _elevenlabs_save(data: dict, dest: Path) -> list[WordTiming]:
@@ -74,7 +126,7 @@ def _elevenlabs_save(data: dict, dest: Path) -> list[WordTiming]:
 def _elevenlabs_synth(text: str, dest: Path, cfg: Config) -> list[WordTiming]:
     """Premium voice with word timings. Raises when every key fails."""
     last = "no keys tried"
-    for key in cfg.elevenlabs_api_keys:
+    for key in _live_eleven_keys(cfg):
         try:
             response = requests.post(
                 f"{ELEVEN_TTS_URL}/{cfg.elevenlabs_voice_id}/with-timestamps",
@@ -99,8 +151,13 @@ def _elevenlabs_synth(text: str, dest: Path, cfg: Config) -> list[WordTiming]:
             return _elevenlabs_save(data, dest)
         last = f"HTTP {response.status_code}: {response.text[:150]}"
         if response.status_code in (401, 429):
-            print(f"  [voice] elevenlabs key ...{key[-4:]} failed "
-                  f"({response.status_code}) — next key")
+            if response.status_code == 401:
+                _DEAD_ELEVEN_KEYS.add(key)
+                print(f"  [voice] elevenlabs key ...{key[-4:]} is dead — "
+                      f"dropped for this run")
+            else:
+                print(f"  [voice] elevenlabs key ...{key[-4:]} failed "
+                      f"(429 quota) — next key")
             continue
         # Any other status is the request/voice, not the key — stop.
         break
@@ -153,7 +210,8 @@ async def _synth(text: str, voice: str, rate: str, dest: Path) -> list[WordTimin
 
 
 def synthesise(
-    text: str, dest: Path, cfg: Config, attempts: int = 3
+    text: str, dest: Path, cfg: Config, attempts: int = 3,
+    allow_premium: bool = True,
 ) -> tuple[Path, list[WordTiming]]:
     """Render narration to an MP3 plus word timings.
 
@@ -162,7 +220,7 @@ def synthesise(
     """
     text = scrub_narration(text)  # same scrub as captions: timings stay aligned
     dest.parent.mkdir(parents=True, exist_ok=True)
-    if _elevenlabs_available(cfg):
+    if allow_premium and _elevenlabs_available(cfg):
         try:
             return dest, _elevenlabs_synth(text, dest, cfg)
         except Exception as exc:
@@ -196,7 +254,7 @@ def synthesise(
 
 
 def generate_scene_audio(
-    script, cfg: Config, out_dir: Path
+    script, cfg: Config, out_dir: Path, allow_premium: bool = True,
 ) -> tuple[list[Path], list[list[tuple[float, float]]]]:
     """Render one MP3 per scene. Returns (paths, timings) in scene order.
 
@@ -206,7 +264,7 @@ def generate_scene_audio(
     paths: list[Path] = []
     all_timings: list[list[tuple[float, float]]] = []
     total = len(script.scenes)
-    if _elevenlabs_available(cfg):
+    if allow_premium and _elevenlabs_available(cfg):
         print(f"  [voice] elevenlabs {cfg.elevenlabs_model} "
               f"(voice {cfg.elevenlabs_voice_id[:8]}…)")
     else:
@@ -215,7 +273,8 @@ def generate_scene_audio(
     for index, scene in enumerate(script.scenes, start=1):
         dest = out_dir / f"scene_{index:02d}.mp3"
         print(f"  [voice] {index}/{total}: {len(scene.narration.split())} words")
-        _, timings = synthesise(scene.narration, dest, cfg)
+        _, timings = synthesise(scene.narration, dest, cfg,
+                                allow_premium=allow_premium)
         paths.append(dest)
         all_timings.append([(t.start, t.end) for t in timings])
 

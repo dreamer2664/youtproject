@@ -2006,6 +2006,45 @@ def t_shot_bounds():
         and abs(ends[1] - 1.9) < 1e-6, ends
 
 
+def t_voice_budget():
+    import tempfile
+    from pathlib import Path
+
+    import voiceover
+    from voiceover import (_read_budget, premium_budget_allows,
+                           record_premium_use)
+
+    class _Cfg:
+        work_dir = ""
+        premium_voices = 1
+
+    with tempfile.TemporaryDirectory() as tmp:
+        _Cfg.work_dir = tmp
+        path = Path(tmp) / "voice_budget.json"
+        assert premium_budget_allows(_Cfg) is True      # fresh day
+        record_premium_use(_Cfg)
+        assert _read_budget(path, voiceover._today()) == 1
+        assert premium_budget_allows(_Cfg) is False     # budget of 1 spent
+        path.write_text('{"date": "2000-01-01", "used": 9}')
+        assert premium_budget_allows(_Cfg) is True      # stale date resets
+        _Cfg.premium_voices = 0
+        assert premium_budget_allows(_Cfg) is False     # 0 = edge-tts only
+
+    # Dead keys (401) leave the pool for the rest of the run.
+    voiceover._DEAD_ELEVEN_KEYS.clear()
+
+    class _KCfg:
+        elevenlabs_api_keys = ["kAAA", "kBBB"]
+        elevenlabs_voice_id = "voice"
+
+    assert voiceover._elevenlabs_available(_KCfg) is True
+    voiceover._DEAD_ELEVEN_KEYS.add("kAAA")
+    assert voiceover._live_eleven_keys(_KCfg) == ["kBBB"]
+    voiceover._DEAD_ELEVEN_KEYS.add("kBBB")
+    assert voiceover._elevenlabs_available(_KCfg) is False  # all dead
+    voiceover._DEAD_ELEVEN_KEYS.clear()
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3188,6 +3227,7 @@ def main() -> int:
         ("image_speed", t_image_speed),
         ("shot_plan", t_shot_plan),
         ("shot_bounds", t_shot_bounds),
+        ("voice_budget", t_voice_budget),
         ("scene_sentences", t_scene_sentences),
         ("music_audible", t_music_audible),
         ("title_punch", t_title_punch),

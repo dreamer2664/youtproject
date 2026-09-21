@@ -73,6 +73,10 @@ DEFAULTS: dict[str, Any] = {
         # Voice ID from the ElevenLabs voice library (e.g. Sarah:
         # EXAVITQu4vr4xnSDxMaL). Empty = ElevenLabs stays off.
         "elevenlabs_voice_id": "",
+        # How many videos per DAY may use ElevenLabs in generate/batch
+        # (the crew lane keeps its own crew.premium_voices budget). 0 =
+        # edge-tts everywhere. Each key is ~10k chars/month (~11 Shorts).
+        "premium_voices": 1,
         "elevenlabs_model": "eleven_turbo_v2_5",
         # Delivery tuning (voice_settings): steady-but-alive narration.
         # Higher stability drones, lower babbles; lower similarity smooths
@@ -478,6 +482,14 @@ class Config:
                 "digest_hour", 21))))
         except (ValueError, TypeError):
             return 21
+
+    @property
+    def premium_voices(self) -> int:
+        """Daily ElevenLabs video budget for generate/batch (0-6, default 1)."""
+        try:
+            return max(0, min(6, int(self.data["ai"].get("premium_voices", 1))))
+        except (TypeError, ValueError):
+            return 1
 
     @property
     def crew_premium_voices(self) -> int:
