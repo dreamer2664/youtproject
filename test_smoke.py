@@ -2090,6 +2090,26 @@ def t_pixabay():
     assert cfg.pixabay_api_keys == ["k1", "k2", "k3"]
 
 
+def t_deepseek():
+    from deepseek import DeepSeekProvider
+    from scriptgen import get_provider
+
+    provider = DeepSeekProvider(["sk-test"], "")
+    assert provider.model == "deepseek-flash"
+    assert "deepseek-v4-pro" in provider.FALLBACK_MODELS
+    assert provider.api_url == "https://api.deepseek.com/chat/completions"
+    assert DeepSeekProvider._headers(provider, "k") == {"Authorization": "Bearer k"}
+    # Key pool: list + legacy singular, deduped.
+    cfg = tmp_cfg()
+    cfg.data["ai"]["deepseek_api_keys"] = ["sk-1", "sk-2"]
+    cfg.data["ai"]["deepseek_api_key"] = "sk-1"
+    assert cfg.deepseek_api_keys == ["sk-1", "sk-2"]
+    assert cfg.deepseek_model == "deepseek-flash"
+    # The chain picks it up when keys exist (template stays last).
+    names = [name for name, _ in get_provider(cfg).chain]
+    assert "deepseek" in names and names[-1] == "template"
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3274,6 +3294,7 @@ def main() -> int:
         ("shot_bounds", t_shot_bounds),
         ("voice_budget", t_voice_budget),
         ("pixabay", t_pixabay),
+        ("deepseek", t_deepseek),
         ("scene_sentences", t_scene_sentences),
         ("music_audible", t_music_audible),
         ("title_punch", t_title_punch),

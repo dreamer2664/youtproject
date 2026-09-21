@@ -150,6 +150,10 @@ DEFAULTS: dict[str, Any] = {
         # last LLM resort before the offline template. Env: OPENROUTER_KEYS
         # (space/comma-separated) wins, else OPENROUTER_API_KEY (single).
         "openrouter_api_keys": [],
+        # DeepSeek (https://platform.deepseek.com) — free-tier LLM lane
+        # after OpenRouter in the chain. Env: DEEPSEEK_KEYS (comma-separated).
+        "deepseek_api_keys": [],
+        "deepseek_model": "deepseek-flash",
         "openrouter_model": "nvidia/nemotron-3-ultra-550b-a55b:free",
         # Azure OpenAI on the $100 student credit (no card, credit can't
         # overrun — exhausted credit disables services, no bill can appear).
@@ -1007,6 +1011,28 @@ class Config:
             return max(1, min(6, int(self.data["ai"].get("image_workers", 3))))
         except (ValueError, TypeError):
             return 3
+
+    @property
+    def deepseek_api_keys(self) -> list[str]:
+        """All DeepSeek keys: env, ai.deepseek_api_keys, legacy single."""
+        env = (os.environ.get("DEEPSEEK_KEYS") or "").strip()
+        keys = [k for chunk in env.split(",") for k in (chunk.strip(),)
+                if k] if env else []
+        raw = self.data["ai"].get("deepseek_api_keys") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        for key in raw:
+            text = str(key).strip()
+            if text and text not in keys:
+                keys.append(text)
+        legacy = str(self.data["ai"].get("deepseek_api_key") or "").strip()
+        if legacy and legacy not in keys:
+            keys.append(legacy)
+        return keys
+
+    @property
+    def deepseek_model(self) -> str:
+        return str(self.data["ai"].get("deepseek_model") or "deepseek-flash")
 
     @property
     def pixabay_api_key(self) -> str:

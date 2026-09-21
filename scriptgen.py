@@ -827,9 +827,11 @@ class ChainedProvider:
 def get_provider(cfg: Config) -> ScriptProvider:
     """Primary + fallbacks as a chain; template is always last, never fatal."""
     primary = cfg.ai_provider
-    if primary not in ("azure", "gemini", "groq", "openrouter", "pollinations", "template"):
+    if primary not in ("azure", "gemini", "groq", "openrouter", "deepseek",
+                   "pollinations", "template"):
         primary = "gemini"
-    order = [primary] + [name for name in ("azure", "gemini", "groq", "openrouter", "pollinations", "template")
+    order = [primary] + [name for name in ("azure", "gemini", "groq", "openrouter",
+                                           "deepseek", "pollinations", "template")
                          if name != primary]
     chain: list[tuple[str, object]] = []
     for name in order:
@@ -860,6 +862,10 @@ def get_provider(cfg: Config) -> ScriptProvider:
             from groq import GroqProvider
 
             chain.append(("groq", GroqProvider(cfg.groq_api_keys, cfg.groq_model)))
+        elif name == "deepseek" and cfg.deepseek_api_keys:
+            from deepseek import DeepSeekProvider
+            chain.append(("deepseek", DeepSeekProvider(
+                cfg.deepseek_api_keys, cfg.deepseek_model)))
         elif name == "openrouter" and cfg.openrouter_api_keys:
             from openrouter import OpenRouterProvider
 
