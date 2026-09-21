@@ -1838,9 +1838,16 @@ def t_title_optimize():
 
 
 def t_clipper():
-    from clipper import (Candidate, clip_words, crop_filter, frame_times,
-                         parse_candidates, pick_title, plan_chunks,
-                         transcript_lines, write_kit)
+    from clipper import (Candidate, clip_words, crop_filter, fmt_progress,
+                         frame_times, parse_candidates, pick_title,
+                         plan_chunks, transcript_lines, write_kit)
+
+    # Download progress line: knowns, unknowns, ETA formatting.
+    assert fmt_progress(50, 200, 4e6, 30) == \
+        "downloading: 25% at 4.0 MB/s, ETA 0:30"
+    assert fmt_progress(0, 0, 0, None) == "downloading: ?% at ? MB/s, ETA ?"
+    assert fmt_progress(90, 100, 2.5e6, 75) == \
+        "downloading: 90% at 2.5 MB/s, ETA 1:15"
 
     # Chunking: 25-min cap, exact cover.
     assert plan_chunks(600) == [600]

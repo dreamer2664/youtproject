@@ -79,14 +79,62 @@ def download_source(url: str, work_dir: Path) -> tuple[Path, dict]:
             if d.get("status") == "finished":
                 self.info = d.get("info_dict") or {}
 
+    class _Logger:
+        """Surface yt-dlp warnings/errors with actionable advice.
+
+        Live case 2026-09-21: a VOD download ran silent for minutes (the
+        no-JS-runtime warning was invisible under quiet mode) and looked
+        exactly like a hang.
+        """
+
+        def __init__(self):
+            self.notes: set[str] = set()
+
+        def debug(self, msg):  # noqa: D102 - chatter stays hidden
+            pass
+
+        def info(self, msg):  # noqa: D102
+            pass
+
+        def warning(self, msg):
+            if "JavaScript runtime" in str(msg) and "js" not in self.notes:
+                self.notes.add("js")
+                print("  [clip] NOTE: no JS runtime found — YouTube "
+                      "extraction is degraded (formats may be missing). "
+                      "One-time fix: winget install DenoLand.Deno "
+                      "(then restart the shell).")
+
+        def error(self, msg):
+            print(f"  [clip] yt-dlp error: {str(msg)[:160]}")
+
+    class _Progress:
+        """A progress line every ~10s: silence reads as a hang."""
+
+        def __init__(self):
+            self.last = 0.0
+
+        def __call__(self, d):
+            if d.get("status") != "downloading":
+                return
+            import time
+
+            now = time.time()
+            if now - self.last < 10:
+                return
+            self.last = now
+            print("  [clip] "
+                  + fmt_progress(d.get("downloaded_bytes") or 0,
+                                 d.get("total_bytes")
+                                 or d.get("total_bytes_estimate") or 0,
+                                 d.get("speed") or 0, d.get("eta")))
+
     hook = _Meta()
     opts = {
         "format": "bv*[height<=1080]+ba/b[height<=1080]/b",
         "outtmpl": str(work_dir / "source.%(ext)s"),
         "merge_output_format": "mp4",
-        "quiet": True,
-        "noprogress": True,
-        "progress_hooks": [hook],
+        "logger": _Logger(),
+        "progress_hooks": [hook, _Progress()],
     }
     print(f"  [clip] downloading (<=1080p): {url}")
     try:
@@ -107,6 +155,19 @@ def download_source(url: str, work_dir: Path) -> tuple[Path, dict]:
         "channel": str(meta.get("channel") or meta.get("uploader") or "unknown"),
         "url": str(meta.get("webpage_url") or url),
     }
+
+
+def fmt_progress(done: int, total: int, speed: float,
+                 eta) -> str:
+    """One download progress line (pure, tested): '25% at 4.0 MB/s, ETA 0:30'."""
+    pct = f"{done / total * 100:.0f}%" if total else "?%"
+    speed_txt = f"{speed / 1e6:.1f} MB/s" if speed else "? MB/s"
+    try:
+        eta_s = int(eta)
+        eta_txt = f"{eta_s // 60}:{eta_s % 60:02d}"
+    except (TypeError, ValueError):
+        eta_txt = "?"
+    return f"downloading: {pct} at {speed_txt}, ETA {eta_txt}"
 
 
 def probe_dims(src: Path) -> tuple[int, int]:
