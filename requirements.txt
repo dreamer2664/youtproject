@@ -8,3 +8,4 @@ Pillow>=10.0.0,<12
 numpy>=1.26.0,<3
 sentry-sdk>=2,<3
 tzdata>=2024.1,<2027  # Windows: zoneinfo database for quota reset times
+yt-dlp>=2026.1.1,<2027  # clip lane: source video download\n

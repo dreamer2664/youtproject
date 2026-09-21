@@ -1026,6 +1026,22 @@ def cmd_jarvis(cfg, args) -> int:
     return 0
 
 
+def cmd_clip(cfg, args) -> int:
+    """Clip lane: one source video -> N subtitled vertical clips."""
+    print(BANNER)
+    from clipper import ClipError, run_clip
+
+    try:
+        return run_clip(cfg, url=args.url or "", file=args.file or "",
+                        max_clips=args.max_clips, min_len=args.min_len,
+                        max_len=args.max_len, use_vision=not args.no_vision,
+                        keep_work=args.keep_work,
+                        out_dir=Path(args.out) if args.out else None)
+    except ClipError as exc:
+        print(f"\n  clipping failed: {exc}")
+        return 1
+
+
 def cmd_bot(cfg, args) -> int:
     """Poll Telegram for topics; render each; send back the finished video."""
     print(BANNER)
@@ -1275,6 +1291,21 @@ def main() -> int:
                    help="never auto-refill the backlog")
     p.add_argument("--dry-run", action="store_true",
                    help="report what would render, then stop")
+    p = sub.add_parser("clip", help="turn a long video into subtitled vertical clips")
+    p.add_argument("--url", help="YouTube link of the source video")
+    p.add_argument("--file", help="local video file instead of a link")
+    p.add_argument("--max-clips", type=int, default=6,
+                   help="how many clips to keep (default 6)")
+    p.add_argument("--min-len", type=int, default=20,
+                   help="minimum clip seconds (default 20)")
+    p.add_argument("--max-len", type=int, default=45,
+                   help="maximum clip seconds (default 45)")
+    p.add_argument("--no-vision", action="store_true",
+                   help="skip the frame quality check")
+    p.add_argument("--keep-work", action="store_true",
+                   help="keep intermediate files (audio, frames, .ass)")
+    p.add_argument("--out", default=None, help="output folder (default clips/)")
+
     p = sub.add_parser("bot", help="render videos from your phone via Telegram")
     p.add_argument("--seconds", type=int, help="target length for bot renders")
     p.add_argument("--format", choices=["landscape", "portrait"],
@@ -1363,6 +1394,7 @@ def main() -> int:
         "batch": cmd_batch,
         "topics": cmd_topics,
         "schedule": cmd_schedule,
+        "clip": cmd_clip,
         "bot": cmd_bot,
         "jarvis": cmd_jarvis,
         "stats": cmd_stats,

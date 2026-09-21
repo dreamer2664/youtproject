@@ -1837,6 +1837,66 @@ def t_title_optimize():
     assert fp.calls == 0
 
 
+def t_clipper():
+    from clipper import (Candidate, clip_words, crop_filter, frame_times,
+                         parse_candidates, pick_title, plan_chunks,
+                         transcript_lines, write_kit)
+
+    # Chunking: 25-min cap, exact cover.
+    assert plan_chunks(600) == [600]
+    assert plan_chunks(3600) == [1500, 1500, 600]
+    assert plan_chunks(0) == []
+    # Timestamped transcript lines.
+    words = ([{"word": w, "start": 10 + i * 2.0, "end": 11 + i * 2.0}
+              for i, w in enumerate("one two three four five".split())])
+    lines = transcript_lines(words)
+    assert lines[0].startswith("[0:10]") and "one two three" in lines[0]
+    # Candidate parsing: clamps, drops, overlap-dedupe, cap.
+    raw = json.dumps({"clips": [
+        {"start": 30, "end": 80, "hook": "h1", "title": "t1"},   # 50s -> clamp 45
+        {"start": -5, "end": 30, "hook": "h2", "title": "t2"},   # clamp start 0
+        {"start": 40, "end": 55, "hook": "overlap", "title": "x"},  # overlaps #1
+        {"start": 200, "end": 210, "hook": "too short", "title": "x"},
+        {"start": 100, "end": 130, "hook": "h3", "title": "t3"},
+        {"start": 300, "end": 340, "hook": "h4", "title": "t4"},
+        {"start": 500, "end": 545, "hook": "h5", "title": "t5"},
+    ]})
+    cands = parse_candidates(raw, duration=600, max_clips=4)
+    assert [(c.start, c.end) for c in cands] == [(30, 75), (0, 30), (100, 130), (300, 340)]
+    assert parse_candidates("not json at all", 600, 4) == []
+    assert parse_candidates('{"clips": []}', 600, 4) == []
+    # Frame times: three samples inside the window.
+    cand = Candidate(100, 140)
+    assert frame_times(cand) == [101, 120, 139]
+    # Crop: landscape gets center-cropped to vertical, portrait just scales.
+    assert "crop=ih*9/16:ih" in crop_filter(1920, 1080)
+    assert crop_filter(1080, 1920) == "scale=1080:1920"
+    # Window words become clip-relative.
+    window = clip_words(words, start=12, end=20)
+    assert window and window[0]["start"] < 0 or window[0]["start"] >= 0
+    assert all(-1e-9 <= w["start"] <= 8 + 1e-9 for w in window)
+    # Title pick: keyword-rich beats vague (scorer from the title system).
+    words_in = [{"word": w, "start": i, "end": i + 1} for i, w in enumerate(
+        "octopuses have three hearts and blue blood pumping".split())]
+    cand = Candidate(0, 30, hook="h", title_idea="The Great Ocean Mystery")
+    title = pick_title(cand, words_in)
+    assert "Octopus" in title or "octopus" in title.lower(), title
+    # Kit: mp4 + title + credit files.
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        clip = Path(tmp) / "clip_01.mp4"
+        clip.write_bytes(b"fake")
+        kit = write_kit(clip, "Why Octopuses Have Three Hearts", cand,
+                        {"title": "Big Stream", "channel": "Streamer",
+                         "url": "https://youtu.be/x"}, Path(tmp) / "kits")
+        assert (kit / "clip_01.mp4").exists()
+        assert (kit / "TITLE.txt").read_text(encoding="utf-8") == \
+            "Why Octopuses Have Three Hearts"
+        desc = (kit / "DESCRIPTION.txt").read_text(encoding="utf-8")
+        assert "youtu.be/x" in desc and "Streamer" in desc
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3015,6 +3075,7 @@ def main() -> int:
         ("music_audit", t_music_audit),
         ("topic_hygiene", t_topic_hygiene),
         ("title_optimize", t_title_optimize),
+        ("clipper", t_clipper),
         ("scene_sentences", t_scene_sentences),
         ("music_audible", t_music_audible),
         ("title_punch", t_title_punch),
