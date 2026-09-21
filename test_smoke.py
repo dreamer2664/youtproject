@@ -473,12 +473,13 @@ def t_image_chain():
 
     cfg = tmp_cfg()
     assert cfg.image_provider == "pexels"
-    assert cfg.image_fallbacks == ["pollinations", "gemini"]
+    assert cfg.image_fallbacks == ["pixabay", "pollinations", "gemini"]
     assert cfg.image_model == "flux"
-    assert resolve_chain(cfg) == ["pexels", "pollinations", "gemini"]
+    assert resolve_chain(cfg) == ["pexels", "pixabay", "pollinations", "gemini"]
     assert provider_ready("pollinations", cfg) == (True, "anonymous")
     assert provider_ready("gemini", cfg)[0] is False
     assert provider_ready("pexels", cfg) == (False, "no Pexels key")
+    assert provider_ready("pixabay", cfg) == (False, "no Pixabay key")
     assert provider_ready("huggingface", cfg) == (False, "unknown provider")
     assert "skipped" in describe_chain(cfg)
     cfg.data["ai"]["image_provider"] = "nonsense"  # garbage -> pollinations
@@ -2045,6 +2046,50 @@ def t_voice_budget():
     voiceover._DEAD_ELEVEN_KEYS.clear()
 
 
+def t_pixabay():
+    from config import IMAGE_PROVIDERS
+    from images import provider_ready
+    from stock import _pixabay_photo, pixabay_params
+
+    params = pixabay_params("KEY", "frigatebird ocean", portrait=True, page=2)
+    assert params["key"] == "KEY" and params["q"] == "frigatebird ocean"
+    assert params["orientation"] == "vertical"
+    assert params["safesearch"] == "true" and params["image_type"] == "photo"
+    assert pixabay_params("K", "x", portrait=False, page=1)["orientation"] == "horizontal"
+
+    hit = {"id": 123, "user": "carlo", "tags": "bird, ocean, wings",
+           "largeImageURL": "https://pixabay.com/large.jpg",
+           "webformatURL": "https://pixabay.com/web.jpg"}
+    photo = _pixabay_photo(hit)
+    assert photo["id"] == 123 and photo["photographer"] == "carlo"
+    assert photo["src"]["portrait"].endswith("large.jpg")
+    fallback = _pixabay_photo({"id": 5, "tags": "x",
+                               "webformatURL": "https://pixabay.com/w.jpg"})
+    assert fallback["src"]["portrait"].endswith("w.jpg")
+
+    assert "pixabay" in IMAGE_PROVIDERS
+
+    class _C:
+        pixabay_api_key = "k"
+
+    ok, _ = provider_ready("pixabay", _C)
+    assert ok is True
+
+    class _D:
+        pixabay_api_key = ""
+
+    ok2, why = provider_ready("pixabay", _D)
+    assert ok2 is False and "Pixabay" in why
+
+    # Key pool: list + legacy singular, deduped (mirrors the Pexels pool).
+    cfg = tmp_cfg()
+    cfg.data["ai"]["pixabay_api_keys"] = ["k1", "k2"]
+    cfg.data["ai"]["pixabay_api_key"] = "k1"
+    assert cfg.pixabay_api_keys == ["k1", "k2"]
+    cfg.data["ai"]["pixabay_api_key"] = "k3"
+    assert cfg.pixabay_api_keys == ["k1", "k2", "k3"]
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3228,6 +3273,7 @@ def main() -> int:
         ("shot_plan", t_shot_plan),
         ("shot_bounds", t_shot_bounds),
         ("voice_budget", t_voice_budget),
+        ("pixabay", t_pixabay),
         ("scene_sentences", t_scene_sentences),
         ("music_audible", t_music_audible),
         ("title_punch", t_title_punch),

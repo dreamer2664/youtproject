@@ -219,3 +219,136 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
             last_error = f"vision QC rejected all candidates ({rejected})"
             continue
     raise RuntimeError(f"pexels failed after {attempts} attempts: {last_error}")
+
+
+# --- Pixabay (second stock-photo lane) ------------------------------------
+
+PIXABAY_URL = "https://pixabay.com/api/"
+
+
+def pixabay_params(key: str, query: str, *, portrait: bool, page: int,
+                   per_page: int = 5) -> dict:
+    """Query params for the Pixabay photo search (pure, tested)."""
+    return {
+        "key": key,
+        "q": query,
+        "image_type": "photo",
+        "orientation": "vertical" if portrait else "horizontal",
+        "safesearch": "true",
+        "per_page": per_page,
+        "page": page,
+    }
+
+
+def _pixabay_photo(hit: dict) -> dict:
+    """Map a Pixabay hit onto the Pexels photo shape (pure, tested).
+
+    largeImageURL (~1280-4000px) keeps 1080x1920 crisp after the 2x
+    pre-upscale; webformatURL (960px) is the fallback when it's withheld.
+    """
+    url = hit.get("largeImageURL") or hit.get("webformatURL") or ""
+    return {
+        "id": hit.get("id"),
+        "photographer": hit.get("user") or "unknown",
+        "alt": (hit.get("tags") or "").replace(",", " ").strip(),
+        "src": {
+            "portrait": url,
+            "landscape": url,
+            "large": hit.get("largeImageURL"),
+            "medium": hit.get("webformatURL"),
+            "original": hit.get("largeImageURL"),
+        },
+    }
+
+
+def pixabay_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path:
+    """Download one Pixabay stock photo. Raises on total failure.
+
+    Mirrors pexels_fetch (key pool, ranked candidates, vision QC over the
+    top three) — Pixabay's library only partly overlaps Pexels, so it
+    catches the subjects Pexels misses (live case 2026-09-21: 8 real
+    frigatebird photos here vs tropicbirds/bats there).
+    """
+    from director import plan_query
+
+    keys = list(cfg.pixabay_api_keys)
+    if not keys:
+        raise RuntimeError("no Pixabay key")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    query = plan_query(prompt, cfg)
+    portrait = cfg.format == "portrait"
+    last_error = "unknown"
+    for attempt in range(1, attempts + 1):
+        page = 1 if attempt == 1 else (seed + attempt) % 4 + 1
+        key = keys[0]
+        try:
+            response = requests.get(
+                PIXABAY_URL,
+                params=pixabay_params(key, query, portrait=portrait,
+                                      page=page),
+                timeout=30)
+        except Exception as exc:
+            last_error = str(exc)[:120]
+            time.sleep(2 * attempt)
+            continue
+        keystats.bump("pixabay", key, req=1)
+        if response.status_code in (401, 403) and len(keys) > 1:
+            keys.pop(0)  # bad key: the next one takes over
+            continue
+        if response.status_code == 429:
+            last_error = "HTTP 429 (Pixabay rate limit)"
+            if len(keys) > 1:
+                keys.append(keys.pop(0))
+                continue
+            time.sleep(min(120.0, 15.0 * 2 ** (attempt - 1)))
+            continue
+        if response.status_code != 200:
+            last_error = f"HTTP {response.status_code}: {response.text[:120]}"
+            time.sleep(2 * attempt)
+            continue
+        try:
+            hits = response.json().get("hits") or []
+        except ValueError:
+            hits = []
+        photos = [p for p in (_pixabay_photo(h) for h in hits) if p["id"]]
+        photos = filter_unsafe(photos)
+        if not photos:
+            if attempt == 1 and len(query.split()) > 1:
+                query = " ".join(query.split()[:2])
+                continue
+            raise RuntimeError(f"pixabay: no photos for {query!r}")
+        candidates = rank_photos(photos, query)
+        start = (seed + attempt) % len(candidates)
+        ordered = candidates[start:] + candidates[:start]
+        from vision import check_image
+        rejected = ""
+        for photo in ordered[:3]:
+            src = photo.get("src") or {}
+            url = (src.get("portrait") if portrait else src.get("landscape")) \
+                or src.get("large") or src.get("medium") or src.get("original")
+            if not url:
+                continue
+            try:
+                body = requests.get(url, timeout=60).content
+            except Exception as exc:
+                last_error = f"download failed: {exc}"[:120]
+                continue
+            if not _is_image(body):
+                last_error = f"download was not an image ({len(body)} bytes)"
+                continue
+            verdict = check_image(body, query, cfg,
+                                  photo_key=str(photo.get("id")))
+            if not (verdict["safe"] and verdict["relevant"]):
+                rejected = verdict["reason"] or "unsafe or off-topic"
+                print(f"  [image] vision QC rejected photo {photo.get('id')} "
+                      f"({rejected}) — next candidate")
+                continue
+            dest.write_bytes(body)
+            credit = photo.get("photographer") or "unknown"
+            print(f"  [image] pixabay: {query!r} (photo {photo.get('id')} "
+                  f"by {credit})")
+            return dest
+        if rejected:
+            last_error = f"vision QC rejected all candidates ({rejected})"
+            continue
+    raise RuntimeError(f"pixabay failed after {attempts} attempts: {last_error}")

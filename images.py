@@ -27,7 +27,7 @@ from pathlib import Path
 
 import requests
 
-from stock import pexels_fetch
+from stock import pexels_fetch, pixabay_fetch
 
 from config import IMAGE_PROVIDERS as PROVIDERS, Config
 
@@ -155,6 +155,8 @@ def provider_ready(name: str, cfg: Config) -> tuple[bool, str]:
                 "key present" if cfg.gemini_api_key else "no Gemini key")
     if name == "pexels":
         return (bool(cfg.pexels_api_key), "no Pexels key")
+    if name == "pixabay":
+        return (bool(cfg.pixabay_api_key), "no Pixabay key")
     return False, "unknown provider"
 
 
@@ -404,6 +406,7 @@ _FETCH = {
     "pollinations": _pollinations_fetch,
     "gemini": _gemini_fetch,
     "pexels": pexels_fetch,
+    "pixabay": pixabay_fetch,
 }
 
 

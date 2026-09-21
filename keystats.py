@@ -22,7 +22,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-ORDER = ["gemini", "groq", "openrouter", "elevenlabs", "pexels",
+ORDER = ["gemini", "groq", "openrouter", "elevenlabs", "pexels", "pixabay",
          "youtube", "pollinations"]
 
 # Free-tier limits, verified Sep 2026 (sources in CAPACITY.md).
@@ -50,6 +50,10 @@ LIMITS = {
         "title": "PEXELS",
         "hour": 200, "month": 20000, "unit": "requests",
         "rule": "200 requests/hour + 20,000/month per key"},
+    "pixabay": {
+        "title": "PIXABAY",
+        "hour": 6000, "unit": "requests",
+        "rule": "~100 requests/minute per key · no published monthly cap"},
     "youtube": {
         "title": "YOUTUBE DATA API",
         "day": 10000, "unit": "units",
@@ -170,7 +174,7 @@ def _window(provider: str, now: datetime) -> tuple[datetime, datetime, str]:
         else:
             reset = start.replace(month=start.month + 1)
         return (start, reset, reset.strftime("%d %b"))
-    if provider == "pexels":
+    if provider in ("pexels", "pixabay"):
         start = now.replace(minute=0, second=0, microsecond=0)
         reset = start + timedelta(hours=1)
         return (start, reset, reset.strftime("%H:%M"))
@@ -193,6 +197,8 @@ def _configured_keys(cfg, provider: str) -> list[str]:
             return list(cfg.elevenlabs_api_keys)
         if provider == "pexels":
             return [cfg.pexels_api_key] if cfg.pexels_api_key else []
+        if provider == "pixabay":
+            return list(cfg.pixabay_api_keys)
         if provider == "youtube":
             return list(cfg.youtube_api_keys)
         if provider == "pollinations":
@@ -224,7 +230,7 @@ def build_status(cfg, now: datetime | None = None) -> str:
         keys = [k for k in _configured_keys(cfg, provider) if k]
         masks = [_mask(k) for k in keys]
         day = window_sum(events, provider, _window(provider, now)[0])
-        if provider == "pexels":
+        if provider in ("pexels", "pixabay"):
             hour = window_sum(events, provider,
                               now.replace(minute=0, second=0, microsecond=0))
         for mask in day:  # ledger-only keys (rotated out of config) still show
@@ -242,18 +248,18 @@ def build_status(cfg, now: datetime | None = None) -> str:
                 lines.append(
                     f"  {mask:<12} {_fmt_num(used)} chars this month   "
                     f"{_fmt_num(left)} left   resets ~{label}")
-            elif provider == "pexels":
+            elif provider in ("pexels", "pixabay"):
                 hour_row = (hour.get(mask) or {"req": 0})["req"]
                 hour_left = max(0, spec["hour"] - hour_row)
-                month_used = row["req"]
-                month_left = max(0, spec["month"] - month_used)
                 _, reset, label = _window(provider, now)
-                lines.append(
-                    f"  {mask:<12} {hour_row} this hour "
-                    f"({_fmt_num(hour_left)} left) · "
-                    f"{_fmt_num(month_used)} this month "
-                    f"({_fmt_num(month_left)} left) · "
-                    f"hour resets {label}")
+                line = (f"  {mask:<12} {hour_row} this hour "
+                        f"({_fmt_num(hour_left)} left)")
+                if spec.get("month"):
+                    month_used = row["req"]
+                    month_left = max(0, spec["month"] - month_used)
+                    line += (f" · {_fmt_num(month_used)} this month "
+                             f"({_fmt_num(month_left)} left)")
+                lines.append(line + f" · hour resets {label}")
             elif provider == "pollinations":
                 lines.append(f"  {mask:<12} {row['req']} requests today")
             else:

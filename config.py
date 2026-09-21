@@ -44,7 +44,7 @@ STYLES = ("photoreal", "cartoon", "stickman")
 # (Hugging Face was removed Sep 2026: they retired serverless image
 # inference — api-inference DNS is dead and the router answers "model
 # deprecated / not supported" for the FLUX/SDXL lanes.)
-IMAGE_PROVIDERS = ("pexels", "pollinations", "gemini")
+IMAGE_PROVIDERS = ("pexels", "pixabay", "pollinations", "gemini")
 
 # Buffer autopost targets (autopost.py). Order in config = posting order.
 BUFFER_SERVICES = ("youtube", "tiktok", "instagram")
@@ -168,7 +168,11 @@ DEFAULTS: dict[str, Any] = {
         # Primary image provider + ordered fallbacks (IMAGE_PROVIDERS).
         # Fallbacks missing their key are skipped automatically, never fatal.
         "image_provider": "pexels",
-        "image_fallbacks": ["pollinations", "gemini"],
+        # Pixabay key (https://pixabay.com/api/docs/) — second stock-photo
+        # lane after Pexels. List form: pixabay_api_keys: [k1, k2].
+        # Env: PIXABAY_API_KEYS (comma-separated).
+        "pixabay_api_key": "",
+        "image_fallbacks": ["pixabay", "pollinations", "gemini"],
         # Seconds to wait per image before giving up.
         "image_timeout": 90,
         # Pollinations model. "flux" is free and unlimited (recommended);
@@ -1003,6 +1007,29 @@ class Config:
             return max(1, min(6, int(self.data["ai"].get("image_workers", 3))))
         except (ValueError, TypeError):
             return 3
+
+    @property
+    def pixabay_api_key(self) -> str:
+        """Legacy single Pixabay key (ai.pixabay_api_key)."""
+        return str(self.data["ai"].get("pixabay_api_key") or "").strip()
+
+    @property
+    def pixabay_api_keys(self) -> list[str]:
+        """All Pixabay keys: env, ai.pixabay_api_keys, legacy single (tested)."""
+        env = (os.environ.get("PIXABAY_API_KEYS") or "").strip()
+        keys = [k for chunk in env.split(",") for k in (chunk.strip(),)
+                if k] if env else []
+        raw = self.data["ai"].get("pixabay_api_keys") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        for key in raw:
+            text = str(key).strip()
+            if text and text not in keys:
+                keys.append(text)
+        legacy = (self.pixabay_api_key or "").strip()
+        if legacy and legacy not in keys:
+            keys.append(legacy)
+        return keys
 
     @property
     def pexels_api_keys(self) -> list[str]:
