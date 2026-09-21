@@ -455,7 +455,9 @@ def cmd_generate(cfg, args) -> int:
             )
 
             segments, padded, durations = build_segments(
-                images_by_scene, audio_paths, job_dir, cfg
+                images_by_scene, audio_paths, job_dir, cfg,
+                narrations=[s.narration for s in script.scenes],
+                timings_per_scene=timings,
             )
             from bot import slugify
 

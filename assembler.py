@@ -235,11 +235,66 @@ def _encoder_selftest(name: str) -> bool:
     return test.returncode == 0
 
 
+# Shots shorter than this read as a glitch (pure, tested with the planner).
+MIN_SHOT_SECONDS = 1.0
+
+
+def plan_shot_boundaries(scene_seconds: float, count: int,
+                         sentence_ends: list[float],
+                         min_shot: float = MIN_SHOT_SECONDS) -> list[float]:
+    """Per-shot durations, snapping cuts to sentence pauses (pure, tested).
+
+    Fixed-interval cuts land mid-sentence — with frequent cuts that reads
+    as "it's not done talking and the new scene starts" (live complaint
+    2026-09-21). Each ideal cut snaps to the nearest sentence end within
+    half a spacing; a plan that would starve any shot below min_shot
+    falls back to uniform. Returns `count` durations summing to
+    scene_seconds.
+    """
+    if scene_seconds <= 0:
+        return [0.0] * max(count, 1)
+    if count <= 1:
+        return [scene_seconds]
+    uniform = [scene_seconds / count] * count
+    spacing = scene_seconds / count
+    ends = sorted(t for t in sentence_ends or []
+                  if 0 < t < scene_seconds)
+    cuts: list[float] = []
+    for i in range(1, count):
+        ideal = i * spacing
+        best, best_gap = ideal, spacing * 0.5
+        for end in ends:
+            if abs(end - ideal) < best_gap:
+                best, best_gap = end, abs(end - ideal)
+        cuts.append(best)
+    bounds = [0.0, *cuts, scene_seconds]
+    durations = [b - a for a, b in zip(bounds, bounds[1:])]
+    if min(durations) < min_shot:
+        return uniform
+    return [round(d, 3) for d in durations]
+
+
+def sentence_ends_from(narration: str, timings, head_tail: float,
+                       scene_seconds: float) -> list[float]:
+    """Sentence-end times inside a padded scene (pure adapter).
+
+    Reuses the caption word alignment (same pairing, same head_tail
+    offset), so cut times and subtitles always agree on where words are.
+    """
+    from subtitles import _word_times
+
+    words = _word_times(narration or "", list(timings or []),
+                        0.0, scene_seconds, head_tail)
+    return [t1 for word, _, t1 in words if word and word[-1] in ".!?\u2026"]
+
+
 def build_segments(
     images_by_scene: list[list[Path]],
     audio_paths: list[Path],
     work_dir: Path,
     cfg: Config,
+    narrations: list[str] | None = None,
+    timings_per_scene: list[list[tuple[float, float]]] | None = None,
 ) -> tuple[list[Path], list[Path], list[float]]:
     """Create video sub-segments and padded scene audio.
 
@@ -281,10 +336,18 @@ def build_segments(
         shots = scene_images or []
         if not shots:
             raise AssemblyError(f"scene {s_num} has no images")
-        part_seconds = scene_seconds / len(shots)
+        ends: list[float] = []
+        if narrations and timings_per_scene:
+            idx = s_num - 1
+            if idx < len(narrations) and idx < len(timings_per_scene):
+                ends = sentence_ends_from(narrations[idx],
+                                          timings_per_scene[idx],
+                                          HEAD_TAIL, scene_seconds)
+        part_durations = plan_shot_boundaries(scene_seconds, len(shots), ends)
 
         for slot, image in enumerate(shots, start=1):
             sub_index += 1
+            part_seconds = part_durations[slot - 1]
             frames = max(1, int(part_seconds * cfg.fps))
             zoom_delta = cfg.zoom - 1.0
             # Alternate push-in and push-out so the video does not feel repetitive.

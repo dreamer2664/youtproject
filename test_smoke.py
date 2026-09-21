@@ -1974,6 +1974,38 @@ def t_shot_plan():
     assert 80.0 / 9 <= 9.0  # capped case: 8.9s, the accepted ceiling
 
 
+def t_shot_bounds():
+    from assembler import (MIN_SHOT_SECONDS, plan_shot_boundaries,
+                           sentence_ends_from)
+
+    # No timings -> uniform (previous behaviour).
+    assert plan_shot_boundaries(30.0, 3, []) == [10.0, 10.0, 10.0]
+    # A sentence end near the ideal cut snaps to it.
+    assert plan_shot_boundaries(30.0, 3, [9.4]) == [9.4, 10.6, 10.0]
+    # Ends outside the tolerance window are ignored.
+    assert plan_shot_boundaries(30.0, 3, [3.0, 27.0]) == [10.0, 10.0, 10.0]
+    # Both cuts snapped to real sentence pauses.
+    assert plan_shot_boundaries(30.0, 3, [11.0, 19.5]) == [11.0, 8.5, 10.5]
+    # A plan that starves a shot below the floor falls back to uniform:
+    # both cuts snap to ends only 0.8s apart -> middle shot too short.
+    assert plan_shot_boundaries(30.0, 3, [14.9, 15.7]) == [10.0, 10.0, 10.0]
+    # Duration sum is preserved; single shots take the whole scene.
+    assert sum(plan_shot_boundaries(31.0, 4, [7.0, 14.0, 24.0])) == 31.0
+    assert plan_shot_boundaries(12.0, 1, [5.0]) == [12.0]
+    assert min(plan_shot_boundaries(30.0, 3, [11.0])) >= MIN_SHOT_SECONDS
+    # Sentence ends via the caption word alignment: "One. Two words here."
+    narration = "One. Two words here."
+    timings = [(0.0, 0.5), (0.6, 1.0), (1.0, 1.4), (1.4, 1.9), (2.0, 2.5)]
+    ends = sentence_ends_from(narration, timings, head_tail=0.1,
+                              scene_seconds=3.0)
+    assert ends == [0.6, 2.0], ends  # head_tail offset applied, "here." end
+    # No timings -> spread fallback still yields sentence ends
+    # (span 1.8s / 2 words, head 0.1 -> "One." ends 1.0, "Two." 1.9).
+    ends = sentence_ends_from("One. Two.", [], 0.1, 2.0)
+    assert len(ends) == 2 and abs(ends[0] - 1.0) < 1e-6 \
+        and abs(ends[1] - 1.9) < 1e-6, ends
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3155,6 +3187,7 @@ def main() -> int:
         ("clipper", t_clipper),
         ("image_speed", t_image_speed),
         ("shot_plan", t_shot_plan),
+        ("shot_bounds", t_shot_bounds),
         ("scene_sentences", t_scene_sentences),
         ("music_audible", t_music_audible),
         ("title_punch", t_title_punch),
