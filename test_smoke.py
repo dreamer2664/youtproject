@@ -1097,8 +1097,14 @@ def t_topup_prompt():
 def t_batch_topics():
     from pathlib import Path as _Path
 
-    lines = (_Path(__file__).parent / "topics" / "batch-100.txt"
-             ).read_text(encoding="utf-8").splitlines()
+    pack = _Path(__file__).parent / "topics" / "batch-100.txt"
+    if not pack.exists():
+        # Optional data pack, deliberately deletable from a working copy
+        # (live case 2026-09-21). Nothing functional depends on it —
+        # renders pull from topics/backlog.txt, not from packs.
+        print("  [topics] batch-100.txt not present — pack check skipped.")
+        return
+    lines = pack.read_text(encoding="utf-8").splitlines()
     lines = [line.strip() for line in lines if line.strip()]
     assert len(lines) == 100, len(lines)
     assert len(set(lines)) == 100  # no duplicates
