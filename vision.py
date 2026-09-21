@@ -37,9 +37,11 @@ URL = ("https://generativelanguage.googleapis.com/v1beta/models/"
 # previews/3.5 catch lite outages.
 MODELS = ["gemini-flash-lite-latest", "gemini-3-flash-preview",
           "gemini-3.5-flash"]
-MAX_REQUESTS = 4   # best-effort: a render never waits on QC retries
+# QC latency budget (live fix 2026-09-21: one image could stall 40s+ on
+# 429/503 retries — the image phase is only as fast as its slowest QC).
+MAX_REQUESTS = 3   # best-effort: a render never waits on QC retries
 BREAKER_TRIP = 3   # consecutive total failures -> stop calling this run
-TIMEOUT = 20
+TIMEOUT = 12
 
 PROMPT = """You are the safety and relevance filter for a family-friendly facts channel.
 This photo is a candidate for a video about: "{query}".

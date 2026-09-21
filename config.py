@@ -187,10 +187,11 @@ DEFAULTS: dict[str, Any] = {
         # per video, fails open, cached, never blocks a render. Needs a
         # Gemini key; off = current behaviour (alt-text ranking only).
         "vision_qc": True,
-        # Parallel image downloads. The built-in pacer spaces request starts
-        # (~1/15s anonymous Pollinations, ~1/5s with token), so extra workers
-        # only overlap download time. Keep at 1.
-        "image_workers": 1,
+        # Parallel image fetches. The pacer only gates Pollinations, so
+        # Pexels search+download+QC run genuinely parallel — 3 workers cut
+        # the image phase to ~1/3 (live fix 2026-09-21: sequential made one
+        # slow vision-QC stall every image behind it). 1-6.
+        "image_workers": 3,
     },
     "buffer": {
         # Free key from https://publish.buffer.com/settings/api — enables
@@ -987,9 +988,31 @@ class Config:
     @property
     def image_workers(self) -> int:
         try:
-            return max(1, min(6, int(self.data["ai"].get("image_workers", 1))))
+            return max(1, min(6, int(self.data["ai"].get("image_workers", 3))))
         except (ValueError, TypeError):
-            return 1
+            return 3
+
+    @property
+    def pexels_api_keys(self) -> list[str]:
+        """All Pexels keys: ai.pexels_api_keys list, legacy single, env.
+
+        Spare keys rotate on 429s in stock.py — Pexels caps each key at
+        200 requests/hour, so more keys = more headroom (2026-09-21).
+        """
+        env = (os.environ.get("PEXELS_API_KEYS") or "").strip()
+        keys = [k for chunk in env.split(",") for k in (chunk.strip(),)
+                if k] if env else []
+        raw = self.data["ai"].get("pexels_api_keys") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        for key in raw:
+            text = str(key).strip()
+            if text and text not in keys:
+                keys.append(text)
+        legacy = (self.pexels_api_key or "").strip()
+        if legacy and legacy not in keys:
+            keys.append(legacy)
+        return keys
 
     # -- paths -----------------------------------------------------------
     @property

@@ -1921,6 +1921,35 @@ def t_clipper():
         assert "youtu.be/x" in desc and "Streamer" in desc
 
 
+def t_image_speed():
+    import os as _os
+
+    import vision
+    from clipper import fmt_progress  # noqa: F401 - sanity that lane imports
+    from stock import fmt_image_timing
+
+    # Workers: pexels fetches are truly parallel now (the pacer only gates
+    # pollinations) — sequential made one slow QC stall every image.
+    assert tmp_cfg().image_workers == 3
+    # QC fails open fast instead of grinding 4 retries x 20s.
+    assert vision.TIMEOUT == 12 and vision.MAX_REQUESTS == 3
+    # Timing breakdown: every image now says where its seconds went.
+    assert fmt_image_timing(6.8, 1.2, 0.9, 4.7) == \
+        "6.8s (search 1.2 · dl 0.9 · qc 4.7)"
+    # Pexels key pool: legacy single key still works, list + env stack.
+    cfg = tmp_cfg()
+    assert cfg.pexels_api_keys == []
+    cfg.data["ai"]["pexels_api_key"] = "single-key"
+    assert cfg.pexels_api_keys == ["single-key"]
+    cfg.data["ai"]["pexels_api_keys"] = ["k1", "k2"]
+    assert cfg.pexels_api_keys == ["k1", "k2", "single-key"]
+    _os.environ["PEXELS_API_KEYS"] = "env-k"
+    try:
+        assert cfg.pexels_api_keys == ["env-k", "k1", "k2", "single-key"]
+    finally:
+        del _os.environ["PEXELS_API_KEYS"]
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3100,6 +3129,7 @@ def main() -> int:
         ("topic_hygiene", t_topic_hygiene),
         ("title_optimize", t_title_optimize),
         ("clipper", t_clipper),
+        ("image_speed", t_image_speed),
         ("scene_sentences", t_scene_sentences),
         ("music_audible", t_music_audible),
         ("title_punch", t_title_punch),

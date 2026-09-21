@@ -102,6 +102,18 @@ def pick_photo(photos: list[dict], seed: int, query: str = "") -> dict | None:
     return pool[seed % len(pool)]
 
 
+def fmt_image_timing(total: float, search: float, dl: float,
+                     qc: float) -> str:
+    """Timing breakdown for one image (pure, tested).
+
+    Live chaos 2026-09-21 — "some images take 10s, some 40" — was
+    undiagnosable because logs showed no timings. Now every image says
+    where its seconds went.
+    """
+    return (f"{total:.1f}s (search {search:.1f} · dl {dl:.1f} "
+            f"· qc {qc:.1f})")
+
+
 def _is_image(body: bytes) -> bool:
     return len(body) >= 2000 and (body[:3] == b"\xff\xd8\xff"
                                   or body[:8] == b"\x89PNG\r\n\x1a\n")
@@ -111,17 +123,21 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
     """Download one stock photo for an art prompt. Raises on total failure."""
     from director import plan_query
 
-    key = (cfg.pexels_api_key or "").strip()
-    if not key:
+    keys = list(cfg.pexels_api_keys)
+    if not keys:
         raise RuntimeError("no Pexels key")
     dest.parent.mkdir(parents=True, exist_ok=True)
     query = plan_query(prompt, cfg)
     portrait = cfg.format == "portrait"
     last_error = "unknown"
+    t_search = t_dl = t_qc = 0.0
+    t0 = time.time()
     for attempt in range(1, attempts + 1):
         # Page 1 first (most relevant); deeper pages only when earlier
         # attempts failed — seed-scattered pages shipped unrelated photos.
         page = 1 if attempt == 1 else (seed + attempt) % 4 + 1
+        key = keys[0]
+        t_s = time.time()
         try:
             response = requests.get(
                 SEARCH_URL, headers={"Authorization": key},
@@ -132,9 +148,16 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
             last_error = str(exc)[:120]
             time.sleep(2 * attempt)
             continue
+        t_search += time.time() - t_s
         keystats.bump("pexels", key, req=1)
+        if response.status_code in (401, 403) and len(keys) > 1:
+            keys.pop(0)  # bad key: the next one takes over
+            continue
         if response.status_code == 429:
             last_error = "HTTP 429 (200/hour Pexels limit)"
+            if len(keys) > 1:
+                keys.append(keys.pop(0))  # rotate: another key's quota
+                continue
             time.sleep(min(120.0, 15.0 * 2 ** (attempt - 1)))
             continue
         if response.status_code != 200:
@@ -165,17 +188,22 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
                 or src.get("large") or src.get("medium") or src.get("original")
             if not url:
                 continue
+            t_d = time.time()
             try:
                 body_resp = requests.get(url, timeout=60)
                 body = body_resp.content
             except Exception as exc:
                 last_error = f"download failed: {exc}"[:120]
                 continue
+            finally:
+                t_dl += time.time() - t_d
             if not _is_image(body):
                 last_error = f"download was not an image ({len(body)} bytes)"
                 continue
+            t_c = time.time()
             verdict = check_image(body, query, cfg,
                                   photo_key=str(photo.get("id")))
+            t_qc += time.time() - t_c
             if not (verdict["safe"] and verdict["relevant"]):
                 rejected = verdict["reason"] or "unsafe or off-topic"
                 print(f"  [image] vision QC rejected photo {photo.get('id')} "
@@ -184,7 +212,8 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
             dest.write_bytes(body)
             credit = photo.get("photographer") or "unknown"
             print(f"  [image] pexels: {query!r} (photo {photo.get('id')} "
-                  f"by {credit})")
+                  f"by {credit}) — "
+                  f"{fmt_image_timing(time.time() - t0, t_search, t_dl, t_qc)}")
             return dest
         if rejected:
             last_error = f"vision QC rejected all candidates ({rejected})"
