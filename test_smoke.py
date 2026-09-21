@@ -1838,9 +1838,20 @@ def t_title_optimize():
 
 
 def t_clipper():
-    from clipper import (Candidate, clip_words, crop_filter, fmt_progress,
-                         frame_times, parse_candidates, pick_title,
-                         plan_chunks, transcript_lines, write_kit)
+    from clipper import (CLIENT_FALLBACKS, Candidate, clip_words,
+                         crop_filter, fmt_progress, frame_times,
+                         parse_candidates, pick_title, plan_chunks,
+                         retryable_download_error, transcript_lines,
+                         write_kit)
+
+    # Download errors worth a client retry vs fatal.
+    assert retryable_download_error(
+        "ERROR: unable to download video data: HTTP Error 403: Forbidden")
+    assert retryable_download_error("This video is unavailable")
+    assert retryable_download_error("requested format not available")
+    assert not retryable_download_error("Private video")
+    assert not retryable_download_error("Sign in to confirm your age")
+    assert None in CLIENT_FALLBACKS and "tv" in CLIENT_FALLBACKS
 
     # Download progress line: knowns, unknowns, ETA formatting.
     assert fmt_progress(50, 200, 4e6, 30) == \

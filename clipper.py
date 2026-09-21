@@ -50,6 +50,19 @@ class ClipError(RuntimeError):
     pass
 
 
+# YouTube player clients to try, in order. None = yt-dlp's default (deno
+# PO tokens when a JS runtime exists); the others dodge PO-token 403s.
+CLIENT_FALLBACKS: list[str | None] = [None, "tv", "web_safari"]
+
+
+def retryable_download_error(message: str) -> bool:
+    """True when another player client might still succeed (pure, tested)."""
+    low = (message or "").lower()
+    return ("403" in low or "forbidden" in low
+            or "unavailable" in low or "not available" in low
+            or "no video formats" in low)
+
+
 @dataclass
 class Candidate:
     start: float
@@ -136,12 +149,41 @@ def download_source(url: str, work_dir: Path) -> tuple[Path, dict]:
         "logger": _Logger(),
         "progress_hooks": [hook, _Progress()],
     }
-    print(f"  [clip] downloading (<=1080p): {url}")
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-    except Exception as exc:  # noqa: BLE001 - surface one clean line
-        raise ClipError(f"download failed: {str(exc)[:180]}") from exc
+    # YouTube refuses media downloads without PO tokens (no JS runtime)
+    # and A/B-tests clients per region: what 403s on one client often
+    # downloads fine on another (live case 2026-09-21).
+    errors: list[str] = []
+    for client in CLIENT_FALLBACKS:
+        attempt = dict(opts)
+        if client:
+            attempt["extractor_args"] = {"youtube": {"player_client": [client]}}
+        label = client or "default"
+        print(f"  [clip] downloading (<=1080p): {url} [{label}]")
+        try:
+            with yt_dlp.YoutubeDL(attempt) as ydl:
+                info = ydl.extract_info(url, download=True)
+            break
+        except Exception as exc:  # noqa: BLE001 - collect, try next client
+            message = str(exc)
+            errors.append(f"[{label}] {message[:160]}")
+            if "JavaScript runtime" in message:
+                print("  [clip] yt-dlp needs a JS runtime for this video — "
+                      "one-time fix: winget install DenoLand.Deno, then "
+                      "restart the shell and re-run.")
+            if not retryable_download_error(message):
+                raise ClipError(f"download failed: {message[:180]}") from exc
+            print("  [clip] YouTube refused that attempt — "
+                  "retrying with a different player client...")
+            info = None
+    else:
+        raise ClipError(
+            "download failed on every player client ("
+            + " | ".join(errors[-2:])
+            + "). Try: pip install -U yt-dlp  (YouTube changes weekly), "
+              "and make sure Deno is installed (winget install "
+              "DenoLand.Deno).")
+    if not info and not hook.info:
+        raise ClipError("download produced no metadata")
     meta = info or hook.info
     path = work_dir / "source.mp4"
     if not path.exists():
