@@ -449,8 +449,46 @@ def generate_image(
     raise RuntimeError("all image providers failed: " + " | ".join(failures))
 
 
-def generate_scene_images(script, cfg: Config, out_dir: Path) -> list[list[Path]]:
-    """Generate images_per_scene images per scene. Returns paths grouped by scene.
+# No image should hold longer than this on screen (live complaint
+# 2026-09-21: a 4x-longer scene held each of its 3 images ~16s — "some
+# images stay too long"). Voiceover runs BEFORE images, so scene audio
+# lengths are known here and long scenes simply earn more shots.
+SHOT_TARGET_SECONDS = 6.5
+
+
+def plan_shot_counts(durations, per_scene: int,
+                     target: float = SHOT_TARGET_SECONDS) -> list[int]:
+    """Images per scene so none holds past ~target seconds (pure, tested).
+
+    Long scenes get more shots (capped at 3x the setting, max 10); short
+    scenes keep the configured baseline (snappy cuts stay snappy — the
+    complaint was long holds, not short ones).
+    """
+    import math
+
+    hard_cap = max(per_scene, min(10, per_scene * 3))
+    counts = []
+    for value in durations or []:
+        try:
+            dur = float(value)
+        except (TypeError, ValueError):
+            dur = 0.0
+        if dur <= 0:
+            counts.append(per_scene)
+            continue
+        counts.append(max(per_scene, min(hard_cap,
+                                         math.ceil(dur / target))))
+    return counts or [per_scene]
+
+
+def generate_scene_images(script, cfg: Config, out_dir: Path,
+                          audio_paths: list[Path] | None = None
+                          ) -> list[list[Path]]:
+    """Generate images per scene (adaptive when audio is known). Returns paths.
+
+    With audio_paths (the render pipeline: voiceover runs first), long
+    scenes get more shots so no image holds past ~SHOT_TARGET_SECONDS;
+    without it, images_per_scene per scene as before.
 
     Each image walks the provider chain (primary, then fallbacks) until one
     provider delivers. Downloads run on ai.image_workers threads, but request
@@ -465,10 +503,18 @@ def generate_scene_images(script, cfg: Config, out_dir: Path) -> list[list[Path]
     out_dir.mkdir(parents=True, exist_ok=True)
     per_scene = cfg.images_per_scene
     shots = style_spec(cfg.style)["shots"]
+    counts = None
+    if audio_paths:
+        from assembler import ffprobe_duration
+
+        counts = plan_shot_counts(
+            [ffprobe_duration(p) for p in audio_paths], per_scene)
+        print(f"  [image] shot plan (adaptive): {counts}")
     jobs: list[tuple[int, int, str, Path, int]] = []
     for index, scene in enumerate(script.scenes, start=1):
+        scene_shots = counts[index - 1] if counts else per_scene
         base = stylize(scene.image_prompt, cfg.style)
-        for slot in range(per_scene):
+        for slot in range(scene_shots):
             if per_scene > 1:
                 prompt = f"{base}, {shots[slot % len(shots)]}"
             else:

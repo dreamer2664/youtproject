@@ -283,7 +283,9 @@ when read aloud fast (roughly {word_budget} words total).
 LENGTH IS A HARD REQUIREMENT: the narration must total {word_budget}-{ceiling} words
 (about {per_scene} words per scene, never more than {per_scene_max}). Scripts outside
 this range are rejected — count the words in each scene before returning: expand
-thin scenes with concrete detail, cut filler if running long.
+thin scenes with concrete detail, cut filler if running long. Keep scenes BALANCED: the longest scene
+at most ~2x the shortest (a 50-second scene under three static images
+reads as a slideshow).
 
 RETENTION ARCHITECTURE — follow every rule:
 - HOOK (first sentence, 9 WORDS MAX — a grabber, not a summary). Pick the

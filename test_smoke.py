@@ -1950,6 +1950,30 @@ def t_image_speed():
         del _os.environ["PEXELS_API_KEYS"]
 
 
+def t_shot_plan():
+    from images import SHOT_TARGET_SECONDS, plan_shot_counts
+
+    # The live case (2026-09-21): scenes of ~50s/13s/13s after a merge —
+    # 3 images each meant 16s holds in the long scene.
+    counts = plan_shot_counts([50.0, 13.0, 13.0], per_scene=3)
+    assert counts == [8, 3, 3], counts  # holds: 6.3s / 4.3s / 4.3s
+    # The Einstein extreme: one 80s scene never starves either (cap 3x).
+    assert plan_shot_counts([80.0], 3) == [9]
+    # Short scenes keep the snappy baseline; never fewer than configured.
+    assert plan_shot_counts([8.0, 12.0], 3) == [3, 3]
+    # Balanced script: unchanged behaviour.
+    assert plan_shot_counts([20.0, 21.0, 19.0], 3) == [3, 4, 3] or \
+        plan_shot_counts([20.0, 21.0, 19.0], 3) == [4, 4, 3]
+    # Degenerate durations fall back to the configured count.
+    assert plan_shot_counts([0.0, None, "x"], 3) == [3, 3, 3]
+    assert plan_shot_counts([], 3) == [3]
+    # Contract: holds respect the target, except capped scenes (quota
+    # guard) where the hold is as short as the cap allows — never worse.
+    for dur, count in zip([50.0, 13.0], [8, 3]):
+        assert dur / count <= SHOT_TARGET_SECONDS + 1.5, (dur, count)
+    assert 80.0 / 9 <= 9.0  # capped case: 8.9s, the accepted ceiling
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3130,6 +3154,7 @@ def main() -> int:
         ("title_optimize", t_title_optimize),
         ("clipper", t_clipper),
         ("image_speed", t_image_speed),
+        ("shot_plan", t_shot_plan),
         ("scene_sentences", t_scene_sentences),
         ("music_audible", t_music_audible),
         ("title_punch", t_title_punch),

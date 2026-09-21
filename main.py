@@ -441,7 +441,8 @@ def cmd_generate(cfg, args) -> int:
             print("  3/5 images")
             from images import generate_scene_images
 
-            images_by_scene = generate_scene_images(script, cfg, job_dir / "images")
+            images_by_scene = generate_scene_images(
+                script, cfg, job_dir / "images", audio_paths=audio_paths)
 
             print("  4/5 cutting scenes")
             from assembler import (
