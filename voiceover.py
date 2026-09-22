@@ -231,7 +231,7 @@ async def _synth_with_pauses(text: str, voice: str, rate: str,
     breath = 0.18  # kept past the last word: natural release, no clip
     parts: list[tuple[Path, float]] = []
     durations: list[float] = []
-    for path, words in results:
+    for path, words in zip(part_paths, results):
         keep = max(0.2, (words[-1].end + breath) if words
                    else ffprobe_duration(path))
         parts.append((path, keep))
@@ -239,7 +239,7 @@ async def _synth_with_pauses(text: str, voice: str, rate: str,
     pause = max(0.0, pause_ms / 1000.0)
     run(stitch_cmd(parts, pause, dest), f"voice stitch {dest.name}")
     timings: list[WordTiming] = []
-    for offset, (_, words) in zip(plan_offsets(durations, pause), results):
+    for offset, words in zip(plan_offsets(durations, pause), results):
         timings.extend(WordTiming(word=word.word, start=word.start + offset,
                                   end=word.end + offset) for word in words)
     for path in part_paths:

@@ -917,6 +917,45 @@ def t_director():
     assert any("vending" in base for base in _CACHE)  # keyed by scene base
 
 
+def t_voice_stitch_mechanism():
+    """The stitched path itself (mocked synth + ffmpeg): offsets, trims,
+    timing shift, part cleanup. Regression: results used to be unpacked
+    as (path, words) and crashed -> silent plain-text fallback."""
+    import asyncio
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import patch
+
+    from voiceover import WordTiming, _synth_with_pauses
+
+    async def fake_synth(text, voice, rate, dest):
+        dest.write_bytes(b"x" * 100)
+        if text.startswith("One"):
+            return [WordTiming(word="One.", start=0.1, end=0.5),
+                    WordTiming(word="Two.", start=0.6, end=0.9)]
+        return [WordTiming(word="Three.", start=0.1, end=0.4)]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp) / "scene.mp3"
+        with patch("voiceover._synth", side_effect=fake_synth), \
+                patch("voiceover.stitch_cmd",
+                      return_value=["ffmpeg", "fake"]) as cmd, \
+                patch("assembler.run") as run:
+            timings = asyncio.run(_synth_with_pauses(
+                "One two. Three.", "v", "+0%", dest, 250))
+        run.assert_called_once()
+        parts = cmd.call_args[0][0]
+        # keep = last word end + 0.18 breath, per part
+        assert [(p.name, round(k, 2)) for p, k in parts] == \
+            [("scene.part00.mp3", 1.08), ("scene.part01.mp3", 0.58)], parts
+        assert cmd.call_args[0][1] == 0.25
+        # sentence 2 starts at 1.08 + 0.25 pause -> shifted by 1.33
+        assert [round(w.start, 2) for w in timings] == [0.1, 0.6, 1.43]
+        assert [round(w.end, 2) for w in timings] == [0.5, 0.9, 1.73]
+        assert not (Path(tmp) / "scene.part00.mp3").exists()
+        assert not (Path(tmp) / "scene.part01.mp3").exists()
+
+
 def t_voice_pauses():
     import tempfile
     from pathlib import Path
@@ -3275,6 +3314,7 @@ def main() -> int:
         ("stock_lane", t_stock),
         ("director", t_director),
         ("voice_pauses", t_voice_pauses),
+        ("voice_stitch_mechanism", t_voice_stitch_mechanism),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),
