@@ -39,7 +39,8 @@ MODELS = ["gemini-flash-lite-latest", "gemini-3-flash-preview",
           "gemini-3.5-flash"]
 # QC latency budget (live fix 2026-09-21: one image could stall 40s+ on
 # 429/503 retries — the image phase is only as fast as its slowest QC).
-MAX_REQUESTS = 3   # best-effort: a render never waits on QC retries
+MAX_REQUESTS = 2   # best-effort: a render never waits on QC retries
+                   # (was 3; 503-storm retries burned quota)
 BREAKER_TRIP = 3   # consecutive total failures -> stop calling this run
 TIMEOUT = 12
 

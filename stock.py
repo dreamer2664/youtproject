@@ -182,7 +182,7 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
         ordered = candidates[start:] + candidates[:start]
         from vision import check_image
         rejected = ""
-        for photo in ordered[:3]:
+        for photo in ordered[:cfg.qc_candidates]:
             src = photo.get("src") or {}
             url = (src.get("portrait") if portrait else src.get("landscape")) \
                 or src.get("large") or src.get("medium") or src.get("original")
@@ -322,7 +322,7 @@ def pixabay_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Pat
         ordered = candidates[start:] + candidates[:start]
         from vision import check_image
         rejected = ""
-        for photo in ordered[:3]:
+        for photo in ordered[:cfg.qc_candidates]:
             src = photo.get("src") or {}
             url = (src.get("portrait") if portrait else src.get("landscape")) \
                 or src.get("large") or src.get("medium") or src.get("original")
