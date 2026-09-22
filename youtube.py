@@ -215,3 +215,164 @@ def search_shorts(client: YouTubeClient, query: str,
                         "channel": snippet.get("channelTitle", "?"),
                         "published": (snippet.get("publishedAt", "") or "")[:10]})
     return out
+
+
+# ---------------------------------------------------------- snapshots
+def uploads_playlist_id(client: YouTubeClient, channel_id: str) -> str:
+    """A channel's uploads playlist. 1 unit."""
+    data = client._get("channels", {"part": "contentDetails", "id": channel_id})
+    items = data.get("items") or []
+    if not items:
+        raise RuntimeError(f"channel {channel_id} not found")
+    playlist = ((items[0].get("contentDetails") or {})
+                .get("relatedPlaylists") or {}).get("uploads", "")
+    if not playlist:
+        raise RuntimeError(f"channel {channel_id} exposes no uploads playlist")
+    return playlist
+
+
+def playlist_video_ids(client: YouTubeClient, playlist_id: str,
+                       limit: int = 200) -> list[str]:
+    """Video IDs of a playlist, newest first. 1 unit per 50."""
+    ids: list[str] = []
+    token = ""
+    while len(ids) < limit:
+        params = {"part": "contentDetails", "playlistId": playlist_id,
+                  "maxResults": 50}
+        if token:
+            params["pageToken"] = token
+        data = client._get("playlistItems", params)
+        for item in data.get("items") or []:
+            video_id = ((item.get("contentDetails") or {})
+                        .get("videoId") or "")
+            if video_id:
+                ids.append(video_id)
+        token = data.get("nextPageToken") or ""
+        if not token:
+            break
+    return ids[:limit]
+
+
+def chunk_ids(ids: list[str], size: int = 50) -> list[list[str]]:
+    """Batch IDs for one videos.list call each (pure, tested)."""
+    return [ids[i:i + size] for i in range(0, len(ids), size)]
+
+
+def snapshot_videos(client: YouTubeClient, ids: list[str]) -> list[dict]:
+    """Vitals for many videos, 50 per call (1 unit per call, tested)."""
+    out: list[dict] = []
+    for batch in chunk_ids(ids):
+        data = client._get("videos", {"part": "snippet,statistics",
+                                      "id": ",".join(batch)})
+        for item in data.get("items") or []:
+            snippet = item.get("snippet", {}) or {}
+            stats = item.get("statistics", {}) or {}
+            out.append({"id": item.get("id", ""),
+                        "title": snippet.get("title", "?"),
+                        "channel": snippet.get("channelTitle", "?"),
+                        "channel_id": snippet.get("channelId", ""),
+                        "published": (snippet.get("publishedAt", "") or "")[:10],
+                        "views": _num(stats.get("viewCount")),
+                        "likes": _num(stats.get("likeCount")),
+                        "comments": _num(stats.get("commentCount"))})
+    return out
+
+
+def video_age_days(published: str, today: str) -> int:
+    """Whole days between two YYYY-MM-DD dates (pure, tested)."""
+    from datetime import date
+
+    try:
+        then = date.fromisoformat((published or "")[:10])
+        now = date.fromisoformat(today)
+    except ValueError:
+        return 0
+    return max(0, (now - then).days)
+
+
+def load_snapshots(path) -> dict:
+    """Snapshot history: channels, days, retitle-flagged (corrupt-safe)."""
+    import json
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"channels": [], "days": [], "flagged": []}
+    if not isinstance(data, dict):
+        return {"channels": [], "days": [], "flagged": []}
+    data.setdefault("channels", [])
+    data.setdefault("days", [])
+    data.setdefault("flagged", [])
+    return data
+
+
+def save_snapshots(path, history: dict) -> None:
+    import json
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(history, indent=1), encoding="utf-8")
+
+
+def record_snapshot(history: dict, videos: list[dict], today: str) -> dict:
+    """Store today's numbers (re-running the same day replaces, tested)."""
+    entry = {"date": today, "videos": {v["id"]: {
+        "title": v["title"], "channel": v["channel"], "views": v["views"],
+        "likes": v["likes"], "comments": v["comments"],
+        "published": v["published"]} for v in videos}}
+    history["days"] = [d for d in history["days"] if d.get("date") != today]
+    history["days"].append(entry)
+    history["days"].sort(key=lambda d: d.get("date") or "")
+    return history
+
+
+def previous_daysnapshot(history: dict, today: str) -> dict | None:
+    """The most recent snapshot strictly before today (tested)."""
+    earlier = [d for d in history["days"] if d.get("date") < today]
+    return earlier[-1] if earlier else None
+
+
+def build_report(history: dict, today: str,
+                 prev: dict | None) -> tuple[str, list[str]]:
+    """Human report + newly flagged video IDs (pure, tested).
+
+    Rules (2026-09-20 operating decisions): retitle once when a video
+    aged >= 2 days still sits under 50 views. Retention-based kill-list
+    rules need the Analytics API (OAuth) — public data can't see them.
+    """
+    current = next((d for d in history["days"]
+                    if d.get("date") == today), None)
+    if current is None:
+        return ("no snapshot for today", [])
+    prev_videos = (prev or {}).get("videos") or {}
+    flagged = set(history.get("flagged") or [])
+    new_flags: list[str] = []
+    lines = [f"Channel snapshot — {today}"
+             + (f" (vs {prev['date']})" if prev else " (first snapshot)")]
+    total_now = total_delta = 0
+    rows = []
+    for video_id, v in current["videos"].items():
+        before = prev_videos.get(video_id) or {}
+        delta = v["views"] - before.get("views", v["views"]) \
+            if video_id in prev_videos else None
+        total_now += v["views"]
+        if delta is not None:
+            total_delta += delta
+        age = video_age_days(v.get("published", ""), today)
+        flag = ""
+        if age >= 2 and v["views"] < 50 and video_id not in flagged:
+            flag = "RETITLE? (<50 views)"
+            new_flags.append(video_id)
+            flagged.add(video_id)
+        rows.append((v.get("channel", "?"), v.get("title", "?"), v["views"],
+                     delta, v.get("likes", 0), age, flag,
+                     video_id not in prev_videos and bool(prev_videos)))
+    lines.append(f"  {'VIDEO':<40} {'VIEWS':>7} {'+D':>6} {'LIKES':>6} "
+                 f"{'AGE':>4}  FLAGS")
+    for channel, title, views, delta, likes, age, flag, is_new in rows:
+        label = title[:38] + ("*" if is_new else "")
+        delta_s = f"+{delta}" if delta else ""
+        lines.append(f"  {label:<40} {views:>7,} {delta_s:>6} {likes:>6,} "
+                     f"{age:>3}d  {flag}".rstrip())
+    lines.append(f"  TOTAL: {total_now:,} views"
+                 + (f"  (+{total_delta:,} since last snap)" if total_delta else ""))
+    return ("\n".join(lines), new_flags)

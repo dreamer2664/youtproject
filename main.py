@@ -1082,6 +1082,68 @@ def cmd_bot(cfg, args) -> int:
 # --------------------------------------------------------------------------
 # published / queue / voices
 # --------------------------------------------------------------------------
+def cmd_snap(cfg, args) -> int:
+    """Daily channel snapshot via the public Data API (~4 units/day)."""
+    from youtube import (YouTubeClient, build_report, extract_id,
+                         load_snapshots, playlist_video_ids, previous_daysnapshot,
+                         record_snapshot, save_snapshots, snapshot_videos,
+                         uploads_playlist_id, video_stats)
+
+    if not cfg.youtube_api_keys:
+        die("no YouTube API key (youtube.api_keys) — enable YouTube Data API v3\n"
+            "at https://console.cloud.google.com/apis/library/youtube.googleapis.com")
+    from datetime import date
+
+    client = YouTubeClient(cfg.youtube_api_keys)
+    store = Path(cfg.work_dir) / "snapshots.json"
+    history = load_snapshots(store)
+    channels = {c["id"]: c["title"] for c in history["channels"]}
+
+    if args.add:
+        kind, ident = extract_id(args.add)
+        if kind != "video":
+            die("--add wants a VIDEO link from your channel (any upload)")
+        info = video_stats(client, ident)
+        if not info["channel_id"]:
+            die("could not resolve that video's channel")
+        channels[info["channel_id"]] = info["channel"]
+        history["channels"] = [{"id": cid, "title": title}
+                               for cid, title in channels.items()]
+        save_snapshots(store, history)
+        print(f"  [snap] tracking channel: {info['channel']}")
+
+    if not channels:
+        die("no channels tracked yet — bootstrap once with:\n"
+            "  python main.py snap --add <any video link from your channel>")
+    today = date.today().isoformat()
+    videos: list[dict] = []
+    seen: set[str] = set()
+    for channel_id, title in channels.items():
+        playlist = uploads_playlist_id(client, channel_id)
+        ids = playlist_video_ids(client, playlist)
+        fresh = [i for i in ids if i not in seen]
+        seen.update(fresh)
+        videos.extend(snapshot_videos(client, fresh))
+        print(f"  [snap] {title}: {len(fresh)} video(s)")
+    history = record_snapshot(history, videos, today)
+    prev = previous_daysnapshot(history, today)
+    report, new_flags = build_report(history, today, prev)
+    if new_flags:
+        history["flagged"] = sorted(set(history["flagged"]) | set(new_flags))
+    save_snapshots(store, history)
+    if args.json:
+        import json as _json
+        print(_json.dumps(next(d for d in history["days"]
+                               if d["date"] == today), indent=1))
+    else:
+        print(report)
+        if new_flags:
+            print("  (retitle candidates flagged once — they will not "
+                  "re-appear)")
+    print(f"  quota: {client.spent} units spent of 10,000/day")
+    return 0
+
+
 def cmd_published(cfg, args) -> int:
     queue = Queue(cfg.state_file)
     job = queue.get(args.id)
@@ -1360,6 +1422,11 @@ def main() -> int:
     p.add_argument("id", help="job id (prefix ok)")
     p.add_argument("url", help="the YouTube URL, e.g. https://youtu.be/....")
 
+    p = sub.add_parser("snap", help="channel snapshot: views, day-over-day deltas, retitle alerts")
+    p.add_argument("--add", help="bootstrap: any video link from your channel")
+    p.add_argument("--json", action="store_true",
+                   help="print the raw snapshot instead of the report")
+
     p = sub.add_parser("errors", help="full text of recent failures (for debugging)")
     sub.add_parser("costs", help="Azure OpenAI spend vs caps")
     sub.add_parser("keys", help="API key usage: requests spent, what's left, when quotas refill")
@@ -1414,6 +1481,7 @@ def main() -> int:
         "package": cmd_package,
         "reburn": cmd_reburn,
         "published": cmd_published,
+        "snap": cmd_snap,
         "queue": cmd_queue,
         "errors": cmd_errors,
         "costs": cmd_costs,

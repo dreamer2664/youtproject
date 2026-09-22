@@ -2487,6 +2487,64 @@ def t_clip_smart_crop():
     assert cfg.clip_smart_crop is False
 
 
+def t_channel_snap():
+    import json as _json
+    import tempfile
+    from pathlib import Path
+
+    from youtube import (build_report, chunk_ids, load_snapshots,
+                         previous_daysnapshot, record_snapshot,
+                         save_snapshots, video_age_days)
+
+    assert chunk_ids([f"v{i}" for i in range(120)], 50) == \
+        [[f"v{i}" for i in range(50)], [f"v{i}" for i in range(50, 100)],
+         [f"v{i}" for i in range(100, 120)]]
+    assert chunk_ids([], 50) == []
+    assert video_age_days("2026-09-20", "2026-09-22") == 2
+    assert video_age_days("2026-09-22", "2026-09-22") == 0
+    assert video_age_days("garbage", "2026-09-22") == 0
+
+    videos = [
+        {"id": "abc12345678", "title": "Why Zebras Have Stripes",
+         "channel": "facts", "views": 1164, "likes": 40,
+         "comments": 2, "published": "2026-09-20"},
+        {"id": "def22222222", "title": "How Cold Water Tricks You",
+         "channel": "facts", "views": 61, "likes": 3,
+         "comments": 0, "published": "2026-09-22"},
+        {"id": "ghi33333333", "title": "The Diamond Lie",
+         "channel": "facts", "views": 3, "likes": 0,
+         "comments": 0, "published": "2026-09-18"},
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        store = Path(tmp) / "snapshots.json"
+        history = load_snapshots(store)   # absent -> empty shape
+        assert history == {"channels": [], "days": [], "flagged": []}
+        boosted = [{**v, "views": v["views"] + 10} for v in videos]
+        record_snapshot(history, videos, "2026-09-21")
+        record_snapshot(history, boosted, "2026-09-22")
+        assert previous_daysnapshot(history, "2026-09-22")["date"] == "2026-09-21"
+        assert previous_daysnapshot(history, "2026-09-21") is None
+        # same-day re-run replaces, never duplicates
+        record_snapshot(history, boosted, "2026-09-22")
+        assert len([d for d in history["days"] if d["date"] == "2026-09-22"]) == 1
+        report, flags = build_report(history, "2026-09-22",
+                                     previous_daysnapshot(history, "2026-09-22"))
+        # +10 view deltas render; the 3-view 4-day-old video gets flagged
+        assert "ghi33333333" in flags
+        assert "RETITLE?" in report
+        assert "+10" in report and "1,174" in report  # today's boosted views
+        # caller contract: persist one-shot flags, then save
+        history["flagged"] = sorted(set(history["flagged"]) | set(flags))
+        save_snapshots(store, history)
+        loaded = load_snapshots(store)
+        assert len(loaded["days"]) == 2
+        # flagged once: the same report never re-flags
+        _, flags2 = build_report(loaded, "2026-09-22",
+                                 previous_daysnapshot(loaded, "2026-09-22"))
+        assert flags2 == []
+        assert _json.loads(store.read_text())["flagged"] == ["ghi33333333"]
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3650,6 +3708,7 @@ def main() -> int:
         ("clip_workdirs", t_clip_workdirs),
         ("clip_snap", t_clip_snap),
         ("clip_smart_crop", t_clip_smart_crop),
+        ("channel_snap", t_channel_snap),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),
