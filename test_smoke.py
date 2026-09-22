@@ -917,39 +917,49 @@ def t_director():
     assert any("vending" in base for base in _CACHE)  # keyed by scene base
 
 
-def t_voice_ssml():
+def t_voice_pauses():
     import tempfile
     from pathlib import Path
     from unittest.mock import patch
 
-    from voiceover import build_ssml, split_sentences, synthesise
+    from voiceover import (plan_offsets, split_sentences, stitch_cmd,
+                           synthesise)
 
     assert split_sentences("Hello world. How are you? Fine!") == [
         "Hello world.", "How are you?", "Fine!"]
     assert split_sentences("  ") == []
-    ssml = build_ssml("Fish & chips. Yum.", "en-X", "+40%", 250)
-    assert ssml.startswith("<speak") and 'rate="+40%"' in ssml
-    assert ssml.count('<break time="250ms"/>') == 1
-    assert "Fish &amp; chips" in ssml
-    # SSML rejected by the engine -> silent plain-text retry saves the scene.
+    # Offsets: each sentence starts after the previous one plus the gap.
+    assert plan_offsets([1.0, 2.0], 0.25) == [0.0, 1.25]
+    assert plan_offsets([1.0, 2.0, 3.0], 0.5) == [0.0, 1.5, 4.0]
+    # Stitch command: 2 parts + 1 silence input, per-part trims, concat
+    # in order, edge mp3 shape preserved.
+    cmd = stitch_cmd([(Path("a.mp3"), 1.4), (Path("b.mp3"), 2.2)], 0.25,
+                     Path("out.mp3"))
+    assert cmd[0] == "ffmpeg" and cmd.count("-i") == 3
+    assert "a.mp3" in cmd and "b.mp3" in cmd and "out.mp3" in cmd
+    assert "anullsrc=r=24000:cl=mono" in cmd and "0.250" in cmd
+    assert any("atrim=0:1.400" in part for part in cmd)
+    assert any("atrim=0:2.200" in part for part in cmd)
+    assert any("concat=n=3:v=0:a=1" in part for part in cmd)
+    assert "48k" in cmd
+    # Stitching failure -> plain edge-tts retry saves the scene.
     cfg = tmp_cfg()
     assert cfg.sentence_pause_ms == 250
     calls = []
 
     async def fake_synth(text, voice, rate, dest):
         calls.append(text)
-        if text.startswith("<speak"):
-            raise RuntimeError("SSML no")
         dest.write_bytes(b"x" * 2000)
         return []
 
     with tempfile.TemporaryDirectory() as tmp:
         dest = Path(tmp) / "s.mp3"
-        with patch("voiceover._synth", side_effect=fake_synth), \
-                patch("time.sleep"):
+        with patch("voiceover._synth_with_pauses",
+                   side_effect=RuntimeError("stitch no")), \
+                patch("voiceover._synth", side_effect=fake_synth):
             synthesise("Hello. World.", dest, cfg)
         assert dest.stat().st_size == 2000
-    assert len(calls) == 2 and not calls[1].startswith("<speak")
+    assert len(calls) == 1 and not calls[0].startswith("<speak")
 
 
 def t_title_guard():
@@ -3264,7 +3274,7 @@ def main() -> int:
         ("image_builders", t_image_builders),
         ("stock_lane", t_stock),
         ("director", t_director),
-        ("voice_ssml", t_voice_ssml),
+        ("voice_pauses", t_voice_pauses),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),

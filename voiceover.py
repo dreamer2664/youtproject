@@ -169,23 +169,85 @@ def split_sentences(text: str) -> list[str]:
     return [part for part in re.split(r"(?<=[.!?…])\s+", text.strip()) if part]
 
 
-def build_ssml(text: str, voice: str, rate: str, pause_ms: int) -> str:
-    """Narration -> SSML with a pause between sentences (pure, tested).
+def plan_offsets(durations: list[float], pause: float) -> list[float]:
+    """Start time of each stitched sentence part (pure, tested)."""
+    offsets: list[float] = []
+    clock = 0.0
+    for duration in durations:
+        offsets.append(round(clock, 3))
+        clock += duration + pause
+    return offsets
 
-    The <break> tags kill edge-tts's machine-gun "bursts" delivery. The
-    voice name rides along so the engine needs no extra configuration.
+
+def stitch_cmd(parts: list[tuple[Path, float]], pause: float,
+               dest: Path) -> list[str]:
+    """ffmpeg command joining sentence parts with silence gaps (pure, tested).
+
+    Each part is trimmed to its keep-seconds (last word + a breath) so
+    the engine's baked tail doesn't stretch every pause into a second of
+    dead air; `pause` seconds of silence are interleaved. Output keeps
+    the edge mp3 shape (24kHz mono, 48k).
     """
-    import xml.sax.saxutils as saxutils
+    cmd = ["ffmpeg", "-y", "-loglevel", "warning"]
+    chain: list[str] = []
+    for index, (path, keep) in enumerate(parts):
+        cmd += ["-i", str(path)]
+        chain.append(f"[{index}:a]atrim=0:{keep:.3f},"
+                     f"asetpts=PTS-STARTPTS[a{index}]")
+    for _gap in range(len(parts) - 1):
+        cmd += ["-f", "lavfi", "-t", f"{pause:.3f}",
+                "-i", "anullsrc=r=24000:cl=mono"]
+    order = ""
+    for index in range(len(parts)):
+        order += f"[a{index}]"
+        if index < len(parts) - 1:
+            order += f"[{len(parts) + index}:a]"
+    chain.append(f"{order}concat=n={2 * len(parts) - 1}:v=0:a=1[out]")
+    cmd += ["-filter_complex", ";".join(chain), "-map", "[out]",
+            "-ar", "24000", "-ac", "1",
+            "-c:a", "libmp3lame", "-b:a", "48k", str(dest)]
+    return cmd
+
+
+async def _synth_with_pauses(text: str, voice: str, rate: str,
+                             dest: Path, pause_ms: int) -> list[WordTiming]:
+    """Sentences synthesized separately, joined with real silence.
+
+    edge-tts 7.2+ READS SSML markup aloud instead of interpreting it
+    (live 2026-09-22: '<speak version="1.0"...>' narrated as "speak
+    version equals one point zero"), and every older release is now
+    403-locked out of the service — so <break> pauses can never ride in
+    the payload again. This keeps the sentence-pause feature with plain
+    text only, version-proof.
+    """
+    from assembler import ffprobe_duration, run
 
     sentences = split_sentences(text) or [text]
-    inner = f'<break time="{int(pause_ms)}ms"/>'.join(
-        saxutils.escape(sentence) for sentence in sentences)
-    return (
-        '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
-        f'xml:lang="en-US"><voice name="{saxutils.escape(voice)}">'
-        f'<prosody rate="{saxutils.escape(rate)}">{inner}</prosody>'
-        "</voice></speak>"
-    )
+    part_paths = [dest.with_name(f"{dest.stem}.part{index:02d}.mp3")
+                  for index in range(len(sentences))]
+    results = await asyncio.gather(*(
+        _synth(sentence, voice, rate, path)
+        for sentence, path in zip(sentences, part_paths)))
+    breath = 0.18  # kept past the last word: natural release, no clip
+    parts: list[tuple[Path, float]] = []
+    durations: list[float] = []
+    for path, words in results:
+        keep = max(0.2, (words[-1].end + breath) if words
+                   else ffprobe_duration(path))
+        parts.append((path, keep))
+        durations.append(keep)
+    pause = max(0.0, pause_ms / 1000.0)
+    run(stitch_cmd(parts, pause, dest), f"voice stitch {dest.name}")
+    timings: list[WordTiming] = []
+    for offset, (_, words) in zip(plan_offsets(durations, pause), results):
+        timings.extend(WordTiming(word=word.word, start=word.start + offset,
+                                  end=word.end + offset) for word in words)
+    for path in part_paths:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    return timings
 
 
 async def _synth(text: str, voice: str, rate: str, dest: Path) -> list[WordTiming]:
@@ -227,25 +289,28 @@ def synthesise(
             print(f"  [voice] elevenlabs failed ({exc}) — "
                   f"falling back to edge-tts")
     last_error: Exception | None = None
-    use_ssml = cfg.sentence_pause_ms > 0
+    use_pauses = cfg.sentence_pause_ms > 0
 
     for attempt in range(1, attempts + 1):
         try:
-            if use_ssml:
-                payload = build_ssml(text, cfg.voice, cfg.speech_rate,
-                                   cfg.sentence_pause_ms)
+            if use_pauses and len(split_sentences(text)) > 1:
+                timings = asyncio.run(_synth_with_pauses(
+                    text, cfg.voice, cfg.speech_rate, dest,
+                    cfg.sentence_pause_ms))
             else:
-                payload = text
-            timings = asyncio.run(_synth(payload, cfg.voice, cfg.speech_rate, dest))
+                timings = asyncio.run(
+                    _synth(text, cfg.voice, cfg.speech_rate, dest))
             if dest.exists() and dest.stat().st_size > 1000:
                 return dest, timings
             raise RuntimeError("output file missing or empty")
         except Exception as exc:  # noqa: BLE001 - retry anything
             last_error = exc
-            if use_ssml:
-                # SSML rejected — drop to plain text and retry at once.
-                use_ssml = False
-                print(f"  [voice] SSML rejected ({exc}) — retrying as plain text")
+            if use_pauses:
+                # Stitching failed — a single plain call still saves the
+                # scene (pauses lost, markup never spoken).
+                use_pauses = False
+                print(f"  [voice] pause stitching failed ({exc}) — "
+                      f"plain edge-tts")
                 continue
             print(f"  [voice] attempt {attempt}/{attempts} failed: {exc}")
             time.sleep(3 * attempt)

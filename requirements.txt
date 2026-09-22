@@ -2,7 +2,7 @@
 # which is exactly why no audit or verification can ever be required.
 # Ceilings block breaking majors; minors float for security fixes.
 requests>=2.31.0,<3
-edge-tts>=6.1.0,<8
+edge-tts>=7.2.8,<8   # 7.2+ required: older builds are 403-locked out of the service
 PyYAML>=6.0,<7
 Pillow>=10.0.0,<12
 numpy>=1.26.0,<3

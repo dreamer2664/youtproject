@@ -59,10 +59,11 @@ DEFAULTS: dict[str, Any] = {
         # Narration speed for edge-tts: "+40%" is brisk TikTok pacing (~180 wpm),
         # "+0%" is normal, "-10%" is slow. Range -50%..+100%.
         "speech_rate": "+40%",
-        # Milliseconds of silence edge-tts inserts between sentences
-        # (SSML breaks). Kills the machine-gun "bursts" delivery; a
-        # plain-text retry keeps old behavior if SSML is ever rejected.
-        # 0 = legacy behavior. ElevenLabs path is untouched (already human).
+        # Milliseconds of pause between sentences (edge-tts): each
+        # sentence is synthesized separately and stitched with real
+        # silence — edge-tts 7.2+ reads SSML markup ALOUD, so breaks can
+        # no longer ride in the payload. 0 = single-call legacy behavior.
+        # ElevenLabs path is untouched (already human).
         "sentence_pause_ms": 250,
         # ElevenLabs premium voice (https://elevenlabs.io/app/settings/api-keys):
         # used instead of edge-tts when keys + voice_id are set, with word
