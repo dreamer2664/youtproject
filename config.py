@@ -289,6 +289,10 @@ DEFAULTS: dict[str, Any] = {
         # `python main.py topics --topup` asks Gemini to refill to target.
         "backlog_file": "topics/backlog.txt",
         "backlog_target": 24,
+        # Topic scout (`python main.py scout`): a topic only enters the
+        # backlog if its Wikipedia article got at least this many views
+        # in the last week (proven interest, no key needed).
+        "scout_min_weekly_views": 500,
     },
     "factcheck": {
         # Second Gemini pass over every script before the voiceover.
@@ -696,6 +700,15 @@ class Config:
     @property
     def topics_backlog_file(self) -> Path:
         return self.root / str(self.data.get("topics", {}).get("backlog_file") or "topics/backlog.txt")
+
+    @property
+    def topics_scout_min_weekly(self) -> int:
+        """Minimum weekly Wikipedia views for a scouted topic (>=10)."""
+        try:
+            return max(10, int(self.data.get("topics", {})
+                               .get("scout_min_weekly_views", 500)))
+        except (TypeError, ValueError):
+            return 500
 
     @property
     def topics_backlog_target(self) -> int:
