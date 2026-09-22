@@ -55,12 +55,39 @@ class ClipError(RuntimeError):
 CLIENT_FALLBACKS: list[str | None] = [None, "tv", "web_safari"]
 
 
+def bot_wall_error(message: str) -> bool:
+    """True for YouTube's bot-check wall (pure, tested).
+
+    Live string (2026-09-22 field test, datacenter IP): 'Sign in to
+    confirm you\u2019re not a bot. Use --cookies-from-browser ...'.
+    Client rotation alone does not pass this; cookies do.
+    """
+    low = (message or "").lower()
+    # Careful: the AGE gate also says "Sign in to confirm your age" —
+    # that one stays fatal (no client retry helps). Match bot evidence
+    # only, never the shared prefix.
+    return ("not a bot" in low or "not a robot" in low
+            or "cookies-from-browser" in low)
+
+
+def cookie_opts(cookies_browser: str, cookies_file: str) -> dict:
+    """yt-dlp opts for browser/file cookies (pure, tested). File wins."""
+    browser = (cookies_browser or "").strip().lower()
+    file = (cookies_file or "").strip()
+    if file:
+        return {"cookiefile": file}
+    if browser:
+        return {"cookiesfrombrowser": (browser,)}
+    return {}
+
+
 def retryable_download_error(message: str) -> bool:
     """True when another player client might still succeed (pure, tested)."""
     low = (message or "").lower()
     return ("403" in low or "forbidden" in low
             or "unavailable" in low or "not available" in low
-            or "no video formats" in low)
+            or "no video formats" in low
+            or bot_wall_error(message))
 
 
 @dataclass
@@ -73,7 +100,8 @@ class Candidate:
 
 
 # ---------------------------------------------------------------- ingest
-def download_source(url: str, work_dir: Path) -> tuple[Path, dict]:
+def download_source(url: str, work_dir: Path, cookies_browser: str = "",
+                    cookies_file: str = "") -> tuple[Path, dict]:
     """yt-dlp the video at <=1080p. Returns (mp4 path, source metadata)."""
     try:
         import yt_dlp
@@ -148,7 +176,9 @@ def download_source(url: str, work_dir: Path) -> tuple[Path, dict]:
         "merge_output_format": "mp4",
         "logger": _Logger(),
         "progress_hooks": [hook, _Progress()],
+        **cookie_opts(cookies_browser, cookies_file),
     }
+    saw_bot_wall = False
     # YouTube refuses media downloads without PO tokens (no JS runtime)
     # and A/B-tests clients per region: what 403s on one client often
     # downloads fine on another (live case 2026-09-21).
@@ -166,6 +196,8 @@ def download_source(url: str, work_dir: Path) -> tuple[Path, dict]:
         except Exception as exc:  # noqa: BLE001 - collect, try next client
             message = str(exc)
             errors.append(f"[{label}] {message[:160]}")
+            if bot_wall_error(message):
+                saw_bot_wall = True
             if "JavaScript runtime" in message:
                 print("  [clip] yt-dlp needs a JS runtime for this video — "
                       "one-time fix: winget install DenoLand.Deno, then "
@@ -176,12 +208,17 @@ def download_source(url: str, work_dir: Path) -> tuple[Path, dict]:
                   "retrying with a different player client...")
             info = None
     else:
+        hint = (" Try: pip install -U yt-dlp  (YouTube changes weekly), "
+                "and make sure Deno is installed (winget install "
+                "DenoLand.Deno).")
+        if saw_bot_wall:
+            hint = (" YouTube bot-checked this network. One-time fix: set "
+                    "clip.cookies_browser: 'firefox' in config.yaml "
+                    "(Firefox is safest; Chrome must be fully closed), or "
+                    "export a cookies.txt and set clip.cookies_file.")
         raise ClipError(
             "download failed on every player client ("
-            + " | ".join(errors[-2:])
-            + "). Try: pip install -U yt-dlp  (YouTube changes weekly), "
-              "and make sure Deno is installed (winget install "
-              "DenoLand.Deno).")
+            + " | ".join(errors[-2:]) + ")." + hint)
     if not info and not hook.info:
         raise ClipError("download produced no metadata")
     meta = info or hook.info
@@ -591,7 +628,10 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
     work.mkdir(parents=True, exist_ok=True)
 
     if url:
-        src, source = download_source(url, work)
+        src, source = download_source(
+            url, work,
+            cookies_browser=cfg.clip_cookies_browser,
+            cookies_file=cfg.clip_cookies_file)
     else:
         src = Path(file)
         if not src.exists():

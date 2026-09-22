@@ -1982,7 +1982,9 @@ def t_image_speed():
     # pollinations) — sequential made one slow QC stall every image.
     assert tmp_cfg().image_workers == 3
     # QC fails open fast instead of grinding 4 retries x 20s.
-    assert vision.TIMEOUT == 12 and vision.MAX_REQUESTS == 3
+    assert vision.TIMEOUT == 12 and vision.MAX_REQUESTS == 2
+    # Token diet (2026-09-22): QC walks 2 candidates by default.
+    assert tmp_cfg().qc_candidates == 2
     # Timing breakdown: every image now says where its seconds went.
     assert fmt_image_timing(6.8, 1.2, 0.9, 4.7) == \
         "6.8s (search 1.2 · dl 0.9 · qc 4.7)"
@@ -2157,6 +2159,42 @@ def t_deepseek():
     # The chain picks it up when keys exist (template stays last).
     names = [name for name, _ in get_provider(cfg).chain]
     assert "deepseek" in names and names[-1] == "template"
+
+
+def t_clip_cookies():
+    from clipper import (bot_wall_error, cookie_opts,
+                         retryable_download_error)
+
+    # The LIVE bot-wall string from the 2026-09-22 field test (match
+    # reality, not a paraphrase — it uses a unicode apostrophe).
+    live = ("ERROR: [youtube] z0bVolxirl0: Sign in to confirm you\u2019re "
+            "not a bot. Use --cookies-from-browser or --cookies for the "
+            "authentication.")
+    assert bot_wall_error(live) is True
+    assert bot_wall_error("Sign in to confirm you're not a bot") is True
+    assert bot_wall_error("HTTP 403 Forbidden: request denied") is False
+    # The age gate shares the "Sign in to confirm" prefix — NOT a bot wall.
+    assert bot_wall_error("Sign in to confirm your age") is False
+    assert retryable_download_error("Sign in to confirm your age") is False
+    assert bot_wall_error("") is False
+    assert retryable_download_error(live) is True  # rotates clients too
+    # Cookies opts: browser tuple, file override, empty = none.
+    assert cookie_opts("firefox", "") == {"cookiesfrombrowser": ("firefox",)}
+    assert cookie_opts(" Chrome ", "") == {"cookiesfrombrowser": ("chrome",)}
+    assert cookie_opts("", "cookies.txt") == {"cookiefile": "cookies.txt"}
+    assert cookie_opts("firefox", "cookies.txt") == {"cookiefile": "cookies.txt"}
+    assert cookie_opts("", "") == {}
+    # Config knobs exist and default off.
+    cfg = tmp_cfg()
+    assert cfg.clip_cookies_browser == "" and cfg.clip_cookies_file == ""
+    cfg.data["clip"] = {"cookies_browser": "Firefox",
+                        "cookies_file": "C:/tmp/cookies.txt"}
+    assert cfg.clip_cookies_browser == "Firefox"
+    assert cfg.clip_cookies_file == "C:/tmp/cookies.txt"
+    cfg.data["ai"]["qc_candidates"] = 9
+    assert cfg.qc_candidates == 3  # clamped
+    cfg.data["ai"]["qc_candidates"] = 0
+    assert cfg.qc_candidates == 1  # clamped
 
 
 def t_music_audit():
@@ -3315,6 +3353,7 @@ def main() -> int:
         ("director", t_director),
         ("voice_pauses", t_voice_pauses),
         ("voice_stitch_mechanism", t_voice_stitch_mechanism),
+        ("clip_cookies", t_clip_cookies),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),
