@@ -100,6 +100,7 @@ class Candidate:
     hook: str = ""
     title_idea: str = ""
     score: int = 0
+    hook_start: float | None = None  # where the hook line begins, if later
 
 
 # ---------------------------------------------------------------- ingest
@@ -418,9 +419,88 @@ Reject: "you had to be there" moments, half-finished stories, boring
 exposition, inside jokes that need context.
 
 Return ONLY JSON:
-{{"clips": [{{"start": seconds, "end": seconds, "hook": "why this pops
-(under 15 words)", "title": "a 4-7 word Shorts title idea"}}]}}
+{{"clips": [{{"start": seconds, "end": seconds, "hook_start": seconds
+where the hook line begins (use start if the clip already opens on it),
+"hook": "why this pops (under 15 words)", "title": "a 4-7 word Shorts
+title idea"}}]}}
 Use ABSOLUTE seconds matching the [m:ss] timestamps."""
+
+
+def sentence_spans(words: list[dict]) -> list[tuple[float, float]]:
+    """(start, end) of every sentence in a word list (pure, tested).
+
+    Boundary = word whose text ends in . ! or ? (same rule the transcript
+    formatter uses). A trailing unpunctuated fragment becomes one span.
+    """
+    spans: list[tuple[float, float]] = []
+    cur_start: float | None = None
+    for word in words:
+        text = str(word.get("word") or "")
+        if cur_start is None:
+            cur_start = float(word.get("start") or 0.0)
+        if text and text[-1:] in ".!?":
+            spans.append((cur_start, float(word.get("end") or 0.0)))
+            cur_start = None
+    if cur_start is not None and words:
+        spans.append((cur_start, float(words[-1].get("end") or 0.0)))
+    return spans
+
+
+def snap_candidate(cand: "Candidate", words: list[dict],
+                   min_len: int, max_len: int) -> "Candidate":
+    """Move clip edges onto sentence boundaries (pure, tested).
+
+    A start mid-sentence retreats to that sentence's beginning; a
+    mid-sentence end completes the sentence. Both directions respect
+    max_len, falling back to the other direction; never shrinks a clip
+    below min_len. Cuts landing in pauses (between sentences) are left
+    alone — silence is a fine place to cut.
+    """
+    spans = sentence_spans(words)
+    if not spans:
+        return cand
+    start, end = cand.start, cand.end
+    lo, hi = float(min_len), float(max_len)
+    containing = next((s for s in spans if s[0] <= start < s[1]), None)
+    if containing and containing[0] < start:
+        if end - containing[0] <= hi:
+            start = containing[0]
+        else:
+            nxt = next((s[0] for s in spans if s[0] > start), None)
+            if nxt is not None and end - nxt >= lo:
+                start = nxt
+    containing = next((s for s in spans if s[0] < end <= s[1]), None)
+    if containing and end < containing[1]:
+        if containing[1] - start <= hi:
+            end = containing[1]
+        else:
+            prev = [s for s in spans if s[1] <= end]
+            if prev and prev[-1][1] - start >= lo:
+                end = prev[-1][1]
+    if end <= start:
+        return cand
+    return Candidate(start=round(start, 2), end=round(end, 2),
+                     hook=cand.hook, title_idea=cand.title_idea,
+                     score=cand.score, hook_start=cand.hook_start)
+
+
+def apply_hook_start(cand: "Candidate", min_len: int) -> "Candidate":
+    """Open the clip ON the hook when the picker says it starts later.
+
+    The picker marks where the hook line begins; if that is usefully
+    later than the clip start (>= 3s of context to skip) and enough clip
+    remains (>= min_len), the context is dropped and the clip opens on
+    the hook. snap_candidate then tidies the new start to the hook
+    sentence's first word.
+    """
+    hs = cand.hook_start
+    if hs is None:
+        return cand
+    if hs > cand.start + 3.0 and cand.end - hs >= min_len:
+        return Candidate(start=round(hs, 2), end=cand.end,
+                         hook=cand.hook, title_idea=cand.title_idea,
+                         score=cand.score)
+    return cand
 
 
 def parse_candidates(raw: str, duration: float, max_clips: int,
@@ -456,9 +536,17 @@ def parse_candidates(raw: str, duration: float, max_clips: int,
             end = start + max_len
         if end - start < min_len:
             continue
+        hook_start = None
+        try:
+            hs = float(item.get("hook_start"))
+            if start < hs <= end:
+                hook_start = hs
+        except (TypeError, ValueError):
+            pass
         cand = Candidate(start=round(start, 2), end=round(end, 2),
                          hook=str(item.get("hook") or "")[:120],
-                         title_idea=str(item.get("title") or "")[:80])
+                         title_idea=str(item.get("title") or "")[:80],
+                         hook_start=hook_start)
         # Overlap dedupe: keep the first (the LLM orders by strength).
         if any(cand.start < kept.end and kept.start < cand.end
                for kept in out):
@@ -816,8 +904,10 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
         candidates += parse_candidates(raw, duration, max_clips,
                                        min_len, max_len,
                                        lo=win[0]["start"], hi=win[-1]["end"])
-    if len(windows) > 1:
-        candidates = dedupe_overlaps(candidates)[:max_clips]
+    candidates = [apply_hook_start(c, min_len) for c in candidates]
+    candidates = [snap_candidate(c, words, min_len, max_len)
+                  for c in candidates]
+    candidates = dedupe_overlaps(candidates)[:max_clips]
     if not candidates:
         raise ClipError("the model found no usable moments")
     print(f"  [clip] {len(candidates)} candidate moment(s)")

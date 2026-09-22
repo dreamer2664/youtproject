@@ -2367,6 +2367,85 @@ def t_clip_workdirs():
         assert other.exists()
 
 
+def t_clip_snap():
+    import json as _json
+
+    from clipper import (Candidate, apply_hook_start, parse_candidates,
+                         sentence_spans, snap_candidate)
+
+    def sentences(specs):
+        # specs: (word, start, end) — one word per sentence is enough
+        return [{"word": w, "start": s, "end": e} for w, s, e in specs]
+
+    words = sentences([("One.", 0.0, 1.0), ("Two.", 1.2, 2.2),
+                       ("Three.", 2.4, 3.4), ("Four.", 3.6, 4.6),
+                       ("Five.", 4.8, 6.0), ("Six.", 6.2, 7.4)])
+    spans = sentence_spans(words)
+    assert spans == [(0.0, 1.0), (1.2, 2.2), (2.4, 3.4),
+                     (3.6, 4.6), (4.8, 6.0), (6.2, 7.4)]
+    # trailing fragment (no punctuation) still forms a span
+    frag = words + [{"word": "trail", "start": 7.6, "end": 8.0}]
+    assert sentence_spans(frag)[-1] == (7.6, 8.0)
+    assert sentence_spans([]) == []
+
+    # Mid-sentence start retreats; mid-sentence end completes.
+    snapped = snap_candidate(Candidate(start=1.5, end=3.0), words, 2, 45)
+    assert (snapped.start, snapped.end) == (1.2, 3.4)
+    # Already-clean edges and pause-landing edges stay untouched.
+    clean = snap_candidate(Candidate(start=1.2, end=3.4), words, 2, 45)
+    assert (clean.start, clean.end) == (1.2, 3.4)
+    pause = snap_candidate(Candidate(start=1.2, end=2.3), words, 2, 45)
+    assert (pause.start, pause.end) == (1.2, 2.3)
+    # Retreat would exceed max_len -> start advances to next sentence.
+    over = snap_candidate(Candidate(start=0.5, end=6.5), words, 2, 5)
+    assert over.start == 1.2
+    # End completion would exceed max_len -> backtrack to sentence end.
+    assert over.end == 6.0
+    # Completion fits max_len -> end completes forward to 3.4.
+    complete = snap_candidate(Candidate(start=0.0, end=2.5), words, 2, 45)
+    assert complete.end == 3.4
+    # Backtrack: completion too long, but the previous sentence end
+    # still leaves >= min_len.
+    back = snap_candidate(Candidate(start=0.0, end=6.5), words, 6, 6.0)
+    assert back.end == 6.0
+    # Last resort: completion too long AND backtrack below min_len ->
+    # keep the original end (never shrink below min_len).
+    tight = snap_candidate(Candidate(start=2.4, end=6.5), words, 5, 4.5)
+    assert tight.end == 6.5
+
+    # Hook-first: picker says the real hook starts at 3.6 (>3s of
+    # context to skip, enough clip left).
+    moved = apply_hook_start(Candidate(start=0.0, end=7.4,
+                                       hook_start=3.6), 2)
+    assert moved.start == 3.6
+    # ...and 3.6 is already a sentence start, so snapping keeps it.
+    full = snap_candidate(moved, words, 2, 45)
+    assert full.start == 3.6
+    # A hook landing mid-sentence snaps back to the hook sentence's start.
+    mid = snap_candidate(apply_hook_start(
+        Candidate(start=0.0, end=7.4, hook_start=4.0), 2), words, 2, 45)
+    assert mid.start == 3.6
+    # Hook barely later than start (<= 3s) -> not worth the cut.
+    same = apply_hook_start(Candidate(start=0.0, end=7.4,
+                                      hook_start=2.5), 2)
+    assert same.start == 0.0
+    # Not enough clip left after the hook -> keep.
+    short = apply_hook_start(Candidate(start=0.0, end=5.0,
+                                       hook_start=3.2), 2)
+    assert short.start == 0.0
+    assert apply_hook_start(Candidate(start=0.0, end=5.0), 2).start == 0.0
+
+    # hook_start parsing: inside range kept, outside dropped.
+    raw = _json.dumps({"clips": [
+        {"start": 5, "end": 30, "hook_start": 10, "hook": "h",
+         "title": "t"},
+        {"start": 40, "end": 70, "hook_start": 95, "hook": "h",
+         "title": "t"}]})
+    cands = parse_candidates(raw, duration=2000.0, max_clips=6)
+    assert cands[0].hook_start == 10.0
+    assert cands[1].hook_start is None
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3528,6 +3607,7 @@ def main() -> int:
         ("clip_cache", t_clip_cache),
         ("clip_windows", t_clip_windows),
         ("clip_workdirs", t_clip_workdirs),
+        ("clip_snap", t_clip_snap),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),
