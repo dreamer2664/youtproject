@@ -2197,6 +2197,54 @@ def t_clip_cookies():
     assert cfg.qc_candidates == 1  # clamped
 
 
+def t_clip_title_polish():
+    import json as _json
+
+    from editorial import polish_clip_title
+
+    narration = ("Scientists watched one jellyfish reverse its own aging "
+                 "for years without dying. Its cells completely reprogram "
+                 "themselves after injury.")
+
+    class _Provider:
+        def __init__(self, titles):
+            self.titles = titles
+
+        def generate_text(self, prompt, **kwargs):
+            return _json.dumps({"titles": self.titles})
+
+    # A low-scoring draft is replaced by a clearly better candidate
+    # (the gate needs best >= current + 2, so fixtures must differ hard).
+    strong = ["The Jellyfish That Refuses To Die",
+              "Why Jellyfish Never Grow Old"]
+    weak_draft = "Clip 01 Moment"
+    assert polish_clip_title(weak_draft, narration, _Provider(strong)) in strong
+    # An already-good draft (score 6) with equal candidates (score 6)
+    # stays: polish only replaces CLEAR winners.
+    good_draft = "Why Jellyfish Breaks The Rules"
+    assert polish_clip_title(good_draft, narration, _Provider(strong)) is None
+    weak = ["Jellyfish Facts You Won't Believe Are True Today Friend"]
+    assert polish_clip_title(weak_draft, narration, _Provider(weak)) is None
+    # Hashtags are stripped from candidates.
+    out = polish_clip_title(weak_draft, narration,
+                            _Provider(["The Jellyfish That Refuses To Die #facts"]))
+    assert out == "The Jellyfish That Refuses To Die"
+    # Provider failure -> None, never an exception.
+    class _Boom:
+        def generate_text(self, prompt, **kwargs):
+            raise RuntimeError("503 storm")
+
+    assert polish_clip_title(weak_draft, narration, _Boom()) is None
+    # Empty draft / no keywords -> None.
+    assert polish_clip_title("", narration, _Provider(strong)) is None
+    assert polish_clip_title(weak_draft, "", _Provider(strong)) is None
+    # Config toggle: on by default, switchable.
+    cfg = tmp_cfg()
+    assert cfg.clip_polish_titles is True
+    cfg.data["clip"]["polish_titles"] = False
+    assert cfg.clip_polish_titles is False
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3354,6 +3402,7 @@ def main() -> int:
         ("voice_pauses", t_voice_pauses),
         ("voice_stitch_mechanism", t_voice_stitch_mechanism),
         ("clip_cookies", t_clip_cookies),
+        ("clip_title_polish", t_clip_title_polish),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),

@@ -178,6 +178,10 @@ DEFAULTS: dict[str, Any] = {
         # Env: PIXABAY_API_KEYS (comma-separated).
         "pixabay_api_key": "",
         "image_fallbacks": ["pixabay", "pollinations", "gemini"],
+        # How many stock candidates go through vision QC per search round
+        # (1-3). Was a hardcoded 3; 2 is the token-lean default — each
+        # candidate costs up to 2 QC requests on 503 retries.
+        "qc_candidates": 2,
         # Seconds to wait per image before giving up.
         "image_timeout": 90,
         # Pollinations model. "flux" is free and unlimited (recommended);
@@ -291,6 +295,18 @@ DEFAULTS: dict[str, Any] = {
         # Needs the free Gemini key; without one it skips silently and
         # never blocks a render on failure.
         "enabled": True,
+    },
+    "clip": {
+        # Clip-lane downloads. YouTube bot-checks some networks
+        # ("Sign in to confirm you're not a bot") — browser cookies pass
+        # it. "firefox" is safest (Chrome locks its cookie DB while
+        # running). Or export a cookies.txt and set cookies_file.
+        "cookies_browser": "",
+        "cookies_file": "",
+        # Route clip titles through the title-polish pass (same few-shot
+        # system as generated videos; +1 LLM call per clip). false = the
+        # old keyword-template titles, zero extra calls.
+        "polish_titles": True,
     },
     "youtube": {
         # YouTube Data API v3 keys (https://console.cloud.google.com/apis/
@@ -685,6 +701,31 @@ class Config:
             return 24
 
     # -- factcheck -------------------------------------------------------
+    @property
+    def clip_cookies_browser(self) -> str:
+        """Browser to borrow YouTube cookies from (clip lane), e.g. firefox."""
+        return str(self.data.get("clip", {}).get("cookies_browser")
+                   or "").strip()
+
+    @property
+    def clip_polish_titles(self) -> bool:
+        """Clip titles go through the title-polish pass (default true)."""
+        return bool(self.data.get("clip", {}).get("polish_titles", True))
+
+    @property
+    def clip_cookies_file(self) -> str:
+        """Path to a cookies.txt for clip downloads (overrides browser)."""
+        return str(self.data.get("clip", {}).get("cookies_file")
+                   or "").strip()
+
+    @property
+    def qc_candidates(self) -> int:
+        """Stock candidates sent through vision QC per search (1-3)."""
+        try:
+            return max(1, min(3, int(self.data["ai"].get("qc_candidates", 2))))
+        except (TypeError, ValueError):
+            return 2
+
     @property
     def factcheck_enabled(self) -> bool:
         return bool(self.data.get("factcheck", {}).get("enabled", True))

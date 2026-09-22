@@ -684,7 +684,15 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
     for index, cand in enumerate(accepted, start=1):
         clip_path = out_root / f"clip_{index:02d}.mp4"
         render_clip(src, cand, words, cfg, clip_path, work)
-        title = pick_title(cand, clip_words(words, cand.start, cand.end))
+        clip_words_list = clip_words(words, cand.start, cand.end)
+        title = pick_title(cand, clip_words_list)
+        if cfg.clip_polish_titles:
+            from editorial import polish_clip_title
+
+            narration = " ".join(w["word"] for w in clip_words_list)
+            polished = polish_clip_title(title, narration, provider)
+            if polished:
+                title = polished
         kits.append(write_kit(clip_path, title, cand, source, out_root))
         print(f"  [clip] {clip_path.name}: {title!r}")
     print(f"\n  {len(kits)} clip(s) + kits -> {out_root}")

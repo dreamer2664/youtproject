@@ -266,6 +266,63 @@ def _optimize_title(script, cfg: Config, provider) -> None:
               f"(best candidate scored {best_score} vs {current}).")
 
 
+def polish_clip_title(draft: str, narration: str, provider) -> str | None:
+    """Title-polish for CLIP titles — the generate lane's system, clip-sized.
+
+    Clip titles were the lane's weakest link (live 2026-09-22: 'Why
+    Jellyfish Breaks The Rules' — pure template-think). Same few-shot
+    winners/flops + score gate as _optimize_title; returns the better
+    title or None to keep the draft. Never raises.
+    """
+    from scriptgen import extract_json
+
+    if not draft:
+        return None
+    keywords = _title_keywords([narration or ""])
+    if not keywords:
+        return None
+    current = score_title(draft, keywords)
+    prompt = (
+        "Rewrite this YouTube Shorts title to maximize views.\n"
+        f"CURRENT TITLE: {draft}\n"
+        f"SUBJECT WORDS (the title must contain the main one): "
+        f"{', '.join(keywords)}\n"
+        f"WHAT THE CLIP SAYS: {(narration or '')[:280]}\n\n"
+        "PROVEN WINNERS on this channel (copy the style, never the words):\n"
+        + "\n".join(f"  - {won}" for won in _WINNING_TITLES)
+        + "\nFLOPPED (never write like this):\n"
+        + "\n".join(f"  - {lost}" for lost in _FLOPPED_TITLES)
+        + "\nRULES: 4-7 words; under 45 characters; Why/How/The opener; the "
+        "main subject word present (searchability); a curiosity gap with no "
+        "lies; no hashtags, no ALL CAPS, no quotes.\n"
+        'Return ONLY JSON: {"titles": ["candidate 1", "candidate 2", '
+        '"candidate 3", "candidate 4", "candidate 5"]}'
+    )
+    try:
+        raw = provider.generate_text(prompt, temperature=0.7,
+                                     tag="cliptitle", json_mode=True)
+        data = extract_json(raw)
+    except Exception as exc:  # noqa: BLE001 - polish never kills a clip
+        print(f"  [clip] title polish failed ({str(exc)[:80]}) — keeping draft.")
+        return None
+    candidates = data.get("titles") if isinstance(data, dict) else None
+    scored = []
+    for candidate in candidates if isinstance(candidates, list) else []:
+        if isinstance(candidate, str):
+            candidate = re.sub(r"\s*#\S+", "", candidate).strip()
+            score = score_title(candidate, keywords)
+            if score > -10:
+                scored.append((score, candidate))
+    if not scored:
+        return None
+    best_score, best = max(scored, key=lambda pair: pair[0])
+    if best_score >= current + 2:
+        print(f"  [clip] title polish: {draft[:38]!r} -> {best[:38]!r} "
+              f"(score {current}->{best_score})")
+        return best
+    return None
+
+
 def scrub_narration(text: str) -> str:
     """Spoken-word cleanup: no dot-dot-dot pauses, no stage directions.
 
