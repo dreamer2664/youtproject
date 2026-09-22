@@ -166,3 +166,66 @@ def check_image(body: bytes, query: str, cfg: Config,
         cache[digest] = verdict
         _save_cache(cfg, cache)
         return dict(verdict)
+
+
+SUBJECT_PROMPT = (
+    "Where is the main subject of this video frame (the person, animal, "
+    "or focal object) horizontally? Reply ONLY JSON: "
+    '{"x": <number 0.0-1.0>} where 0.0 is the left edge, 1.0 the right '
+    "edge, 0.5 dead center. No clear single subject -> "
+    '{"x": 0.5}.'
+)
+
+
+def subject_x(body: bytes, cfg: Config) -> float | None:
+    """Horizontal subject position in [0,1]; None = unknown (fail-open).
+
+    Feeds the clip lane's smart vertical crop — a hard center crop can
+    decapitate an off-center speaker. Best-effort like QC: never raises,
+    never burns more than MAX_REQUESTS.
+    """
+    if not body:
+        return None
+    keys = [k for k in cfg.gemini_api_keys if k]
+    if not keys:
+        return None
+    mime = "image/png" if body[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
+    payload = {
+        "contents": [{"parts": [
+            {"text": SUBJECT_PROMPT},
+            {"inline_data": {"mime_type": mime,
+                             "data": base64.b64encode(body).decode("ascii")}},
+        ]}],
+        "generationConfig": {"temperature": 0.0,
+                             "response_mime_type": "application/json"},
+    }
+    spent = 0
+    for model in MODELS:
+        for key in keys:
+            if spent >= MAX_REQUESTS:
+                return None
+            spent += 1
+            try:
+                resp = requests.post(URL.format(model=model),
+                                     params={"key": key}, json=payload,
+                                     timeout=TIMEOUT)
+            except requests.RequestException:
+                continue
+            keystats.bump("gemini", key, req=1)
+            if resp.status_code in (400, 401, 403):
+                continue
+            if resp.status_code == 404:
+                break
+            if resp.status_code != 200:
+                continue
+            try:
+                text = (resp.json()["candidates"][0]["content"]["parts"][0]
+                        .get("text") or "")
+                from scriptgen import extract_json
+                data = extract_json(text)
+                value = float(data.get("x"))
+                if 0.0 <= value <= 1.0:
+                    return value
+            except Exception:  # noqa: BLE001 - unparseable: next key
+                continue
+    return None

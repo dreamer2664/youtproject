@@ -676,6 +676,40 @@ def crop_filter(width: int, height: int) -> str:
     return "scale=1080:1920"
 
 
+def decide_subject_x(positions: list[float | None],
+                     spread_limit: float = 0.25) -> float | None:
+    """Consensus subject position from sampled frames (pure, tested).
+
+    No valid samples, or samples that disagree wildly, means uncertainty
+    — and the safest crop under uncertainty is the center.
+    """
+    valid = [p for p in positions if p is not None]
+    if not valid:
+        return None
+    if len(valid) > 1 and max(valid) - min(valid) > spread_limit:
+        return None
+    mean = sum(valid) / len(valid)
+    return round(min(0.85, max(0.15, mean)), 3)
+
+
+def smart_crop_filter(width: int, height: int,
+                      subject_x: float | None) -> str:
+    """Vertical crop that follows the subject (pure, tested).
+
+    Center crop when the subject is centered or unknown (jumping the crop
+    for near-center subjects just adds motion); off-center subjects shift
+    the window, clamped to the frame edges.
+    """
+    if height <= 0 or width / height <= 9 / 16:
+        return "scale=1080:1920"
+    if subject_x is None or abs(subject_x - 0.5) < 0.08:
+        return "crop=ih*9/16:ih,scale=1080:1920"
+    crop_w = int(height * 9 / 16)
+    offset = int(round(subject_x * width - crop_w / 2))
+    offset = max(0, min(offset, width - crop_w))
+    return f"crop={crop_w}:{height}:{offset}:0,scale=1080:1920"
+
+
 def clip_words(words: list[dict], start: float, end: float) -> list[dict]:
     """Words inside [start, end], times relative to start (pure, tested)."""
     return [{"word": w["word"], "start": w["start"] - start,
@@ -702,7 +736,23 @@ def render_clip(src: Path, cand: Candidate, words: list[dict],
     window = clip_words(words, cand.start, cand.end)
     ass_path = build_clip_ass(window, length, cfg, work_dir)
     width, height = probe_dims(src)
-    vf = ",".join([crop_filter(width, height), filter_args(ass_path, cfg.format)])
+    subject = None
+    if cfg.clip_smart_crop and height > 0 and width / height > 9 / 16:
+        from vision import subject_x as ask_subject
+
+        positions = []
+        for frac in (0.25, 0.6):
+            frame = extract_frame(
+                src, cand.start + length * frac,
+                work_dir / f"subject_{cand.start:.0f}_{int(frac * 100)}.jpg")
+            positions.append(ask_subject(frame, cfg))
+        subject = decide_subject_x(positions)
+        if subject is not None and abs(subject - 0.5) >= 0.08:
+            print(f"  [clip] smart crop: subject at {subject:.0%} of width")
+        else:
+            print("  [clip] crop: centered (subject centered or uncertain)")
+    vf = ",".join([smart_crop_filter(width, height, subject),
+                   filter_args(ass_path, cfg.format)])
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
         "-ss", f"{cand.start:.3f}", "-t", f"{length:.3f}", "-i", str(src),

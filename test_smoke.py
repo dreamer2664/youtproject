@@ -2446,6 +2446,47 @@ def t_clip_snap():
     assert cands[1].hook_start is None
 
 
+def t_clip_smart_crop():
+    from clipper import decide_subject_x, smart_crop_filter
+
+    # Consensus: no samples / all-None -> center (None).
+    assert decide_subject_x([]) is None
+    assert decide_subject_x([None, None]) is None
+    assert decide_subject_x([None, 0.4]) == 0.4
+    assert decide_subject_x([0.3]) == 0.3
+    assert decide_subject_x([0.25, 0.35]) == 0.3
+    # Wild disagreement -> None (center is safest).
+    assert decide_subject_x([0.1, 0.9]) is None
+    # Mean clamped away from the extreme edges.
+    assert decide_subject_x([0.05]) == 0.15
+    assert decide_subject_x([0.95]) == 0.85
+
+    # Crop strings: portrait passes through, centered/unknown stay
+    # centered, near-center does not jump the crop.
+    assert smart_crop_filter(720, 1280, 0.2) == "scale=1080:1920"
+    assert smart_crop_filter(1280, 720, None) == \
+        "crop=ih*9/16:ih,scale=1080:1920"
+    assert smart_crop_filter(1280, 720, 0.5) == \
+        "crop=ih*9/16:ih,scale=1080:1920"
+    assert smart_crop_filter(1280, 720, 0.55) == \
+        "crop=ih*9/16:ih,scale=1080:1920"
+    # Off-center subjects: window shifts, clamped to the frame.
+    # crop_w = 720*9/16 = 405px; left third -> offset ~54px.
+    left = smart_crop_filter(1280, 720, 0.2)
+    assert left == f"crop=405:720:{1280 - 405 if False else 54}:0,scale=1080:1920"
+    right = smart_crop_filter(1280, 720, 0.8)
+    assert right == "crop=405:720:822:0,scale=1080:1920"
+    assert smart_crop_filter(1280, 720, 0.05) == \
+        "crop=405:720:0:0,scale=1080:1920"          # clamped left
+    assert smart_crop_filter(1280, 720, 0.98) == \
+        "crop=405:720:875:0,scale=1080:1920"        # clamped right
+    # Config default on, switchable off.
+    cfg = tmp_cfg()
+    assert cfg.clip_smart_crop is True
+    cfg.data["clip"]["smart_crop"] = False
+    assert cfg.clip_smart_crop is False
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3608,6 +3649,7 @@ def main() -> int:
         ("clip_windows", t_clip_windows),
         ("clip_workdirs", t_clip_workdirs),
         ("clip_snap", t_clip_snap),
+        ("clip_smart_crop", t_clip_smart_crop),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),

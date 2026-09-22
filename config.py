@@ -307,6 +307,10 @@ DEFAULTS: dict[str, Any] = {
         # system as generated videos; +1 LLM call per clip). false = the
         # old keyword-template titles, zero extra calls.
         "polish_titles": True,
+        # Smart vertical crop: vision finds the main subject and the
+        # 9:16 crop window follows it (2 vision requests per clip).
+        # false = always-centered crop (the old behaviour).
+        "smart_crop": True,
     },
     "youtube": {
         # YouTube Data API v3 keys (https://console.cloud.google.com/apis/
@@ -706,6 +710,11 @@ class Config:
         """Browser to borrow YouTube cookies from (clip lane), e.g. firefox."""
         return str(self.data.get("clip", {}).get("cookies_browser")
                    or "").strip()
+
+    @property
+    def clip_smart_crop(self) -> bool:
+        """Clip crop window follows the detected subject (default true)."""
+        return bool(self.data.get("clip", {}).get("smart_crop", True))
 
     @property
     def clip_polish_titles(self) -> bool:
