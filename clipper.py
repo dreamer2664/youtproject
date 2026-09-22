@@ -17,11 +17,14 @@ source video and produces N clips for ~15 API requests total.
 
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import shlex
 import shutil
 import subprocess
+import time
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -713,6 +716,46 @@ def save_transcript_cache(path: Path, words: list[dict]) -> None:
         pass
 
 
+# --------------------------------------------------------- work dirs
+_RUN_SEQ = itertools.count(1)
+
+def new_clip_work_dir(work_root: Path) -> Path:
+    """A fresh, never-colliding run dir (tested).
+
+    Old behaviour — a fixed 'clip_run' — meant two concurrent runs (or a
+    run started while another's files were still warm) overwrote each
+    other's downloads and frames.
+    """
+    import os
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return work_root / f"clip_run_{stamp}_{os.getpid()}_{next(_RUN_SEQ)}"
+
+
+def prune_stale_runs(work_root: Path, keep: Path,
+                     max_age_hours: float = 48.0) -> None:
+    """Delete clip_run_* dirs older than the cutoff (best-effort, tested).
+
+    Unique dirs would otherwise pile up forever after crashes; `keep` is
+    never touched regardless of age.
+    """
+    import shutil as _shutil
+
+    cutoff = time.time() - max_age_hours * 3600
+    try:
+        entries = list(work_root.glob("clip_run_*"))
+    except OSError:
+        return
+    for entry in entries:
+        if entry == keep:
+            continue
+        try:
+            if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                _shutil.rmtree(entry, ignore_errors=True)
+        except OSError:
+            pass
+
+
 # ---------------------------------------------------------------- main
 def run_clip(cfg: Config, url: str = "", file: str = "",
              max_clips: int = MAX_CLIPS_DEFAULT,
@@ -724,7 +767,8 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
     if not url and not file:
         raise ClipError("give me --url <youtube link> or --file <local mp4>")
     out_root = Path(out_dir) if out_dir else cfg.root / "clips"
-    work = cfg.work_dir / "clip_run"
+    work = new_clip_work_dir(cfg.work_dir)
+    prune_stale_runs(cfg.work_dir, keep=work)
     work.mkdir(parents=True, exist_ok=True)
 
     if url:

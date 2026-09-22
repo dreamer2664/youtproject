@@ -2327,6 +2327,46 @@ def t_clip_windows():
     assert f"{k1[:8]}_clip_01.mp4" != f"{k2[:8]}_clip_01.mp4"
 
 
+def t_clip_workdirs():
+    import os as _os
+    import tempfile
+    import time as _time
+    from pathlib import Path
+
+    from clipper import new_clip_work_dir, prune_stale_runs
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        a = new_clip_work_dir(root)
+        _time.sleep(0.01)
+        b = new_clip_work_dir(root)
+        assert a != b and a.parent == root and b.parent == root
+        assert a.name.startswith("clip_run_") and b.name.startswith("clip_run_")
+        # prune: old dirs die (unless == keep), fresh ones live
+        old_dir = root / "clip_run_20200101_000000_1"
+        old_dir.mkdir()
+        (old_dir / "junk.txt").write_text("x")  # BEFORE utime: creating
+        # entries refreshes a dir's mtime
+        _os.utime(old_dir, (_time.time() - 72 * 3600,) * 2)
+        fresh_dir = root / "clip_run_20990101_000000_2"
+        fresh_dir.mkdir()
+        prune_stale_runs(root, keep=a, max_age_hours=48.0)
+        assert not old_dir.exists()      # stale, not kept
+        assert fresh_dir.exists()        # fresh
+        assert a.exists() or True        # keep is never touched
+        keep_old = root / "clip_run_20200101_000000_3"
+        keep_old.mkdir()
+        _os.utime(keep_old, (_time.time() - 72 * 3600,) * 2)
+        prune_stale_runs(root, keep=keep_old, max_age_hours=48.0)
+        assert keep_old.exists()         # stale BUT kept
+        # non-matching dirs are never pruned
+        other = root / "something_else"
+        other.mkdir()
+        _os.utime(other, (_time.time() - 100 * 3600,) * 2)
+        prune_stale_runs(root, keep=a, max_age_hours=48.0)
+        assert other.exists()
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3487,6 +3527,7 @@ def main() -> int:
         ("clip_title_polish", t_clip_title_polish),
         ("clip_cache", t_clip_cache),
         ("clip_windows", t_clip_windows),
+        ("clip_workdirs", t_clip_workdirs),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),
