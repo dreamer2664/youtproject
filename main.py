@@ -1082,6 +1082,34 @@ def cmd_bot(cfg, args) -> int:
 # --------------------------------------------------------------------------
 # published / queue / voices
 # --------------------------------------------------------------------------
+def cmd_scout(cfg, args) -> int:
+    """Topic scout: propose -> validate interest -> rank -> append."""
+    from topics import load_backlog, save_backlog, scout_topics
+
+    path = Path(args.file) if args.file else cfg.topics_backlog_file
+    existing = load_backlog(path)
+    print(f"  [scout] backlog: {len(existing)} topics — proposing, "
+          f"then checking Wikipedia interest...")
+    try:
+        found = scout_topics(cfg, max(1, min(20, args.count)), existing)
+    except RuntimeError as exc:
+        die(f"scout failed ({str(exc)[:140]})")
+    if not found:
+        print("  [scout] no topic passed the interest bar this run — "
+              "try again (the LLM pool varies).")
+        return 0
+    print(f"  [scout] {len(found)} validated topic(s):")
+    for topic, subject, views in found:
+        print(f"    + {topic}  [{subject}: {views:,} views/wk]")
+    if args.dry_run:
+        print("  [scout] dry run — nothing added.")
+        return 0
+    backlog = existing + [topic for topic, _, _ in found]
+    save_backlog(path, backlog)
+    print(f"  [scout] backlog now {len(backlog)} topics -> {path}")
+    return 0
+
+
 def cmd_snap(cfg, args) -> int:
     """Daily channel snapshot via the public Data API (~4 units/day)."""
     from youtube import (YouTubeClient, build_report, extract_id,
@@ -1427,6 +1455,13 @@ def main() -> int:
     p.add_argument("--json", action="store_true",
                    help="print the raw snapshot instead of the report")
 
+    p = sub.add_parser("scout", help="topic scout: LLM proposes, Wikipedia pageviews validate interest")
+    p.add_argument("--count", type=int, default=8,
+                   help="how many validated topics to add (default 8)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="show the validated topics without adding them")
+    p.add_argument("--file", help="alternate backlog file (for testing)")
+
     p = sub.add_parser("errors", help="full text of recent failures (for debugging)")
     sub.add_parser("costs", help="Azure OpenAI spend vs caps")
     sub.add_parser("keys", help="API key usage: requests spent, what's left, when quotas refill")
@@ -1482,6 +1517,7 @@ def main() -> int:
         "reburn": cmd_reburn,
         "published": cmd_published,
         "snap": cmd_snap,
+        "scout": cmd_scout,
         "queue": cmd_queue,
         "errors": cmd_errors,
         "costs": cmd_costs,

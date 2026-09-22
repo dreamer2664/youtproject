@@ -2545,6 +2545,53 @@ def t_channel_snap():
         assert _json.loads(store.read_text())["flagged"] == ["ghi33333333"]
 
 
+def t_topic_scout():
+    import json as _json
+
+    from topics import parse_scout_proposals, scout_rank, wiki_title
+
+    assert wiki_title("  Honey Badger ") == "Honey_Badger"
+    assert wiki_title("") == ""
+    raw = _json.dumps({"topics": [
+        {"topic": "Why wombat poop comes out as cubes",
+         "wikipedia": "Wombat"},
+        {"topic": "How lie detectors actually work",
+         "wikipedia": "Polygraph"},
+        {"topic": "Why wombat poop is cube shaped",   # dupe of #1
+         "wikipedia": "Wombat"},
+        {"topic": "", "wikipedia": "X"},               # empty topic
+        {"topic": "Facts about everything!!", "wikipedia": "X"},  # junk
+        {"not-a-topic": True},                          # garbage entry
+    ]})
+    parsed = parse_scout_proposals(raw, [])
+    assert parsed == [("Why wombat poop comes out as cubes", "Wombat"),
+                      ("How lie detectors actually work", "Polygraph")]
+    # dedupe against existing backlog too
+    assert parse_scout_proposals(raw, ["how lie detectors work"]) == \
+        [("Why wombat poop comes out as cubes", "Wombat")]
+    # unparseable LLM output -> []
+    assert parse_scout_proposals("no json here", []) == []
+
+    # ranking: below-bar and unverifiable drop, order by views desc.
+    proposals = [("A", "Honey"), ("B", "Polygraph"), ("C", "Missing"),
+                 ("D", "Cat")]
+    views = {"Honey": 9000, "Polygraph": 400, "Cat": 12000,
+             "Missing": None}
+    ranked = scout_rank(proposals, views.__getitem__, min_views=500,
+                        count=3)
+    assert ranked == [("D", "Cat", 12000), ("A", "Honey", 9000)]
+    # count limits; nothing passes -> empty
+    assert len(scout_rank(proposals, views.__getitem__, 500, 1)) == 1
+    assert scout_rank(proposals, views.__getitem__, 99999, 3) == []
+    # config knob
+    cfg = tmp_cfg()
+    assert cfg.topics_scout_min_weekly == 500
+    cfg.data["topics"]["scout_min_weekly_views"] = 2000
+    assert cfg.topics_scout_min_weekly == 2000
+    cfg.data["topics"]["scout_min_weekly_views"] = 0
+    assert cfg.topics_scout_min_weekly == 10  # clamped
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3709,6 +3756,7 @@ def main() -> int:
         ("clip_snap", t_clip_snap),
         ("clip_smart_crop", t_clip_smart_crop),
         ("channel_snap", t_channel_snap),
+        ("topic_scout", t_topic_scout),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),
