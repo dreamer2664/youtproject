@@ -78,6 +78,7 @@ def _format_line(meta: dict) -> str:
 def build_checklist(job: Job, meta: dict, cfg: Config, kit: Path) -> str:
     """Per-video Studio walkthrough with this video's values prefilled."""
     title = meta.get("title", "")
+    title_alt = str(meta.get("title_alt") or "").strip()
     tags = fit_tags(meta.get("tags") or [])
     category = CATEGORY_NAMES.get(str(meta.get("categoryId", "")), "see dropdown in Studio")
     description = build_description(meta, cfg)
@@ -119,6 +120,17 @@ def build_checklist(job: Job, meta: dict, cfg: Config, kit: Path) -> str:
             "- [ ] In Studio's left menu open **Subtitles** → pick this video →\n"
             "      *Add* → *Upload file* → choose `captions.srt` from this folder.\n\n"
         )
+    ab_note = ""
+    if title_alt:
+        ab_note = (
+            "\n> **A/B title test (two channels):** upload to channel 1 with\n"
+            "> `title.txt`, and the same video to channel 2 with `title-b.txt`:\n"
+            f"> - A: {title}\n"
+            f"> - B: {title_alt}\n"
+            "> After 72h run `python main.py snap` and keep whichever title\n"
+            "> earned more views on both channels.\n"
+        )
+
     n_aud = 5 if has_srt else 4
     n_after = 6 if has_srt else 5
 
@@ -156,7 +168,7 @@ platforms re-run the same topic in portrait instead.
 
 Video: **{title}**
 Format: {_format_line(meta)}
-{shorts_note}
+{shorts_note}{ab_note}
 Follow top to bottom. Takes about 3 minutes.
 
 ## 1. Upload the file
@@ -313,6 +325,11 @@ def build_package(job: Job, cfg: Config) -> Path:
     if title != raw_title.strip()[:YOUTUBE_TITLE_LIMIT]:
         print(f"  [package] ⚠️ title guard: {raw_title!r} -> {title!r}")
     meta["title"] = title
+    raw_alt = str(meta.get("title_alt") or "").strip()
+    title_alt = clean_title(raw_alt, job.topic) if raw_alt else ""
+    if title_alt == title:
+        title_alt = ""
+    meta["title_alt"] = title_alt
     tags = fit_tags(meta.get("tags") or [])
 
     kit = cfg.package_dir / job.id
@@ -335,6 +352,8 @@ def build_package(job: Job, cfg: Config) -> Path:
             meta["subtitle_file"] = None  # keep the checklist honest
 
     (kit / "title.txt").write_text(title, encoding="utf-8")
+    if title_alt:
+        (kit / "title-b.txt").write_text(title_alt, encoding="utf-8")
     (kit / "description.txt").write_text(build_description(meta, cfg), encoding="utf-8")
     (kit / "tags.txt").write_text(", ".join(tags), encoding="utf-8")
     (kit / "tiktok.txt").write_text(build_platform_caption(meta, "tiktok"), encoding="utf-8")

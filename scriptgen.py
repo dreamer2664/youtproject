@@ -37,6 +37,7 @@ class Script:
     tags: list[str]
     scenes: list[Scene]
     provider: str = "unknown"
+    title_alt: str = ""  # A/B lab: runner-up title for the 2nd channel
 
     def estimated_seconds(self, words_per_minute: float = 130.0) -> float:
         words = sum(len(s.narration.split()) for s in self.scenes)

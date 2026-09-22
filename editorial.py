@@ -256,12 +256,21 @@ def _optimize_title(script, cfg: Config, provider) -> None:
     if not scored:
         print("      editorial : title polish found no usable candidate — keeping previous.")
         return
-    best_score, best = max(scored, key=lambda pair: pair[0])
+    ranked = sorted(scored, key=lambda pair: -pair[0])
+    best_score, best = ranked[0]
     if best_score >= current + 2:
+        # A/B lab: the runner-up ships as title-b.txt — same video on the
+        # second channel, snap decides the winner after 72h.
+        runner_up = next((text for score, text in ranked[1:]
+                          if text != best and score >= best_score - 3), "")
+        script.title_alt = runner_up
         print(f"      editorial : title polish applied (score {current}->"
               f"{best_score}: {title[:38]!r} -> {best[:38]!r}).")
         script.title = best
     else:
+        # Draft kept — but a close-scoring candidate is still a fair B.
+        if best != title and best_score >= current - 2:
+            script.title_alt = best
         print(f"      editorial : title polish kept current "
               f"(best candidate scored {best_score} vs {current}).")
 

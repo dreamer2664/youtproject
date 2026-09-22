@@ -2592,6 +2592,72 @@ def t_topic_scout():
     assert cfg.topics_scout_min_weekly == 10  # clamped
 
 
+def t_ab_titles():
+    import json as _json
+    import tempfile
+    from pathlib import Path
+
+    from editorial import _optimize_title
+    from jobqueue import Job
+    from package import build_package
+    from scriptgen import Scene, Script
+
+    class _P:
+        def generate_text(self, prompt, **kw):
+            return _json.dumps({"titles": [
+                "The Jellyfish That Refuses To Die",
+                "Why Jellyfish Never Grow Old",
+                "Jellyfish Facts You Won't Believe Today Friend"]})
+
+    scenes = [Scene(narration=(
+        "Scientists watched one jellyfish reverse its own aging for "
+        "years. Its cells reprogram themselves."), image_prompt="x")]
+    # Polish fires on a weak draft: winner takes the title, runner-up
+    # becomes the B variant.
+    script = Script(title="Clip 01 Moment", description="", tags=[],
+                    scenes=scenes)
+    _optimize_title(script, tmp_cfg(), _P())
+    assert script.title == "The Jellyfish That Refuses To Die"
+    assert script.title_alt == "Why Jellyfish Never Grow Old"
+    # Draft already good: title kept, close best candidate becomes B.
+    script2 = Script(title="Why Jellyfish Never Grow Old", description="",
+                     tags=[], scenes=scenes)
+    _optimize_title(script2, tmp_cfg(), _P())
+    assert script2.title == "Why Jellyfish Never Grow Old"
+    assert script2.title_alt == "The Jellyfish That Refuses To Die"
+
+    # Package: the kit carries title-b.txt + an A/B checklist note.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        video = root / "v.mp4"
+        video.write_bytes(b"x" * 100)
+        meta = root / "script.json"
+        meta.write_text(_json.dumps({
+            "title": "Why Zebras Have Stripes", "tags": ["facts"],
+            "title_alt": "The Secret Behind Zebra Stripes",
+            "format": "portrait", "duration_seconds": 60,
+        }), encoding="utf-8")
+        job = Job(id="ab12", topic="why zebras have stripes",
+                  status="generated", video_file=str(video),
+                  meta_file=str(meta))
+        cfg = tmp_cfg()
+        kit = build_package(job, cfg)
+        assert (kit / "title.txt").exists()
+        assert (kit / "title-b.txt").read_text(encoding="utf-8") == \
+            "The Secret Behind Zebra Stripes"
+        checklist = (kit / "CHECKLIST.md").read_text(encoding="utf-8")
+        assert "A/B title test" in checklist and "title-b.txt" in checklist
+        # No alt (or alt == title): single-title kit, no A/B noise.
+        meta.write_text(_json.dumps({
+            "title": "Why Zebras Have Stripes", "tags": ["facts"],
+            "title_alt": "Why Zebras Have Stripes",
+            "format": "portrait", "duration_seconds": 60}), encoding="utf-8")
+        kit2 = build_package(job, cfg)
+        assert not (kit2 / "title-b.txt").exists()
+        assert "A/B title test" not in \
+            (kit2 / "CHECKLIST.md").read_text(encoding="utf-8")
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3757,6 +3823,7 @@ def main() -> int:
         ("clip_smart_crop", t_clip_smart_crop),
         ("channel_snap", t_channel_snap),
         ("topic_scout", t_topic_scout),
+        ("ab_titles", t_ab_titles),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),

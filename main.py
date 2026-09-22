@@ -418,6 +418,7 @@ def cmd_generate(cfg, args) -> int:
                 json.dumps(
                     {
                         "title": script.title,
+                        "title_alt": getattr(script, "title_alt", ""),
                         "description": script.description,
                         "tags": script.tags,
                         "provider": script.provider,
