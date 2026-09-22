@@ -422,9 +422,16 @@ Use ABSOLUTE seconds matching the [m:ss] timestamps."""
 
 def parse_candidates(raw: str, duration: float, max_clips: int,
                      min_len: int = MIN_CLIP_SECONDS,
-                     max_len: int = MAX_CLIP_SECONDS) -> list[Candidate]:
-    """Validate/clamp/dedupe the LLM's clip list (pure, tested)."""
+                     max_len: int = MAX_CLIP_SECONDS, lo: float = 0.0,
+                     hi: float | None = None) -> list[Candidate]:
+    """Validate/clamp/dedupe the LLM's clip list (pure, tested).
+
+    lo/hi bound a picker window: candidates outside are dropped (used
+    when a long VOD is picked window-by-window).
+    """
     from scriptgen import extract_json
+
+    hi = duration if hi is None else min(hi, duration)
 
     try:
         data = extract_json(raw)
@@ -436,8 +443,8 @@ def parse_candidates(raw: str, duration: float, max_clips: int,
         if not isinstance(item, dict):
             continue
         try:
-            start = max(0.0, float(item.get("start") or 0))
-            end = min(duration, float(item.get("end") or 0))
+            start = max(lo, float(item.get("start") or 0))
+            end = min(hi, float(item.get("end") or 0))
         except (TypeError, ValueError):
             continue
         if end <= start:
@@ -457,6 +464,48 @@ def parse_candidates(raw: str, duration: float, max_clips: int,
         if len(out) >= max_clips:
             break
     return out
+
+
+# Long VODs: one picker prompt per ~10 minutes of speech (a 30-min
+# transcript is ~4,500 words — a single prompt buries the good moments).
+# Windows overlap so a moment spanning a seam is still catchable; the
+# duplicate pick collapses in dedupe_overlaps.
+PICK_WINDOW_WORDS = 1400
+PICK_OVERLAP_WORDS = 120
+
+
+def split_windows(words: list[dict],
+                  window_words: int = PICK_WINDOW_WORDS,
+                  overlap_words: int = PICK_OVERLAP_WORDS) -> list[list[dict]]:
+    """Split a long transcript into overlapping picker windows (tested)."""
+    if not words:
+        return []
+    if len(words) <= window_words:
+        return [words]
+    if overlap_words >= window_words:
+        overlap_words = window_words // 2
+    windows: list[list[dict]] = []
+    step = window_words - overlap_words
+    start = 0
+    while True:
+        windows.append(words[start:start + window_words])
+        if start + window_words >= len(words):
+            return windows
+        start += step
+
+
+def dedupe_overlaps(cands: list["Candidate"]) -> list["Candidate"]:
+    """Drop candidates overlapping an earlier one; keep-first (tested).
+
+    Same rule parse_candidates applies inside one LLM reply, applied to
+    the merged multi-window list.
+    """
+    kept: list["Candidate"] = []
+    for cand in cands:
+        if any(cand.start < k.end and k.start < cand.end for k in kept):
+            continue
+        kept.append(cand)
+    return kept
 
 
 # ----------------------------------------------------------- vision QC
@@ -692,7 +741,8 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
     duration = ffprobe_duration(src)
     print(f"  [clip] source: {src.name} ({duration/60:.0f} min, "
           f"{source['channel']})")
-    cache = transcript_cache_path(cfg, transcript_cache_key(url, src))
+    source_key = transcript_cache_key(url, src)
+    cache = transcript_cache_path(cfg, source_key)
     words = load_transcript_cache(cache)
     if words is not None:
         print(f"  [clip] transcript: cached ({len(words)} words)")
@@ -707,12 +757,23 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
     from scriptgen import get_provider
 
     provider = get_provider(cfg)
-    prompt = build_picker_prompt(transcript_lines(words), cfg,
-                                 max_clips, min_len, max_len)
-    print("  [clip] picking moments...")
-    raw = provider.generate_text(prompt, temperature=0.4, tag="clippick",
-                                 json_mode=True)
-    candidates = parse_candidates(raw, duration, max_clips, min_len, max_len)
+    windows = split_windows(words)
+    candidates = []
+    for index, win in enumerate(windows, start=1):
+        if len(windows) == 1:
+            print("  [clip] picking moments...")
+        else:
+            print(f"  [clip] picking moments (window {index}/{len(windows)}: "
+                  f"{_ts(win[0]['start'])}-{_ts(win[-1]['end'])})...")
+        prompt = build_picker_prompt(transcript_lines(win), cfg,
+                                     max_clips, min_len, max_len)
+        raw = provider.generate_text(prompt, temperature=0.4, tag="clippick",
+                                     json_mode=True)
+        candidates += parse_candidates(raw, duration, max_clips,
+                                       min_len, max_len,
+                                       lo=win[0]["start"], hi=win[-1]["end"])
+    if len(windows) > 1:
+        candidates = dedupe_overlaps(candidates)[:max_clips]
     if not candidates:
         raise ClipError("the model found no usable moments")
     print(f"  [clip] {len(candidates)} candidate moment(s)")
@@ -739,7 +800,7 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
     out_root.mkdir(parents=True, exist_ok=True)
     kits = []
     for index, cand in enumerate(accepted, start=1):
-        clip_path = out_root / f"clip_{index:02d}.mp4"
+        clip_path = out_root / f"{source_key[:8]}_clip_{index:02d}.mp4"
         render_clip(src, cand, words, cfg, clip_path, work)
         clip_words_list = clip_words(words, cand.start, cand.end)
         title = pick_title(cand, clip_words_list)

@@ -2284,6 +2284,49 @@ def t_clip_cache():
         assert transcript_cache_path(cfg, "abc").parent.name == "clip_cache"
 
 
+def t_clip_windows():
+    import json as _json
+    from pathlib import Path
+
+    from clipper import (Candidate, dedupe_overlaps, parse_candidates,
+                         split_windows, transcript_cache_key)
+
+    def wlist(n):
+        return [{"word": f"w{i}", "start": i * 0.4, "end": i * 0.4 + 0.3}
+                for i in range(n)]
+
+    # Short transcript: single window, unchanged behaviour.
+    single = split_windows(wlist(200))
+    assert len(single) == 1 and len(single[0]) == 200
+    assert split_windows([]) == []
+    # Long transcript: bounded windows, stepped by (window - overlap).
+    words = wlist(3000)
+    windows = split_windows(words)
+    assert len(windows) > 1 and all(len(w) <= 1400 for w in windows)
+    assert windows[0][0] is words[0] and windows[-1][-1] is words[-1]
+    assert windows[1][0]["word"] == "w1280"  # step = 1400 - 120
+    seen = set()
+    for win in windows:
+        seen.update(id(word) for word in win)
+    assert len(seen) == 3000  # full coverage, no word lost
+    # Window bounds: candidates outside [lo, hi] are dropped.
+    raw = _json.dumps({"clips": [
+        {"start": 5, "end": 30, "hook": "h", "title": "t"},
+        {"start": 700, "end": 730, "hook": "h", "title": "t"}]})
+    inside = parse_candidates(raw, duration=2000.0, max_clips=6,
+                              lo=0.0, hi=100.0)
+    assert len(inside) == 1 and inside[0].start == 5.0
+    # Cross-window dedupe: overlapping moments collapse, keep-first.
+    a = Candidate(start=30.0, end=55.0)
+    b = Candidate(start=50.0, end=80.0)    # overlaps a
+    c = Candidate(start=120.0, end=150.0)  # disjoint
+    assert dedupe_overlaps([a, b, c]) == [a, c]
+    # Unique per-source clip names: different sources, different files.
+    k1 = transcript_cache_key("https://youtu.be/aaa", Path("x.mp4"))
+    k2 = transcript_cache_key("https://youtu.be/bbb", Path("x.mp4"))
+    assert f"{k1[:8]}_clip_01.mp4" != f"{k2[:8]}_clip_01.mp4"
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3443,6 +3486,7 @@ def main() -> int:
         ("clip_cookies", t_clip_cookies),
         ("clip_title_polish", t_clip_title_polish),
         ("clip_cache", t_clip_cache),
+        ("clip_windows", t_clip_windows),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),
