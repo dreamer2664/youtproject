@@ -613,6 +613,57 @@ def write_kit(clip: Path, title: str, cand: Candidate, source: dict,
     return kit
 
 
+# ---------------------------------------------------------------- cache
+TRANSCRIPT_CACHE_VERSION = 1
+
+
+def transcript_cache_key(url: str, src: Path) -> str:
+    """Stable identity for a clip source (pure, tested).
+
+    URL: the link itself. File: resolved path + size + mtime, so an
+    edited or replaced file never reuses a stale transcript.
+    """
+    import hashlib
+
+    if url:
+        raw = "url:" + url.strip()
+    else:
+        try:
+            stat = src.stat()
+            raw = f"file:{src.resolve()}:{stat.st_size}:{int(stat.st_mtime)}"
+        except OSError:
+            raw = f"file:{src.name}:unknown"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def transcript_cache_path(cfg: Config, key: str) -> Path:
+    return cfg.work_dir / "clip_cache" / f"{key}.json"
+
+
+def load_transcript_cache(path: Path) -> list[dict] | None:
+    """Cached words for this source, or None (corrupt-safe, tested)."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict) or \
+            data.get("version") != TRANSCRIPT_CACHE_VERSION:
+        return None
+    words = data.get("words")
+    return words if isinstance(words, list) else None
+
+
+def save_transcript_cache(path: Path, words: list[dict]) -> None:
+    """Persist the transcript (best-effort: caching never fails a run)."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(
+            {"version": TRANSCRIPT_CACHE_VERSION, "words": words}),
+            encoding="utf-8")
+    except OSError:
+        pass
+
+
 # ---------------------------------------------------------------- main
 def run_clip(cfg: Config, url: str = "", file: str = "",
              max_clips: int = MAX_CLIPS_DEFAULT,
@@ -638,14 +689,20 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
             raise ClipError(f"file not found: {src}")
         source = {"title": src.stem, "channel": "local file", "url": "local"}
 
-    audio = extract_audio(src, work)
     duration = ffprobe_duration(src)
     print(f"  [clip] source: {src.name} ({duration/60:.0f} min, "
           f"{source['channel']})")
-    words = transcribe_words(audio, cfg)
+    cache = transcript_cache_path(cfg, transcript_cache_key(url, src))
+    words = load_transcript_cache(cache)
+    if words is not None:
+        print(f"  [clip] transcript: cached ({len(words)} words)")
+    else:
+        audio = extract_audio(src, work)
+        words = transcribe_words(audio, cfg)
+        save_transcript_cache(cache, words)
+        print(f"  [clip] transcript: {len(words)} words (cached for re-runs)")
     if len(words) < 40:
         raise ClipError("transcript too thin to mine for moments")
-    print(f"  [clip] transcript: {len(words)} words")
 
     from scriptgen import get_provider
 

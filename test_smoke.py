@@ -2245,6 +2245,45 @@ def t_clip_title_polish():
     assert cfg.clip_polish_titles is False
 
 
+def t_clip_cache():
+    import time as _time
+    import tempfile
+    from pathlib import Path
+
+    from clipper import (load_transcript_cache, save_transcript_cache,
+                         transcript_cache_key, transcript_cache_path)
+
+    # URL keys: stable, filesystem-safe, source-specific.
+    k1 = transcript_cache_key("https://youtu.be/abc123", Path("x.mp4"))
+    assert k1 == transcript_cache_key("https://youtu.be/abc123", Path("y.mp4"))
+    assert k1 != transcript_cache_key("https://youtu.be/other", Path("x.mp4"))
+    assert len(k1) == 16 and all(c in "0123456789abcdef" for c in k1)
+    # File keys react to content changes (size here).
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Path(tmp) / "vod.mp4"
+        f.write_bytes(b"0" * 100)
+        fk = transcript_cache_key("", f)
+        assert fk == transcript_cache_key("", f)
+        _time.sleep(0.01)
+        f.write_bytes(b"0" * 120)
+        assert transcript_cache_key("", f) != fk
+    # Round-trip + corrupt/version safety.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "cache.json"
+        assert load_transcript_cache(path) is None  # absent
+        words = [{"word": "hi", "start": 0.0, "end": 0.4},
+                 {"word": "there", "start": 0.5, "end": 0.9}]
+        save_transcript_cache(path, words)
+        assert load_transcript_cache(path) == words
+        path.write_text("{corrupt", encoding="utf-8")
+        assert load_transcript_cache(path) is None
+        path.write_text('{"version": 999, "words": []}', encoding="utf-8")
+        assert load_transcript_cache(path) is None
+        cfg = tmp_cfg()
+        assert transcript_cache_path(cfg, "abc").name == "abc.json"
+        assert transcript_cache_path(cfg, "abc").parent.name == "clip_cache"
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3403,6 +3442,7 @@ def main() -> int:
         ("voice_stitch_mechanism", t_voice_stitch_mechanism),
         ("clip_cookies", t_clip_cookies),
         ("clip_title_polish", t_clip_title_polish),
+        ("clip_cache", t_clip_cache),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),
