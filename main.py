@@ -325,6 +325,51 @@ def _pick_fresh_topic(cfg, used: list[str]) -> tuple[str, str]:
     return cfg.topic, "channel topic (backlog dry)"
 
 
+def _reclaim_interrupted(queue: Queue, backlog_path: Path,
+                         work_dir: Path) -> list[str]:
+    """Give topics of killed renders back to the backlog (tested).
+
+    Only cmd_generate creates 'queued' jobs, the instant rendering starts,
+    so any job still 'queued' when the next run begins is provably from a
+    killed one (timeout, Ctrl-C, power cut — KeyboardInterrupt bypasses the
+    except that would have marked it 'failed'). Left alone it is a dead
+    letter: the table shows 'queued' forever while its topic counts as
+    covered and can never be picked again. So: return the topic to the
+    front of the backlog, archive the entry as 'reclaimed', and drop the
+    ghost's partial work dir. Topics that rendered successfully later stay
+    dead; duplicates collapse (live lesson 2026-09-19: ten stuck jobs,
+    nine of them copies of one topic).
+    """
+    from topics import is_same_topic, load_backlog, save_backlog
+
+    stuck = [job for job in queue.jobs
+             if job.status == "queued" and str(job.topic or "").strip()]
+    if not stuck:
+        return []
+    done = [job.topic for job in queue.jobs
+            if job.status in ("generated", "packaged", "published")]
+    backlog = load_backlog(backlog_path)
+    returned: list[str] = []
+    for job in stuck:
+        topic = str(job.topic).strip()
+        marker = " (variation "          # --count decoration on a dry backlog
+        if marker in topic and topic.endswith(")"):
+            topic = topic[:topic.rfind(marker)].strip() or topic
+        if any(is_same_topic(topic, old) for old in done):
+            note = "interrupted run; topic rendered later anyway"
+        elif any(is_same_topic(topic, old) for old in backlog + returned):
+            note = "interrupted run; duplicate — topic already back"
+        else:
+            returned.append(topic)
+            note = "interrupted run; topic returned to the backlog"
+        shutil.rmtree(work_dir / job.id, ignore_errors=True)
+        queue.update(job, status="reclaimed", error=note)
+        print(f"  [queue] {job.id} '{topic[:40]}' — {note}")
+    if returned:
+        save_backlog(backlog_path, returned + backlog)
+    return returned
+
+
 def cmd_generate(cfg, args) -> int:
     print(BANNER)
     if args.seconds is not None:
@@ -360,7 +405,10 @@ def cmd_generate(cfg, args) -> int:
 
     from topics import is_same_topic
 
-    used = [job.topic for job in queue.jobs]
+    _reclaim_interrupted(queue, cfg.topics_backlog_file, cfg.work_dir)
+    # 'reclaimed' entries are killed-run ghosts; their topics are back on
+    # the backlog and must count as fresh, not covered.
+    used = [job.topic for job in queue.jobs if job.status != "reclaimed"]
     new_ids: list[str] = []
     for number in range(1, count + 1):
         if args.topic:

@@ -392,6 +392,51 @@ def t_queue():
     assert tmp.with_suffix(".corrupt.json").exists()
 
 
+def t_reclaim_interrupted():
+    # A killed run leaves 'queued' jobs behind forever: the table says
+    # queued, but nothing ever resumes them and their topics count as
+    # covered. _reclaim_interrupted must return the topics to the backlog.
+    from jobqueue import Queue
+    from main import _reclaim_interrupted
+    from topics import load_backlog, save_backlog
+
+    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    queue = Queue(tmp / "state.json")
+    ghost = queue.add("why octopuses have three hearts")
+    twin = queue.add("why octopuses have three hearts")   # duplicate ghost
+    honey = queue.add("how honey never spoils")
+    queue.update(honey, status="generated", title="Honey")
+    revenant = queue.add("how honey never spoils")   # killed run, but the
+    # topic re-rendered successfully later (e.g. a --topic rerun) -> dead
+    decorated = queue.add("how lava lamps work (variation 2 of 3: choose a "
+                          "different specific story each time)")
+    backlog_file = tmp / "backlog.txt"
+    save_backlog(backlog_file, ["a fresh topic"])
+    work = tmp / "work"
+    (work / ghost.id).mkdir(parents=True)
+    (work / ghost.id / "partial.txt").write_text("x", encoding="utf-8")
+
+    returned = _reclaim_interrupted(queue, backlog_file, work)
+
+    # duplicate collapsed, already-rendered topic skipped, decoration stripped
+    assert returned == ["why octopuses have three hearts", "how lava lamps work"]
+    assert load_backlog(backlog_file) == [
+        "why octopuses have three hearts", "how lava lamps work", "a fresh topic"]
+    statuses = {job.id: job.status for job in Queue(tmp / "state.json").jobs}
+    assert statuses[ghost.id] == "reclaimed"
+    assert statuses[twin.id] == "reclaimed"
+    assert statuses[revenant.id] == "reclaimed"
+    assert statuses[honey.id] == "generated"       # real work untouched
+    assert not (work / ghost.id).exists()          # partial work dir gone
+    # generate's used-list must no longer count the ghost topic as covered
+    used = [job.topic for job in queue.jobs if job.status != "reclaimed"]
+    assert "why octopuses have three hearts" not in used
+    assert "how lava lamps work" not in used
+    # no ghosts left -> no-op, backlog untouched
+    assert _reclaim_interrupted(Queue(tmp / "state.json"), backlog_file, work) == []
+    assert load_backlog(backlog_file)[0] == "why octopuses have three hearts"
+
+
 def t_generate_rejects_bad_count():
     """--count 0 must fail fast with a clear message, not silently no-op."""
     import argparse
@@ -4053,6 +4098,7 @@ def main() -> int:
         ("script_length_repair", t_script_length_repair),
         ("topics_clean", t_topics_clean),
         ("topics_norepeat", t_topics_norepeat),
+        ("reclaim_interrupted", t_reclaim_interrupted),
         ("bot_parser", t_bot_parser),
         ("package", t_package),
         ("audiofx", t_audiofx),

@@ -2,6 +2,8 @@
 
 A job is one video, tracked through:
     queued -> generated -> packaged -> published
+    (a 'queued' job left by a killed run is archived as 'reclaimed' by the
+    next generate — its topic goes back to the backlog; see main.py)
                                   -> failed
 
 "packaged" means an upload-ready folder exists under upload/<id>/.

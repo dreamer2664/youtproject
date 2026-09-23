@@ -95,6 +95,7 @@ python main.py costs    # Azure spend (if ever configured)
 | `Sign in to confirm you're not a bot` | YouTube distrusts the network | `clip.cookies_browser: "firefox"` in config.yaml |
 | HTTP 503 storms from Gemini | free-tier saturation at US peak | just wait / EU morning; fallbacks engage automatically |
 | `[queue] state.json was unreadable` | a crash interrupted a queue write | already auto-quarantined; nothing to do |
+| job shows `reclaimed` | that render was killed mid-run (timeout, Ctrl-C, power cut) | nothing to do — the next generate put its topic back on the backlog |
 | `elevenlabs key ... is dead` | a revoked key | remove it from `ai.elevenlabs_api_keys` |
 
 ## What is automated vs yours
