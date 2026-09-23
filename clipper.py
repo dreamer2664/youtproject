@@ -676,6 +676,39 @@ def crop_filter(width: int, height: int) -> str:
     return "scale=1080:1920"
 
 
+def fit_filter() -> str:
+    """Whole landscape frame inside 1080x1920, blurred fill (pure, tested).
+
+    Live complaint 2026-09-23: the middle-slice crop threw away ~65% of
+    a landscape VOD's picture. This is the standard clipping-tool look:
+    the full frame, sharp and centered, over a blurred, darkened copy of
+    itself that fills the vertical canvas.
+    """
+    return ("split=2[bg][fg];"
+            "[bg]scale=1080:1920:force_original_aspect_ratio=increase,"
+            "crop=1080:1920,boxblur=20:2,eq=brightness=-0.15[bgf];"
+            "[fg]scale=1080:-2[fgf];"
+            "[bgf][fgf]overlay=(W-w)/2:(H-h)/2")
+
+
+def vertical_treatment(width: int, height: int,
+                       mode: str = "auto") -> str:
+    """How a source becomes vertical: fit | crop | scale (pure, tested).
+
+    auto: landscape (>= 0.9) keeps its whole frame (blurred fill);
+    near-vertical sources (9/16 .. 0.9) crop — the sliver lost is small
+    and a full frame would be mostly bars; vertical sources just scale.
+    """
+    if height <= 0:
+        return "scale"
+    ratio = width / height
+    if mode == "fit":
+        return "scale" if ratio <= 9 / 16 else "fit"
+    if mode == "crop":
+        return "scale" if ratio <= 9 / 16 else "crop"
+    return "scale" if ratio <= 9 / 16 else ("fit" if ratio >= 0.9 else "crop")
+
+
 def decide_subject_x(positions: list[float | None],
                      spread_limit: float = 0.25) -> float | None:
     """Consensus subject position from sampled frames (pure, tested).
@@ -736,23 +769,29 @@ def render_clip(src: Path, cand: Candidate, words: list[dict],
     window = clip_words(words, cand.start, cand.end)
     ass_path = build_clip_ass(window, length, cfg, work_dir)
     width, height = probe_dims(src)
-    subject = None
-    if cfg.clip_smart_crop and height > 0 and width / height > 9 / 16:
-        from vision import subject_x as ask_subject
+    treatment = vertical_treatment(width, height, cfg.clip_crop_mode)
+    if treatment == "fit":
+        print("  [clip] fit: whole frame kept, blurred background fill")
+        vf = fit_filter() + "," + filter_args(ass_path, cfg.format)
+    else:
+        subject = None
+        if treatment == "crop" and cfg.clip_smart_crop:
+            from vision import subject_x as ask_subject
 
-        positions = []
-        for frac in (0.25, 0.6):
-            frame = extract_frame(
-                src, cand.start + length * frac,
-                work_dir / f"subject_{cand.start:.0f}_{int(frac * 100)}.jpg")
-            positions.append(ask_subject(frame, cfg))
-        subject = decide_subject_x(positions)
-        if subject is not None and abs(subject - 0.5) >= 0.08:
-            print(f"  [clip] smart crop: subject at {subject:.0%} of width")
-        else:
-            print("  [clip] crop: centered (subject centered or uncertain)")
-    vf = ",".join([smart_crop_filter(width, height, subject),
-                   filter_args(ass_path, cfg.format)])
+            positions = []
+            for frac in (0.25, 0.6):
+                frame = extract_frame(
+                    src, cand.start + length * frac,
+                    work_dir / f"subject_{cand.start:.0f}_{int(frac * 100)}.jpg")
+                positions.append(ask_subject(frame, cfg))
+            subject = decide_subject_x(positions)
+            if subject is not None and abs(subject - 0.5) >= 0.08:
+                print(f"  [clip] smart crop: subject at {subject:.0%} of width")
+            else:
+                print("  [clip] crop: centered (subject centered or uncertain)")
+        vf = ",".join([smart_crop_filter(width, height, subject)
+                       if treatment == "crop" else crop_filter(width, height),
+                       filter_args(ass_path, cfg.format)])
     cmd = [
         "ffmpeg", "-y", "-loglevel", "error",
         "-ss", f"{cand.start:.3f}", "-t", f"{length:.3f}", "-i", str(src),

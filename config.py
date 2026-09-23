@@ -315,6 +315,12 @@ DEFAULTS: dict[str, Any] = {
         # 9:16 crop window follows it (2 vision requests per clip).
         # false = always-centered crop (the old behaviour).
         "smart_crop": True,
+        # How a landscape VOD becomes vertical. "auto" (default): the
+        # WHOLE frame is kept with a blurred background fill — the crop
+        # slice lost ~65% of the picture (live 2026-09-23). "crop" =
+        # old middle-slice behaviour (with smart-crop subject tracking);
+        # "fit" = always keep the whole frame.
+        "crop_mode": "auto",
     },
     "youtube": {
         # YouTube Data API v3 keys (https://console.cloud.google.com/apis/
@@ -728,6 +734,13 @@ class Config:
     def clip_smart_crop(self) -> bool:
         """Clip crop window follows the detected subject (default true)."""
         return bool(self.data.get("clip", {}).get("smart_crop", True))
+
+    @property
+    def clip_crop_mode(self) -> str:
+        """Landscape->vertical treatment: auto | fit | crop (default auto)."""
+        mode = str(self.data.get("clip", {}).get("crop_mode")
+                   or "auto").strip().lower()
+        return mode if mode in ("auto", "fit", "crop") else "auto"
 
     @property
     def clip_polish_titles(self) -> bool:

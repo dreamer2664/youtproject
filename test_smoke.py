@@ -2728,6 +2728,37 @@ def t_clip_target():
     assert "target" in result.stdout and "--url" in result.stdout
 
 
+def t_clip_fit():
+    from clipper import crop_filter, fit_filter, vertical_treatment
+
+    graph = fit_filter()
+    assert graph.startswith("split=2[bg][fg];")
+    assert "boxblur=20:2" in graph and "eq=brightness=-0.15" in graph
+    assert "scale=1080:-2" in graph and "overlay=(W-w)/2:(H-h)/2" in graph
+    assert "force_original_aspect_ratio=increase" in graph
+    # Treatment table: the live case — 16:9 landscape keeps its frame.
+    assert vertical_treatment(1280, 720, "auto") == "fit"
+    assert vertical_treatment(1920, 1080, "auto") == "fit"
+    assert vertical_treatment(1080, 1080, "auto") == "fit"   # square: bars ok
+    assert vertical_treatment(720, 1280, "auto") == "scale"  # already vertical
+    assert vertical_treatment(864, 1152, "auto") == "crop"   # 3:4 sliver crop
+    # Explicit modes win; garbage falls back to auto's rules.
+    assert vertical_treatment(1280, 720, "crop") == "crop"
+    assert vertical_treatment(1280, 720, "fit") == "fit"
+    assert vertical_treatment(720, 1280, "fit") == "scale"
+    assert vertical_treatment(1280, 720, "nonsense") == "fit"
+    assert vertical_treatment(0, 0) == "scale"
+    # Old crop helpers unchanged for the crop path.
+    assert crop_filter(1280, 720) == "crop=ih*9/16:ih,scale=1080:1920"
+    # Config knob.
+    cfg = tmp_cfg()
+    assert cfg.clip_crop_mode == "auto"
+    cfg.data["clip"]["crop_mode"] = "crop"
+    assert cfg.clip_crop_mode == "crop"
+    cfg.data["clip"]["crop_mode"] = "bogus"
+    assert cfg.clip_crop_mode == "auto"
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3896,6 +3927,7 @@ def main() -> int:
         ("ab_titles", t_ab_titles),
         ("mux_crash_recovery", t_mux_crash_recovery),
         ("clip_target", t_clip_target),
+        ("clip_fit", t_clip_fit),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),
