@@ -86,6 +86,22 @@ python main.py costs    # Azure spend (if ever configured)
   free edge-tts. Raise/lower the number in config.yaml.
 - `snap` costs ~4 of 10,000 daily YouTube API units.
 
+### LLM call budget (audited 2026-09-23 — every call site walked)
+
+| Lane | LLM calls | Breakdown |
+|---|---|---|
+| `generate` | **5–6 / video** | script 1 · factcheck 1 · punch-up 1 · title polish 1 · decringe 1 · topic top-up 1 (only when the backlog dips). Hook fix, title fix, expand/tighten fire only on violations/word-budget misses — normally 0. |
+| `clip` | **2 + 1/clip / source** | moment pick 1 · transcript fix 1 (`clip.transcript_fix`, on by default) · title polish 1 per clip written. |
+| `scout` | **1 / run** | proposals in one call; interest evidence is free keyless Wikimedia pageviews. |
+| `snap` · voice · images | **0** | YouTube API units only; edge-tts; Pexels/Pixabay — image QC is heuristic, no vision API. |
+
+Verdict: nothing left to cut — the diet already happened (premium voices
+off by default, template fallback, single-call scout, heuristic QC). The
+only waste during a Gemini 429-storm is time, not tokens: the chain burns
+~2 min on retries before groq takes over. Generate in EU mornings, or
+`--no-gemini` when a storm is known. A full backlog (8+ topics) also skips
+the top-up call.
+
 ## When something goes wrong
 
 | Symptom | Meaning | Fix |
