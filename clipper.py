@@ -921,6 +921,31 @@ def clip_platform_caption(title: str, platform: str) -> str:
             + "\n") if tags else title.strip() + "\n"
 
 
+def _clip_checklist() -> str:
+    """Compact Studio walkthrough for a clip upload (tested).
+
+    First live clip posting (2026-09-23) went out with an EMPTY
+    description — the attribution line never reached YouTube. The
+    checklist exists so that never happens again.
+    """
+    return (
+        "# Upload checklist — clip\n\n"
+        "- [ ] **Title** — paste from `TITLE.txt` (hashtags included)\n"
+        "- [ ] **Description** — paste from `DESCRIPTION.txt` **before "
+        "publishing**.\n"
+        "      It credits the source video and its channel — that "
+        "attribution is what\n      separates a clip from a reupload if "
+        "YouTube ever reviews the channel.\n"
+        "- [ ] **Category** — Entertainment, not Education: a stream clip "
+        "should be\n      compared against other clips, not courseware.\n"
+        "- [ ] **Upload** — the .mp4 in this folder, exactly as rendered "
+        "(subtitles burned in)\n"
+        "- [ ] **Cross-post** — `tiktok.txt` / `reels.txt` captions are "
+        "ready (no credit\n      line on those platforms by design)\n"
+        "- [ ] `CREDIT.txt` keeps the source link and the exact time "
+        "window for your records\n")
+
+
 def write_kit(clip: Path, title: str, cand: Candidate, source: dict,
               out_root: Path) -> Path:
     """upload-style kit: mp4 + title + credited description."""
@@ -940,6 +965,7 @@ def write_kit(clip: Path, title: str, cand: Candidate, source: dict,
         clip_platform_caption(title, "tiktok"), encoding="utf-8")
     (kit / "reels.txt").write_text(
         clip_platform_caption(title, "reels"), encoding="utf-8")
+    (kit / "CHECKLIST.md").write_text(_clip_checklist(), encoding="utf-8")
     return kit
 
 

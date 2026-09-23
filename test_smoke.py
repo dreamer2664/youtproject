@@ -2913,6 +2913,10 @@ def t_clip_distribution():
         assert (kit / "reels.txt").exists()
         assert "#fyp" in (kit / "tiktok.txt").read_text(encoding="utf-8")
         assert (kit / "CREDIT.txt").exists()  # youtube credit intact
+        # checklist: the 2026-09-23 live posting went out with an empty
+        # description — kits now carry the walkthrough that prevents it
+        check = (kit / "CHECKLIST.md").read_text(encoding="utf-8")
+        assert "DESCRIPTION.txt" in check and "attribution" in check.lower()
     # batch planning: positional first, then flags in typed order
     assert plan_clip_sources("https://youtu.be/a", [], []) == \
         [("https://youtu.be/a", "")]
