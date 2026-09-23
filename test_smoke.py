@@ -2864,6 +2864,60 @@ def t_clip_distribution():
     assert plan_clip_sources("", [""], ["  "]) == []
 
 
+def t_json_mode_400_retry():
+    """Groq's json_object validator can 400 a legal prompt (live
+    2026-09-23): retry the same model once WITHOUT response_format."""
+    from unittest.mock import patch
+
+    import openai_compat
+    from groq import GroqProvider
+
+    class _Resp:
+        def __init__(self, status, payload):
+            self.status_code = status
+            self._payload = payload
+            self.text = str(payload)
+
+        def json(self):
+            return self._payload
+
+    calls = []
+
+    def fake_post(url, headers=None, json=None, timeout=0):
+        calls.append(dict(json))  # copy! the real body dict is mutated
+        if len(calls) == 1:
+            return _Resp(400, {"error": {"message":
+                "Failed to validate JSON. Please adjust your prompt."}})
+        assert "response_format" not in json, "retry kept response_format!"
+        return _Resp(200, {"choices": [{"message": {
+            "content": "{\"ok\": true}"}}]})
+
+    provider = GroqProvider(["k"], "openai/gpt-oss-120b")
+    with patch.object(openai_compat.requests, "post", side_effect=fake_post):
+        out = provider.generate_text("give me json", json_mode=True,
+                                     tag="t400")
+    assert out == '{"ok": true}'
+    assert len(calls) == 2 and "response_format" in calls[0]
+    # A non-JSON 400 never strips anything: straight to the next model.
+    calls.clear()
+
+    def fake_post2(url, headers=None, json=None, timeout=0):
+        calls.append(dict(json))
+        return _Resp(400, {"error": {"message": "bad request"}})
+
+    with patch.object(openai_compat.requests, "post", side_effect=fake_post2):
+        try:
+            provider.generate_text("x", json_mode=True, tag="t400b")
+            raised = False
+        except RuntimeError:
+            raised = True
+        assert raised
+    # no SAME-model retry: one call per model as the chain walks on
+    assert len(calls) == 3, calls
+    assert [c.get("model") for c in calls] == [
+        "openai/gpt-oss-120b", "qwen/qwen3.8-27b", "openai/gpt-oss-20b"]
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -4036,6 +4090,7 @@ def main() -> int:
         ("transcript_fix", t_transcript_fix),
         ("no_doubled_decorators", t_no_doubled_decorators),
         ("clip_distribution", t_clip_distribution),
+        ("json_mode_400_retry", t_json_mode_400_retry),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),
