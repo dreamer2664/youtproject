@@ -12,6 +12,11 @@
     python main.py reburn <id>   burn subtitles into an already-made video
     python main.py published     record a manual upload's URL
     python main.py voices        list available voiceover voices
+    python main.py clip --url L  turn a long video into subtitled vertical clips
+    python main.py snap          daily channel stats + retitle alerts
+    python main.py scout         validated topic ideas for the backlog
+    python main.py keys          API key usage vs free-tier limits
+    (full workflow: OPERATIONS.md)
 
 Nothing here costs money and nothing here touches the YouTube API, which is
 exactly why no audit or verification can ever be required. You upload the
