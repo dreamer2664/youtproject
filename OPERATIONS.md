@@ -66,6 +66,13 @@ plus `font` / `font_scale` / `outline` in the same block.
 See the style before rendering anything:
 `python main.py subpreview <any .mp4>` — a picker window with the exact
 YAML to paste (writes top/middle/bottom PNGs instead when headless).
+Swear words are masked in captions by default (fuck -> f*ck,
+`subtitles.mask_profanity`) — whole words only, timings untouched.
+
+More from one source: `--max-clips 12` (default 10), and
+`--top 5` builds ONE extra "Top 5 moments" countdown video from the
+run's best clips — numbered cards, best moment revealed last, no
+extra API calls. Its kit lands next to the clip kits.
 
 ## Decision rules (what the data says to do)
 

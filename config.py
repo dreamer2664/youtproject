@@ -126,6 +126,9 @@ DEFAULTS: dict[str, Any] = {
         "font": "Arial",      # any installed font name (Impact, Verdana...)
         "font_scale": 1.0,    # 1.0 = current sizes; 1.2 = 20% bigger text
         "outline": 0,         # 0 = engine default; 1-4 = heavier stroke
+        # Mask swear words in captions (fuck -> f*ck) — word-for-word,
+        # timings untouched, whole words only ("class" never matches).
+        "mask_profanity": True,
     },
     "disclosure": {
         # Appended to description.txt at package time (meta.json stays clean).
@@ -886,6 +889,10 @@ class Config:
             return int(self.data["subtitles"].get("outline", 0))
         except (TypeError, ValueError):
             return 0
+
+    @property
+    def subtitles_mask_profanity(self) -> bool:
+        return bool(self.data["subtitles"].get("mask_profanity", True))
 
     # -- disclosure ------------------------------------------------------
     @property

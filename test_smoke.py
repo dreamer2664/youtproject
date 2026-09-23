@@ -392,6 +392,58 @@ def t_queue():
     assert tmp.with_suffix(".corrupt.json").exists()
 
 
+def t_profanity_mask():
+    # Live request 2026-09-23: mask swears in captions (YouTube safety).
+    # Whole-word only, first letter kept, word count never changes.
+    from subtitles import mask_profanity
+
+    assert mask_profanity("what the fuck is this shit") == \
+        "what the f*ck is this sh*t"
+    assert mask_profanity("Fucking hell, SHIT!") == "F*ck*ng hell, SH*T!"
+    assert mask_profanity("motherfucker bitching cunts") == \
+        "m*th*rf*ck*r b*tch*ng c*nts"
+    # compounds never match
+    assert mask_profanity("class bass assess assumption scunthorpe") == \
+        "class bass assess assumption scunthorpe"
+    # word count preserved (karaoke timing depends on it)
+    assert len(mask_profanity("no damn way around it").split()) == 5
+    assert mask_profanity("") == ""
+    # config default + switch
+    cfg = tmp_cfg()
+    assert cfg.subtitles_mask_profanity is True
+    cfg.data["subtitles"]["mask_profanity"] = False
+    assert cfg.subtitles_mask_profanity is False
+
+
+def t_top_video():
+    # Top-X countdown: pick the best N, worst first, best revealed last.
+    from top import build_top_description, make_card, plan_top
+
+    entries = [
+        {"path": "a.mp4", "title": "first moment", "score": 5, "len": 30.0},
+        {"path": "b.mp4", "title": "second moment", "score": 9, "len": 25.0},
+        {"path": "c.mp4", "title": "third moment", "score": 7, "len": 20.0},
+    ]
+    plan = plan_top(entries, 2)
+    assert [(p["rank"], p["title"]) for p in plan] == \
+        [(2, "third moment"), (1, "second moment")]  # worst first, #1 last
+    assert plan_top(entries, 10)[0]["rank"] == 3     # uses what exists
+    desc = build_top_description(plan, {
+        "title": "Big Compilation", "channel": "Someone",
+        "url": "https://youtu.be/x"})
+    assert "Top 2 moments" in desc and "\"Big Compilation\"" in desc
+    assert "#2" in desc and "#1" in desc and "youtu.be/x" in desc
+    assert "0:01" in desc           # #2 starts after its 1.4s card
+    assert "0:23" in desc           # 1.4+20s+1.4=22.8 -> rounds to 0:23
+    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    card = make_card(1, 2, "the very best moment", tmp / "card.png")
+    assert card.exists()
+    from PIL import Image
+
+    img = Image.open(card)
+    assert img.size == (1080, 1920)  # portrait card, clip-shaped
+
+
 def t_sub_position():
     # Subtitle placement + style knobs (2026-09-23): clips burned karaoke
     # dead-center (Alignment=5) — right where the main event usually is.
@@ -4251,6 +4303,8 @@ def main() -> int:
         ("reclaim_interrupted", t_reclaim_interrupted),
         ("sub_position", t_sub_position),
         ("subpreview", t_subpreview),
+        ("profanity_mask", t_profanity_mask),
+        ("top_video", t_top_video),
         ("bot_parser", t_bot_parser),
         ("package", t_package),
         ("audiofx", t_audiofx),

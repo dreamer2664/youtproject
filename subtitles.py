@@ -228,6 +228,41 @@ def system_fonts_dir() -> Path | None:
     return cand if cand.is_dir() else None
 
 
+# Whole-word profanity masker (live request 2026-09-23: "youtube might get
+# mad, better safe than sorry"). Keeps the first letter, asterisks the rest
+# (f*ck) — recognizable to humans, invisible to literal-word matching.
+PROFANITY = frozenset({
+    "fuck", "fucks", "fucked", "fucker", "fuckers", "fucking",
+    "motherfucker", "motherfucking", "mf",
+    "shit", "shits", "shitted", "shitting", "shitty",
+    "bitch", "bitches", "bitching", "bastard", "bastards",
+    "ass", "asses", "asshole", "assholes", "arsehole", "arseholes",
+    "dick", "dicks", "dickhead", "cock", "cocks", "pussy", "cunt", "cunts",
+    "twat", "prick", "wanker", "bollocks", "whore", "whores", "slut", "sluts",
+    "nigger", "niggers", "nigga", "niggas", "faggot", "faggots", "fag",
+    "retard", "retards", "retarded", "spic", "chink", "kike", "wetback",
+    "tranny", "trannies",
+})
+
+
+def mask_profanity(text: str) -> str:
+    """Mask profane words, vowel-starring style: fuck -> f*ck. Tested.
+
+    Word count is never changed — karaoke timing depends on it. Compound
+    words (class, bass, assume) never match: lookup is whole-word only.
+    Case is preserved (SHIT -> SH*T).
+    """
+    import re
+
+    def _mask(match) -> str:
+        word = match.group(0)
+        if word.lower() in PROFANITY:
+            return re.sub(r"[aeiouAEIOU]", "*", word)
+        return word
+
+    return re.sub(r"[A-Za-z]+", _mask, text or "")
+
+
 def filter_args(sub_path: Path, video_format: str,
                 style: dict | None = None) -> str:
     """Full `subtitles=...` filter argument value (without -vf quotes)."""

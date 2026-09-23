@@ -114,6 +114,8 @@ subtitles:
   font: "Arial"      # any installed font name (Impact, Verdana, ...)
   font_scale: 1.0    # 1.0 = current sizes; 1.2 = 20% bigger text
   outline: 0         # 0 = engine default; 1-4 = heavier stroke
+  # Mask swear words in captions (fuck -> f*ck), whole words only.
+  mask_profanity: true
 
 disclosure:
   # YouTube requires AI-made videos to be disclosed. This footer is appended

@@ -34,7 +34,7 @@ from assembler import ffprobe_duration, resolve_encoder_args
 from config import Config
 from subtitles import build_karaoke_events, filter_args, sub_style_from_cfg, write_ass
 
-MAX_CLIPS_DEFAULT = 6
+MAX_CLIPS_DEFAULT = 10
 MIN_CLIP_SECONDS = 20
 MAX_CLIP_SECONDS = 45
 CHUNK_SECONDS = 1500          # 25 min of opus@16k mono ~ 3-5MB, under 25MB
@@ -1153,7 +1153,8 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
              max_len: int = MAX_CLIP_SECONDS,
              use_vision: bool = True, keep_work: bool = False,
              out_dir: Path | None = None,
-             sub_pos: str = "default") -> int:
+             sub_pos: str = "default",
+             top_count: int = 0) -> int:
     """The whole lane. Returns process exit code."""
     if not url and not file:
         raise ClipError("give me --url <youtube link> or --file <local mp4>")
@@ -1199,6 +1200,13 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
         print(f"  [clip] transcript: {len(words)} words (cached for re-runs)")
     if len(words) < 40:
         raise ClipError("transcript too thin to mine for moments")
+    # Mask AFTER the cache: caches keep true words (the fix pass stays
+    # effective on re-runs), every consumer below sees masked words.
+    if cfg.subtitles_mask_profanity:
+        from subtitles import mask_profanity
+
+        words = [dict(w, word=mask_profanity(str(w.get("word") or "")))
+                 for w in words]
     windows = split_windows(words)
     candidates = []
     for index, win in enumerate(windows, start=1):
@@ -1243,6 +1251,7 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
 
     out_root.mkdir(parents=True, exist_ok=True)
     kits = []
+    entries: list[dict] = []
     for index, cand in enumerate(accepted, start=1):
         clip_path = out_root / f"{source_key[:8]}_clip_{index:02d}.mp4"
         render_clip(src, cand, words, cfg, clip_path, work, sub_pos)
@@ -1256,8 +1265,19 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
             if polished:
                 title = polished
         kits.append(write_kit(clip_path, title, cand, source, out_root))
+        entries.append({"path": clip_path, "title": title,
+                        "score": cand.score, "len": cand.end - cand.start})
         print(f"  [clip] {clip_path.name}: {title!r}")
     print(f"\n  {len(kits)} clip(s) + kits -> {out_root}")
+    if top_count and entries:
+        try:
+            from top import build_top
+
+            build_top(cfg, entries, source, source_key, out_root,
+                      top_count, work)
+        except Exception as exc:  # noqa: BLE001 - the compilation is a bonus
+            print(f"  [top] compilation failed ({str(exc)[:120]}) — "
+                  "clips are unaffected")
     if not keep_work:
         shutil.rmtree(work, ignore_errors=True)
     return 0

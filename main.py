@@ -549,6 +549,10 @@ def cmd_generate(cfg, args) -> int:
                     starts.append(running)
                     running += scene_len
                 narrations = [s.narration for s in script.scenes]
+                if cfg.subtitles_mask_profanity:
+                    from subtitles import mask_profanity
+
+                    narrations = [mask_profanity(n) for n in narrations]
                 cues = build_cues(narrations, timings, starts, durations,
                                   max_chars_for(cfg.format), HEAD_TAIL)
                 srt_path = write_srt(cues, out_path.with_suffix(".srt"))
@@ -1116,7 +1120,8 @@ def cmd_clip(cfg, args) -> int:
                      max_len=args.max_len, use_vision=not args.no_vision,
                      keep_work=args.keep_work,
                      out_dir=Path(args.out) if args.out else None,
-                     sub_pos=getattr(args, "sub_pos", "default"))
+                     sub_pos=getattr(args, "sub_pos", "default"),
+                     top_count=getattr(args, "top", 0))
             results.append((label, "ok", ""))
         except ClipError as exc:
             results.append((label, "failed", str(exc)[:120]))
@@ -1523,6 +1528,10 @@ def main() -> int:
                    help="subtitle placement for this run (default: config "
                         "subtitles.position; auto = frame analysis picks "
                         "the calmest third, no API)")
+    p.add_argument("--top", type=int, default=0, metavar="N",
+                   help="also build ONE 'Top N moments' countdown video "
+                        "from this run's best clips (cards + concat, no "
+                        "extra API calls)")
 
     p = sub.add_parser("subpreview",
                        help="preview subtitle position/size/font on a real "
