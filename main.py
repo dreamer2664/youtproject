@@ -1044,21 +1044,38 @@ def cmd_jarvis(cfg, args) -> int:
 
 
 def cmd_clip(cfg, args) -> int:
-    """Clip lane: one source video -> N subtitled vertical clips."""
+    """Clip lane: one or many source videos -> N subtitled vertical clips."""
     print(BANNER)
-    from clipper import ClipError, resolve_clip_target, run_clip
+    from clipper import ClipError, plan_clip_sources, run_clip
 
-    try:
-        url, file = resolve_clip_target(
-            getattr(args, "target", ""), args.url or "", args.file or "")
-        return run_clip(cfg, url=url, file=file,
-                        max_clips=args.max_clips, min_len=args.min_len,
-                        max_len=args.max_len, use_vision=not args.no_vision,
-                        keep_work=args.keep_work,
-                        out_dir=Path(args.out) if args.out else None)
-    except ClipError as exc:
-        print(f"\n  clipping failed: {exc}")
-        return 1
+    sources = plan_clip_sources(
+        getattr(args, "target", ""), args.url or [], args.file or [])
+    if not sources:
+        die("give me a source: clip <link-or-path>, or --url/--file "
+            "(both repeatable for batch runs)")
+    results: list[tuple[str, str, str]] = []  # (label, status, detail)
+    for index, (url, file) in enumerate(sources, start=1):
+        label = url or file
+        if len(sources) > 1:
+            print(f"\n  [clip] source {index}/{len(sources)}: {label}")
+        try:
+            run_clip(cfg, url=url, file=file,
+                     max_clips=args.max_clips, min_len=args.min_len,
+                     max_len=args.max_len, use_vision=not args.no_vision,
+                     keep_work=args.keep_work,
+                     out_dir=Path(args.out) if args.out else None)
+            results.append((label, "ok", ""))
+        except ClipError as exc:
+            results.append((label, "failed", str(exc)[:120]))
+        except Exception as exc:  # noqa: BLE001 - one bad source kills
+            results.append((label, "failed", f"unexpected: {exc}"[:120]))
+    if len(sources) > 1:
+        print("\n  clip batch summary:")
+        for label, status, detail in results:
+            mark = "ok " if status == "ok" else "FAIL"
+            print(f"    [{mark}] {label}"
+                  + (f" — {detail}" if detail else ""))
+    return 0 if any(status == "ok" for _, status, _ in results) else 1
 
 
 def cmd_bot(cfg, args) -> int:
@@ -1401,8 +1418,10 @@ def main() -> int:
     p.add_argument("--dry-run", action="store_true",
                    help="report what would render, then stop")
     p = sub.add_parser("clip", help="turn a long video into subtitled vertical clips")
-    p.add_argument("--url", help="YouTube link of the source video")
-    p.add_argument("--file", help="local video file instead of a link")
+    p.add_argument("--url", action="append",
+                   help="YouTube link of the source video (repeatable)")
+    p.add_argument("--file", action="append",
+                   help="local video file instead of a link (repeatable)")
     p.add_argument("target", nargs="?",
                    help="shortcut: a link or file path (same as --url/--file)")
     p.add_argument("--max-clips", type=int, default=6,
