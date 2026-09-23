@@ -2690,17 +2690,18 @@ def t_mux_crash_recovery():
     # AssemblyError carries the exit code; run() propagates it
     err = AssemblyError("x failed (exit 1)", cmd=["x"], returncode=1)
     assert err.returncode == 1
-    with tempfile.TemporaryDirectory() as tmp:
-        bad = Path(tmp) / "bad.sh"
-        bad.write_text("#!/bin/sh\nexit 3\n")
-        bad.chmod(0o755)
-        try:
-            run([str(bad)], "probe")
-            raised = False
-        except AssemblyError as exc:
-            raised = True
-            assert exc.returncode == 3
-        assert raised
+    # A real failing subprocess, cross-platform: a .sh script only proves
+    # exit codes on Linux (live catch on the main PC: WinError 193,
+    # "not a valid Win32 application"). Python exits 3 everywhere.
+    import sys as _sys
+
+    try:
+        run([_sys.executable, "-c", "import sys; sys.exit(3)"], "probe")
+        raised = False
+    except AssemblyError as exc:
+        raised = True
+        assert exc.returncode == 3
+    assert raised
 
 
 def t_music_audit():
