@@ -2704,6 +2704,30 @@ def t_mux_crash_recovery():
     assert raised
 
 
+def t_clip_target():
+    import subprocess
+    import sys as _sys
+    from pathlib import Path as _P
+
+    from clipper import resolve_clip_target
+
+    # bare link -> url; bare path -> file (live case 2026-09-23).
+    assert resolve_clip_target("https://youtu.be/abc123XYZ_-", "", "") == \
+        ("https://youtu.be/abc123XYZ_-", "")
+    assert resolve_clip_target("C:\\videos\\vod.mp4", "", "") == \
+        ("", "C:\\videos\\vod.mp4")
+    # explicit flags win over the positional; empty stays empty.
+    assert resolve_clip_target("junk", "u", "")[0] == "u"
+    assert resolve_clip_target("junk", "", "f.mp4") == ("", "f.mp4")
+    assert resolve_clip_target("", "", "") == ("", "")
+    # and the CLI actually accepts the positional (parser wiring).
+    result = subprocess.run(
+        [_sys.executable, str(_P("main.py")), "clip", "-h"],
+        capture_output=True, text=True, cwd=str(_P(".")))
+    assert result.returncode == 0, result.stderr[-200:]
+    assert "target" in result.stdout and "--url" in result.stdout
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3871,6 +3895,7 @@ def main() -> int:
         ("topic_scout", t_topic_scout),
         ("ab_titles", t_ab_titles),
         ("mux_crash_recovery", t_mux_crash_recovery),
+        ("clip_target", t_clip_target),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),

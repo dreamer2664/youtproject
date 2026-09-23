@@ -1046,10 +1046,12 @@ def cmd_jarvis(cfg, args) -> int:
 def cmd_clip(cfg, args) -> int:
     """Clip lane: one source video -> N subtitled vertical clips."""
     print(BANNER)
-    from clipper import ClipError, run_clip
+    from clipper import ClipError, resolve_clip_target, run_clip
 
     try:
-        return run_clip(cfg, url=args.url or "", file=args.file or "",
+        url, file = resolve_clip_target(
+            getattr(args, "target", ""), args.url or "", args.file or "")
+        return run_clip(cfg, url=url, file=file,
                         max_clips=args.max_clips, min_len=args.min_len,
                         max_len=args.max_len, use_vision=not args.no_vision,
                         keep_work=args.keep_work,
@@ -1401,6 +1403,8 @@ def main() -> int:
     p = sub.add_parser("clip", help="turn a long video into subtitled vertical clips")
     p.add_argument("--url", help="YouTube link of the source video")
     p.add_argument("--file", help="local video file instead of a link")
+    p.add_argument("target", nargs="?",
+                   help="shortcut: a link or file path (same as --url/--file)")
     p.add_argument("--max-clips", type=int, default=6,
                    help="how many clips to keep (default 6)")
     p.add_argument("--min-len", type=int, default=20,

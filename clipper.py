@@ -895,6 +895,22 @@ def prune_stale_runs(work_root: Path, keep: Path,
 
 
 # ---------------------------------------------------------------- main
+def resolve_clip_target(target: str, url: str,
+                        file: str) -> tuple[str, str]:
+    """Positional shortcut -> (url, file) (pure, tested).
+
+    `main.py clip <link-or-path>` is the natural way people call this
+    (live 2026-09-23: a bare link died as 'unrecognized arguments').
+    http(s) -> url, anything else -> file path; explicit flags always win.
+    """
+    target = (target or "").strip()
+    if target and not (url or "").strip() and not (file or "").strip():
+        if target.lower().startswith(("http://", "https://")):
+            return target, ""
+        return "", target
+    return (url or "").strip(), (file or "").strip()
+
+
 def run_clip(cfg: Config, url: str = "", file: str = "",
              max_clips: int = MAX_CLIPS_DEFAULT,
              min_len: int = MIN_CLIP_SECONDS,

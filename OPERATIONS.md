@@ -45,7 +45,8 @@ the last week (bar: `topics.scout_min_weekly_views`). The old
 ## Clips (from any long video)
 
 ```powershell
-python main.py clip --url <youtube link>     # a VOD
+python main.py clip <youtube link>          # a VOD (shortcut form)
+python main.py clip --url <youtube link>     # same thing, explicit
 python main.py clip --file C:\path\to.mp4    # a local file
 ```
 
