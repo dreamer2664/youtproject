@@ -314,52 +314,64 @@ def fix_transcript_words(words: list[dict], title: str,
     """One LLM pass fixing misheard words; timings untouched (tested).
 
     Live complaint 2026-09-23: Whisper mishears homophones (know/no).
-    HARD GUARDS: the model may only REPLACE a word with exactly one
-    other word — same count, same order, no merges — or the whole batch
-    is discarded. Word timings are never touched, so captions cannot
-    desync. Never raises.
+    DIFFS ONLY (live lesson 2026-09-23, groq probe): the old contract
+    made the model echo all ~800 words back — gpt-oss burns its 3,072-
+    token completion cap on hidden reasoning and comes back EMPTY or
+    truncated mid-JSON (finish=length), so on groq the fix silently
+    never applied. The model now numbers the words and returns only the
+    ones that change — a typical reply is a few dozen tokens. HARD
+    GUARDS: each fix must name one in-batch index and ONE replacement
+    word; anything else is ignored. Word timings are never touched, so
+    captions cannot desync. Never raises.
     """
     from scriptgen import extract_json
 
     if not words:
         return words
-    out: list[dict] = []
-    for start in range(0, len(words), TRANSCRIPT_FIX_BATCH):
-        batch = words[start:start + TRANSCRIPT_FIX_BATCH]
-        originals = [str(w.get("word") or "") for w in batch]
+    out = [dict(w) for w in words]
+    for start in range(0, len(out), TRANSCRIPT_FIX_BATCH):
+        stop = min(start + TRANSCRIPT_FIX_BATCH, len(out))
+        batch_words = [str(out[i].get("word") or "") for i in range(start, stop)]
+        numbered = "\n".join(f"{j}: {w}" for j, w in enumerate(batch_words))
         prompt = (
             "This is an automatic transcript of a video"
             + (f" titled {title!r}" if (title or "").strip() else "") + ".\n"
             "Fix ONLY obvious misheard words — homophones such as know/no, "
             "their/there, your/you're, heel/heal — and clear spelling "
             "slips.\n"
-            "HARD RULES: return EXACTLY one word for each input word, in "
-            "the same order; never add, drop, merge or reorder; keep "
-            "punctuation exactly as-is; when unsure, copy the word "
-            "unchanged.\n"
-            'Return ONLY JSON: {"words": ["word1", "word2", ...]} with the '
-            "same count as the input.\n"
-            "WORDS:\n" + "\n".join(originals))
+            "The words are numbered below. Reply with ONLY the words that "
+            "need fixing:\n"
+            'Return ONLY JSON: {"fixes": [{"i": <index>, "w": '
+            '"<corrected word>"}]} — one entry per word that changes.\n'
+            "Never merge, add or drop words; keep punctuation as-is; when "
+            "unsure, leave the word out.\n"
+            'No changes needed -> {"fixes": []}.\n'
+            "NUMBERED WORDS:\n" + numbered)
         try:
             raw = provider.generate_text(prompt, temperature=0.0,
                                          tag="clipfix", json_mode=True)
             data = extract_json(raw)
-            fixed = data.get("words") if isinstance(data, dict) else None
         except Exception:  # noqa: BLE001 - a fix pass never kills clips
-            out.extend(batch)
             continue
-        if not isinstance(fixed, list) or len(fixed) != len(originals):
-            out.extend(batch)
+        fixes = data.get("fixes") if isinstance(data, dict) else None
+        if not isinstance(fixes, list):
             continue
-        for old, new in zip(batch, fixed):
-            new = str(new).strip()
-            if (not new or new == old.get("word")
-                    or len(new.split()) != 1):
-                out.append(old)
+        for fix in fixes:
+            if not isinstance(fix, dict):
                 continue
-            patched = dict(old)
-            patched["word"] = new
-            out.append(patched)
+            try:
+                j = int(fix.get("i"))
+                new = str(fix.get("w") or "").strip()
+            except (TypeError, ValueError):
+                continue
+            if not (0 <= j < stop - start):
+                continue
+            gi = start + j
+            old = batch_words[j]
+            if new and len(new.split()) == 1 and new != old:
+                patched = dict(out[gi])
+                patched["word"] = new
+                out[gi] = patched
     return out
 
 

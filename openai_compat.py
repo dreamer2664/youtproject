@@ -190,9 +190,21 @@ class OpenAICompatProvider(GeminiProvider):
                         return (content, calls) if raw else content
                     # A dry backing pool can come back 200-with-empty (seen
                     # live): a pool-wide symptom, so jump pools at once.
+                    # finish_reason says WHY (live 2026-09-23: gpt-oss
+                    # burns its completion cap on hidden reasoning ->
+                    # finish=length with zero content tokens).
                     if not content or not str(content).strip():
-                        last_error = f"{model} returned empty content"
-                        print(f"  [{tag}] {self.name} {model} returned empty content; "
+                        finish = ""
+                        try:
+                            finish = str(
+                                payload["choices"][0].get("finish_reason")
+                                or "")
+                        except (KeyError, IndexError, TypeError):
+                            pass
+                        last_error = (f"{model} returned empty content "
+                                      f"(finish={finish or '?'})")
+                        print(f"  [{tag}] {self.name} {model} returned "
+                              f"empty content (finish={finish or '?'}); "
                               f"trying next model.")
                         break
                     return (content, []) if raw else content

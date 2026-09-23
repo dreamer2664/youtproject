@@ -2951,30 +2951,39 @@ def t_transcript_fix():
     assert wp["language"] == "en"
     assert "Jellyfish" in wp["prompt"]
 
+    prompts = []
+
     class _P:
-        def __init__(self, words_out):
-            self.words_out = words_out
+        def __init__(self, fixes):
+            self.fixes = fixes
 
         def generate_text(self, prompt, **kw):
-            return _json.dumps({"words": self.words_out})
+            prompts.append(prompt)
+            return _json.dumps({"fixes": self.fixes})
 
     words = [{"word": "you", "start": 0.0, "end": 0.3},
              {"word": "no", "start": 0.4, "end": 0.7},
              {"word": "the", "start": 0.8, "end": 1.0},
              {"word": "answer.", "start": 1.1, "end": 1.5}]
-    # know->no style fix, timings preserved.
+    # diffs-only contract (groq live lesson): the model returns just the
+    # words that change — no 800-word echo that overflows completion caps.
     fixed = fix_transcript_words(words, "Quiz Time", _P(
-        ["you", "know", "the", "answer."]))
+        [{"i": 1, "w": "know"}]))
     assert [w["word"] for w in fixed] == ["you", "know", "the", "answer."]
     assert fixed[1]["start"] == 0.4 and fixed[1]["end"] == 0.7
-    # Wrong count -> whole batch discarded (captions can never desync).
-    same = fix_transcript_words(words, "t", _P(["you", "know"]))
-    assert same == words
-    # Multi-word replacement rejected word-by-word.
-    mixed = fix_transcript_words(words, "t", _P(
-        ["you", "know the", "the", "answer."]))
-    assert [w["word"] for w in mixed] == ["you", "no", "the", "answer."]
-    # Provider failure -> original, no exception.
+    assert words[1]["word"] == "no"      # caller's list never mutated
+    assert "NUMBERED WORDS" in prompts[-1] and '"fixes"' in prompts[-1]
+    assert "1: no" in prompts[-1]        # local indexes, one per word
+    # nothing to fix -> untouched
+    assert fix_transcript_words(words, "t", _P([])) == words
+    # every malformed fix is ignored individually: out-of-range index,
+    # multi-word replacement, same word, junk entries, missing keys.
+    junk = fix_transcript_words(words, "t", _P([
+        {"i": 99, "w": "know"}, {"i": 0, "w": "the answer"},
+        {"i": 2, "w": "the"}, "not-a-dict", {"w": "orphan"},
+        {"i": 3, "w": ""}]))
+    assert [w["word"] for w in junk] == ["you", "no", "the", "answer."]
+    # provider failure -> original, no exception.
     class _Boom:
         def generate_text(self, prompt, **kw):
             raise RuntimeError("503")
