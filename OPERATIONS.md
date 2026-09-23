@@ -50,9 +50,11 @@ python main.py clip --url <youtube link>     # same thing, explicit
 python main.py clip --file C:\path\to.mp4    # a local file
 ```
 
-Downloads → transcript (cached — re-runs are free) → picks the strongest
-moments → cuts on sentence boundaries, opens on the hook, crops to follow
-the subject → upload kits in `clips/`. Costs ~15-17 API requests per source,
+Downloads → transcript (mishears auto-corrected, cached — re-runs are
+free) → picks the strongest moments → cuts on sentence boundaries, opens
+on the hook → **landscape VODs keep their whole frame** (sharp, centered,
+blurred background fill; `clip.crop_mode` switches to the old crop) →
+upload kits in `clips/`. Costs ~15-17 API requests per source,
 less than one generated video.
 
 ## Decision rules (what the data says to do)
