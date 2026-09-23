@@ -898,6 +898,29 @@ def pick_title(cand: Candidate, words_in_clip: list[dict]) -> str:
 
 
 # ----------------------------------------------------------------- kit
+def clip_hashtags(title: str, platform: str) -> list[str]:
+    """Caption hashtags for a clip: platform staples + title words (tested)."""
+    base = {"tiktok": ["fyp", "foryou", "learnontiktok"],
+            "reels": ["reels", "explore", "learn"]}[platform]
+    words = []
+    for word in "".join(c if c.isalnum() else " " for c in title.lower()
+                        ).split():
+        if len(word) > 3 and word not in words and word not in base:
+            words.append(word)
+    return (words[:3] + base)[:6]
+
+
+def clip_platform_caption(title: str, platform: str) -> str:
+    """Ready-to-paste TikTok/Reels caption for a clip (pure, tested).
+
+    No source credit here — TikTok/Reels bios carry it; the YouTube kit
+    (DESCRIPTION.txt / CREDIT.txt) keeps the full attribution.
+    """
+    tags = clip_hashtags(title, platform)
+    return (title.strip() + "\n\n" + " ".join(f"#{t}" for t in tags)
+            + "\n") if tags else title.strip() + "\n"
+
+
 def write_kit(clip: Path, title: str, cand: Candidate, source: dict,
               out_root: Path) -> Path:
     """upload-style kit: mp4 + title + credited description."""
@@ -913,6 +936,10 @@ def write_kit(clip: Path, title: str, cand: Candidate, source: dict,
         f"source: {source['url']}\nchannel: {source['channel']}\n"
         f"window: {cand.start:.1f}s - {cand.end:.1f}s\n",
         encoding="utf-8")
+    (kit / "tiktok.txt").write_text(
+        clip_platform_caption(title, "tiktok"), encoding="utf-8")
+    (kit / "reels.txt").write_text(
+        clip_platform_caption(title, "reels"), encoding="utf-8")
     return kit
 
 
@@ -1008,6 +1035,26 @@ def prune_stale_runs(work_root: Path, keep: Path,
 
 
 # ---------------------------------------------------------------- main
+def plan_clip_sources(target: str, urls: list[str],
+                      files: list[str]) -> list[tuple[str, str]]:
+    """All sources to clip, in order (pure, tested).
+
+    Positional shortcut first (if given), then every --url / --file in
+    the order typed. One source is [(url, "")] or [("", file)].
+    """
+    sources: list[tuple[str, str]] = []
+    pair = resolve_clip_target(target, "", "")
+    if pair != ("", ""):
+        sources.append(pair)
+    for url in urls or []:
+        if str(url).strip():
+            sources.append((str(url).strip(), ""))
+    for file in files or []:
+        if str(file).strip():
+            sources.append(("", str(file).strip()))
+    return sources
+
+
 def resolve_clip_target(target: str, url: str,
                         file: str) -> tuple[str, str]:
     """Positional shortcut -> (url, file) (pure, tested).

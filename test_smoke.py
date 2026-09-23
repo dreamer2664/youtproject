@@ -2821,6 +2821,49 @@ def t_no_doubled_decorators():
             f"doubled @property in {path.name}"
 
 
+def t_clip_distribution():
+    import tempfile
+    from pathlib import Path
+
+    from clipper import (Candidate, clip_hashtags,
+                         clip_platform_caption, plan_clip_sources,
+                         write_kit)
+
+    # hashtags: platform staples + title words, capped
+    tt = clip_hashtags("Why Cells Become the Most Immortal Animal", "tiktok")
+    assert tt[:3] == ["cells", "become", "most"] and "fyp" in tt
+    assert len(tt) <= 6
+    assert "reels" in clip_hashtags("Title Here", "reels")
+    # captions: title + tags, one line each, no credit (that's for YouTube)
+    cap = clip_platform_caption("Why Cells Become Immortal", "tiktok")
+    assert cap.startswith("Why Cells Become Immortal\n")
+    assert "#fyp" in cap and "youtu" not in cap.lower()
+    assert clip_platform_caption("T", "reels").endswith("\n")
+    # kit: platform files land next to the old ones
+    with tempfile.TemporaryDirectory() as tmp:
+        clip = Path(tmp) / "clip_01.mp4"
+        clip.write_bytes(b"v" * 64)
+        cand = Candidate(start=1.0, end=20.0, hook="h", title_idea="t")
+        kit = write_kit(clip, "Why Cells Become Immortal", cand,
+                        {"title": "s", "channel": "c", "url": "u"},
+                        Path(tmp))
+        assert (kit / "tiktok.txt").exists()
+        assert (kit / "reels.txt").exists()
+        assert "#fyp" in (kit / "tiktok.txt").read_text(encoding="utf-8")
+        assert (kit / "CREDIT.txt").exists()  # youtube credit intact
+    # batch planning: positional first, then flags in typed order
+    assert plan_clip_sources("https://youtu.be/a", [], []) == \
+        [("https://youtu.be/a", "")]
+    assert plan_clip_sources("C:\\v.mp4", [], []) == [("", "C:\\v.mp4")]
+    plan = plan_clip_sources("", ["u1", "u2"], ["f1"])
+    assert plan == [("u1", ""), ("u2", ""), ("", "f1")]
+    plan2 = plan_clip_sources("u0", ["u1"], ["f1", ""])
+    assert plan2 == [("", "u0"), ("u1", ""), ("", "f1")]  # u0 isn't a
+    # URL -> correctly routed as a file path
+    assert plan_clip_sources("", [], []) == []
+    assert plan_clip_sources("", [""], ["  "]) == []
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3992,6 +4035,7 @@ def main() -> int:
         ("clip_fit", t_clip_fit),
         ("transcript_fix", t_transcript_fix),
         ("no_doubled_decorators", t_no_doubled_decorators),
+        ("clip_distribution", t_clip_distribution),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),
