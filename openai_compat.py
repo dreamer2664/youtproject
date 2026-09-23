@@ -147,6 +147,7 @@ class OpenAICompatProvider(GeminiProvider):
                 body["response_format"] = {"type": "json_object"}
             self._tweak_body(body, model)
             tried = down = 0
+            stripped_json = False
             index = 0
             while index < len(keys):
                 key = keys[index]
@@ -204,6 +205,18 @@ class OpenAICompatProvider(GeminiProvider):
                 if status == 404:
                     print(f"  [{tag}] {self.name} {model} unavailable (404); trying next model.")
                     break
+                if status == 400 and "Failed to validate JSON" in text \
+                        and "response_format" in body and not stripped_json:
+                    # Live 2026-09-23: Groq's json_object validator rejects
+                    # some long prompts outright (worked Sep 21, tightened
+                    # server-side). The prompts demand JSON in plain words
+                    # and extract_json parses prose, so drop the enforced
+                    # mode and retry the same model once.
+                    stripped_json = True
+                    body.pop("response_format", None)
+                    print(f"  [{tag}] {self.name} {model} rejected json mode "
+                          f"— retrying without response_format")
+                    continue
                 if status == 429:
                     # Pool-dry 429 (marks every key): jump pools at once.
                     # Any other 429 is per-key: rotate immediately.
