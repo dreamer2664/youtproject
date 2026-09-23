@@ -321,6 +321,11 @@ DEFAULTS: dict[str, Any] = {
         # old middle-slice behaviour (with smart-crop subject tracking);
         # "fit" = always keep the whole frame.
         "crop_mode": "auto",
+        # One guarded LLM pass over a fresh transcript fixing misheard
+        # words (know/no). Word-for-word replacements only, timings
+        # untouched; runs once per source (the fixed transcript is what
+        # gets cached). false = raw Whisper output.
+        "transcript_fix": True,
     },
     "youtube": {
         # YouTube Data API v3 keys (https://console.cloud.google.com/apis/
@@ -734,6 +739,11 @@ class Config:
     def clip_smart_crop(self) -> bool:
         """Clip crop window follows the detected subject (default true)."""
         return bool(self.data.get("clip", {}).get("smart_crop", True))
+
+    @property
+    def clip_transcript_fix(self) -> bool:
+        """Fresh clip transcripts get a guarded homophone-fix pass."""
+        return bool(self.data.get("clip", {}).get("transcript_fix", True))
 
     @property
     def clip_crop_mode(self) -> str:

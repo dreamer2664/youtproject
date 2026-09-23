@@ -2759,6 +2759,68 @@ def t_clip_fit():
     assert cfg.clip_crop_mode == "auto"
 
 
+def t_transcript_fix():
+    import json as _json
+
+    from clipper import fix_transcript_words, whisper_params
+
+    assert whisper_params("") == {"language": "en"}
+    wp = whisper_params("The Immortal Jellyfish Explained")
+    assert wp["language"] == "en"
+    assert "Jellyfish" in wp["prompt"]
+
+    class _P:
+        def __init__(self, words_out):
+            self.words_out = words_out
+
+        def generate_text(self, prompt, **kw):
+            return _json.dumps({"words": self.words_out})
+
+    words = [{"word": "you", "start": 0.0, "end": 0.3},
+             {"word": "no", "start": 0.4, "end": 0.7},
+             {"word": "the", "start": 0.8, "end": 1.0},
+             {"word": "answer.", "start": 1.1, "end": 1.5}]
+    # know->no style fix, timings preserved.
+    fixed = fix_transcript_words(words, "Quiz Time", _P(
+        ["you", "know", "the", "answer."]))
+    assert [w["word"] for w in fixed] == ["you", "know", "the", "answer."]
+    assert fixed[1]["start"] == 0.4 and fixed[1]["end"] == 0.7
+    # Wrong count -> whole batch discarded (captions can never desync).
+    same = fix_transcript_words(words, "t", _P(["you", "know"]))
+    assert same == words
+    # Multi-word replacement rejected word-by-word.
+    mixed = fix_transcript_words(words, "t", _P(
+        ["you", "know the", "the", "answer."]))
+    assert [w["word"] for w in mixed] == ["you", "no", "the", "answer."]
+    # Provider failure -> original, no exception.
+    class _Boom:
+        def generate_text(self, prompt, **kw):
+            raise RuntimeError("503")
+
+    assert fix_transcript_words(words, "t", _Boom()) == words
+    assert fix_transcript_words([], "t", _P([])) == []
+    # config default + switch
+    cfg = tmp_cfg()
+    assert cfg.clip_transcript_fix is True
+    cfg.data["clip"]["transcript_fix"] = False
+    assert cfg.clip_transcript_fix is False
+
+
+def t_no_doubled_decorators():
+    """Agent tripwire (4th live strike 2026-09-23): inserting a property
+    before a decorated def duplicated @property and broke the property
+    until the suite caught it. Ban the pattern outright, every module."""
+    import re as _re
+
+    pattern = _re.compile(r"^\s*@property\s*$\n^\s*@property", _re.M)
+    for path in Path(__file__).parent.glob("*.py"):
+        if path.name == "test_smoke.py":
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert not pattern.search(text), \
+            f"doubled @property in {path.name}"
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3928,6 +3990,8 @@ def main() -> int:
         ("mux_crash_recovery", t_mux_crash_recovery),
         ("clip_target", t_clip_target),
         ("clip_fit", t_clip_fit),
+        ("transcript_fix", t_transcript_fix),
+        ("no_doubled_decorators", t_no_doubled_decorators),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),

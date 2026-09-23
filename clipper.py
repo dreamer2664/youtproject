@@ -292,7 +292,79 @@ def plan_chunks(total_seconds: float,
     return chunks
 
 
-def transcribe_words(audio: Path, cfg: Config) -> list[dict]:
+def whisper_params(title: str) -> dict:
+    """Extra Groq Whisper params that cut mishears (pure, tested).
+
+    language pins English decoding (auto-detect wanders); prompt feeds
+    the video's title so topic words spell themselves (Whisper biases
+    toward the prompt's vocabulary).
+    """
+    params = {"language": "en"}
+    title = (title or "").strip()
+    if title:
+        params["prompt"] = f"English narration. Video title: {title}"
+    return params
+
+
+TRANSCRIPT_FIX_BATCH = 800
+
+
+def fix_transcript_words(words: list[dict], title: str,
+                         provider) -> list[dict]:
+    """One LLM pass fixing misheard words; timings untouched (tested).
+
+    Live complaint 2026-09-23: Whisper mishears homophones (know/no).
+    HARD GUARDS: the model may only REPLACE a word with exactly one
+    other word — same count, same order, no merges — or the whole batch
+    is discarded. Word timings are never touched, so captions cannot
+    desync. Never raises.
+    """
+    from scriptgen import extract_json
+
+    if not words:
+        return words
+    out: list[dict] = []
+    for start in range(0, len(words), TRANSCRIPT_FIX_BATCH):
+        batch = words[start:start + TRANSCRIPT_FIX_BATCH]
+        originals = [str(w.get("word") or "") for w in batch]
+        prompt = (
+            "This is an automatic transcript of a video"
+            + (f" titled {title!r}" if (title or "").strip() else "") + ".\n"
+            "Fix ONLY obvious misheard words — homophones such as know/no, "
+            "their/there, your/you're, heel/heal — and clear spelling "
+            "slips.\n"
+            "HARD RULES: return EXACTLY one word for each input word, in "
+            "the same order; never add, drop, merge or reorder; keep "
+            "punctuation exactly as-is; when unsure, copy the word "
+            "unchanged.\n"
+            'Return ONLY JSON: {"words": ["word1", "word2", ...]} with the '
+            "same count as the input.\n"
+            "WORDS:\n" + "\n".join(originals))
+        try:
+            raw = provider.generate_text(prompt, temperature=0.0,
+                                         tag="clipfix", json_mode=True)
+            data = extract_json(raw)
+            fixed = data.get("words") if isinstance(data, dict) else None
+        except Exception:  # noqa: BLE001 - a fix pass never kills clips
+            out.extend(batch)
+            continue
+        if not isinstance(fixed, list) or len(fixed) != len(originals):
+            out.extend(batch)
+            continue
+        for old, new in zip(batch, fixed):
+            new = str(new).strip()
+            if (not new or new == old.get("word")
+                    or len(new.split()) != 1):
+                out.append(old)
+                continue
+            patched = dict(old)
+            patched["word"] = new
+            out.append(patched)
+    return out
+
+
+def transcribe_words(audio: Path, cfg: Config,
+                     title: str = "") -> list[dict]:
     """Word-level transcript via Groq Whisper, chunked + key rotation.
 
     Returns [{"word": str, "start": float, "end": float}, ...] with
@@ -320,7 +392,7 @@ def transcribe_words(audio: Path, cfg: Config) -> list[dict]:
         print(f"  [clip] transcribing {int(offset//60)}:{int(offset%60):02d}"
               f"-{int((offset+length)//60)}:{int((offset+length)%60):02d} "
               f"({index}/{len(plan_chunks(total))})")
-        data = _whisper_request(chunk_path, keys)
+        data = _whisper_request(chunk_path, keys, title=title)
         got = data.get("words") or []
         if got:
             for item in got:
@@ -343,7 +415,8 @@ def transcribe_words(audio: Path, cfg: Config) -> list[dict]:
     return [w for w in words if w["word"]]
 
 
-def _whisper_request(path: Path, keys: list[str]) -> dict:
+def _whisper_request(path: Path, keys: list[str],
+                     title: str = "") -> dict:
     """One chunk -> verbose_json with word timestamps (rotates keys)."""
     last = "no keys tried"
     for key in keys:
@@ -355,7 +428,8 @@ def _whisper_request(path: Path, keys: list[str]) -> dict:
                     files={"file": (path.name, handle, AUDIO_MIME)},
                     data={"model": "whisper-large-v3-turbo",
                           "response_format": "verbose_json",
-                          "timestamp_granularities[]": "word"},
+                          "timestamp_granularities[]": "word",
+                          **whisper_params(title)},
                     timeout=300)
         except requests.RequestException as exc:
             last = f"network: {str(exc)[:100]}"
@@ -978,6 +1052,9 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
     duration = ffprobe_duration(src)
     print(f"  [clip] source: {src.name} ({duration/60:.0f} min, "
           f"{source['channel']})")
+    from scriptgen import get_provider
+
+    provider = get_provider(cfg)
     source_key = transcript_cache_key(url, src)
     cache = transcript_cache_path(cfg, source_key)
     words = load_transcript_cache(cache)
@@ -985,15 +1062,19 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
         print(f"  [clip] transcript: cached ({len(words)} words)")
     else:
         audio = extract_audio(src, work)
-        words = transcribe_words(audio, cfg)
+        words = transcribe_words(audio, cfg, title=source["title"])
+        if cfg.clip_transcript_fix:
+            fixed = fix_transcript_words(words, source["title"], provider)
+            changed = sum(1 for a, b in zip(words, fixed)
+                          if a.get("word") != b.get("word"))
+            if changed:
+                print(f"  [clip] transcript fix: {changed} misheard "
+                      f"word(s) corrected")
+                words = fixed
         save_transcript_cache(cache, words)
         print(f"  [clip] transcript: {len(words)} words (cached for re-runs)")
     if len(words) < 40:
         raise ClipError("transcript too thin to mine for moments")
-
-    from scriptgen import get_provider
-
-    provider = get_provider(cfg)
     windows = split_windows(words)
     candidates = []
     for index, win in enumerate(windows, start=1):
