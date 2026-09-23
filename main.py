@@ -446,7 +446,9 @@ def cmd_generate(cfg, args) -> int:
 
             use_premium = premium_budget_allows(cfg)
             if not use_premium:
-                print("  [voice] today's premium budget is spent — edge-tts")
+                reason = ("off (ai.premium_voices: 0)" if cfg.premium_voices == 0
+                          else "today's budget is spent")
+                print(f"  [voice] premium voice {reason} — edge-tts")
             audio_paths, timings = generate_scene_audio(
                 script, cfg, job_dir / "audio", allow_premium=use_premium)
             if use_premium:

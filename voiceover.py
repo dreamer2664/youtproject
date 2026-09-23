@@ -238,6 +238,7 @@ async def _synth_with_pauses(text: str, voice: str, rate: str,
         durations.append(keep)
     pause = max(0.0, pause_ms / 1000.0)
     run(stitch_cmd(parts, pause, dest), f"voice stitch {dest.name}")
+    print(f"  [voice] sentence pauses: {len(parts)} part(s) stitched")
     timings: list[WordTiming] = []
     for offset, words in zip(plan_offsets(durations, pause), results):
         timings.extend(WordTiming(word=word.word, start=word.start + offset,
