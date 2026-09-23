@@ -48,13 +48,15 @@ the last week (bar: `topics.scout_min_weekly_views`). The old
 python main.py clip <youtube link>          # a VOD (shortcut form)
 python main.py clip --url <youtube link>     # same thing, explicit
 python main.py clip --file C:\path\to.mp4    # a local file
+python main.py clip --url A --url B --file C # a batch: any mix, any count
 ```
 
 Downloads → transcript (mishears auto-corrected, cached — re-runs are
 free) → picks the strongest moments → cuts on sentence boundaries, opens
 on the hook → **landscape VODs keep their whole frame** (sharp, centered,
 blurred background fill; `clip.crop_mode` switches to the old crop) →
-upload kits in `clips/`. Costs ~15-17 API requests per source,
+upload kits in `clips/` (with TikTok + Reels captions per clip). Batch
+runs isolate failures: one dead link doesn't kill the others. Costs ~15-17 API requests per source,
 less than one generated video.
 
 ## Decision rules (what the data says to do)
