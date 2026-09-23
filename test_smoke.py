@@ -2658,6 +2658,51 @@ def t_ab_titles():
             (kit2 / "CHECKLIST.md").read_text(encoding="utf-8")
 
 
+def t_mux_crash_recovery():
+    from assembler import (AssemblyError, cpu_retry_cmd, is_access_violation,
+                           run, swap_to_cpu_encoder)
+
+    assert is_access_violation(3221225477) is True   # 0xC0000005
+    assert is_access_violation(1) is False
+    assert is_access_violation(0) is False
+    assert is_access_violation(None) is False
+
+    qsv_cmd = ["ffmpeg", "-i", "a.mp4", "-c:v", "h264_qsv",
+               "-preset", "veryfast", "-global_quality", "20",
+               "-pix_fmt", "yuv420p", "out.mp4"]
+    swapped = swap_to_cpu_encoder(qsv_cmd)
+    assert swapped == ["ffmpeg", "-i", "a.mp4", "-c:v", "libx264",
+                       "-preset", "veryfast", "-crf", "20",
+                       "-pix_fmt", "yuv420p", "out.mp4"], swapped
+    # nvenc + videotoolbox tails, and unknown flags end the walk
+    assert "h264_nvenc" not in swap_to_cpu_encoder(
+        ["ffmpeg", "-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20", "o.mp4"])
+    vt = swap_to_cpu_encoder(["ffmpeg", "-c:v", "h264_videotoolbox",
+                              "-q:v", "65", "o.mp4"])
+    assert vt[2] == "libx264" and vt[-1] == "o.mp4"
+    # no hardware codec -> unchanged (new list, same content)
+    cpu_cmd = ["ffmpeg", "-c:v", "libx264", "-crf", "20", "o.mp4"]
+    assert swap_to_cpu_encoder(cpu_cmd) == cpu_cmd
+    # decision gate: only violation + hw encoder earns a retry
+    assert cpu_retry_cmd(qsv_cmd, 3221225477) == swapped
+    assert cpu_retry_cmd(qsv_cmd, 1) is None          # not a crash
+    assert cpu_retry_cmd(cpu_cmd, 3221225477) is None  # already cpu
+    # AssemblyError carries the exit code; run() propagates it
+    err = AssemblyError("x failed (exit 1)", cmd=["x"], returncode=1)
+    assert err.returncode == 1
+    with tempfile.TemporaryDirectory() as tmp:
+        bad = Path(tmp) / "bad.sh"
+        bad.write_text("#!/bin/sh\nexit 3\n")
+        bad.chmod(0o755)
+        try:
+            run([str(bad)], "probe")
+            raised = False
+        except AssemblyError as exc:
+            raised = True
+            assert exc.returncode == 3
+        assert raised
+
+
 def t_music_audit():
     import contextlib
     import wave
@@ -3824,6 +3869,7 @@ def main() -> int:
         ("channel_snap", t_channel_snap),
         ("topic_scout", t_topic_scout),
         ("ab_titles", t_ab_titles),
+        ("mux_crash_recovery", t_mux_crash_recovery),
         ("title_guard", t_title_guard),
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),

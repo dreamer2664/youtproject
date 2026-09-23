@@ -75,10 +75,12 @@ class AssemblyError(RuntimeError):
     """An ffmpeg/ffprobe step failed. Carries the command + full stderr for
     debug logs; str(exc) stays the short human-readable version."""
 
-    def __init__(self, message: str = "", *, cmd=None, stderr: str = "") -> None:
+    def __init__(self, message: str = "", *, cmd=None, stderr: str = "",
+                 returncode: int = 0) -> None:
         super().__init__(message)
         self.cmd: list[str] = list(cmd or [])
         self.stderr_full: str = stderr or ""
+        self.returncode: int = returncode or 0
 
 
 # Harmless per-run ffmpeg noise, hidden on success to keep the console
@@ -122,6 +124,7 @@ def run(cmd: list[str], what: str, heartbeat_every: float = 30.0) -> None:
             f"{what} failed (exit {proc.returncode}):\n  " + "\n  ".join(tail),
             cmd=cmd,
             stderr=err or "",
+            returncode=proc.returncode,
         )
     # Surface warnings (libass/font issues hide here) instead of swallowing
     # them — minus known-harmless noise, capped so one chatty filter can't
@@ -177,6 +180,62 @@ _ENCODER_ARGS = {
     "videotoolbox": ("h264_videotoolbox", ["-q:v", "65"]),
 }
 _ENCODER_CACHE: dict[str, list[str]] = {}
+
+# Windows STATUS_ACCESS_VIOLATION (0xC0000005): a hardware-encoder
+# driver crash, not a video problem. Live toll on the main PC: ten
+# finished-then-dead renders ("final mux failed (exit 3221225477)").
+ACCESS_VIOLATION_EXIT = 3221225477
+
+
+def is_access_violation(returncode: int | None) -> bool:
+    """True when an ffmpeg exit code is a Windows access violation (tested)."""
+    return bool(returncode) and int(returncode) == ACCESS_VIOLATION_EXIT
+
+
+def cmd_has_hw_encoder(cmd: list[str]) -> bool:
+    """True when the command encodes with a hardware codec (tested)."""
+    hw = {args[0] for name, args in _ENCODER_ARGS.items() if name != "cpu"}
+    return any(str(part) in hw for part in cmd)
+
+
+def swap_to_cpu_encoder(cmd: list[str]) -> list[str]:
+    """Replace a hardware encoder + its flags with libx264 (pure, tested).
+
+    Walks the encoder's known flag pairs so nothing after them (pix_fmt,
+    output path...) is touched. No hardware codec in the command ->
+    returned unchanged.
+    """
+    hw_tails = {codec: set(tail[::2])
+                for _name, (codec, tail) in _ENCODER_ARGS.items()
+                if _name != "cpu"}
+    out = list(cmd)
+    for index, part in enumerate(out):
+        codec = str(part)
+        if codec not in hw_tails:
+            continue
+        flags = hw_tails[codec]
+        end = index + 1
+        while end + 1 <= len(out) and str(out[end]) in flags:
+            end += 2
+        cpu = list(_ENCODER_ARGS["cpu"][1])
+        out[index:end] = [ _ENCODER_ARGS["cpu"][0], *cpu ]
+        return out
+    return out
+
+
+def cpu_retry_cmd(cmd: list[str],
+                  returncode: int | None) -> list[str] | None:
+    """Retry command for a crashed hardware encode, or None (tested).
+
+    Only an access violation on a hardware-encoder command earns a CPU
+    retry — anything else fails for content reasons a re-encode won't fix.
+    """
+    if not is_access_violation(returncode):
+        return None
+    if not cmd_has_hw_encoder(cmd):
+        return None
+    swapped = swap_to_cpu_encoder(cmd)
+    return swapped if swapped != list(cmd) else None
 
 
 def resolve_encoder_args(setting: str) -> list[str]:
@@ -753,6 +812,23 @@ def assemble_video(
         except AssemblyError as exc:
             last_exc = exc
             _save_mux_debug(debug_path, label, cmd, exc)
+            retry = cpu_retry_cmd(cmd, exc.returncode)
+            if retry is not None:
+                print("      mux       : hardware encoder CRASHED (access "
+                      "violation)\n"
+                      "                      — a GPU driver bug, not your "
+                      "video. Retrying this mix on CPU (libx264)...")
+                try:
+                    run(retry, "final mux")
+                    print("      mux       : CPU retry saved the render. "
+                          "Long-term: update your GPU driver, or set\n"
+                      "                      encoder: cpu in config.yaml "
+                          "to skip the crash entirely.")
+                    return out_path
+                except AssemblyError as exc2:
+                    last_exc = exc2
+                    _save_mux_debug(debug_path, f"{label} [cpu retry]",
+                                    retry, exc2)
             if index < len(plan) - 1:
                 first = str(exc).splitlines()[0][:110] if str(exc) else "unknown error"
                 print(f"      mux       : {label} failed ({first}) — retrying simpler...")
