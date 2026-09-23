@@ -263,6 +263,11 @@ def _optimize_title(script, cfg: Config, provider) -> None:
         # second channel, snap decides the winner after 72h.
         runner_up = next((text for score, text in ranked[1:]
                           if text != best and score >= best_score - 3), "")
+        if not runner_up and current >= best_score - 3:
+            # E2E lesson 2026-09-23: no candidate came close, but the
+            # pre-polish title did — it is the honest B, the control that
+            # tests whether this swap actually helps.
+            runner_up = title
         script.title_alt = runner_up
         print(f"      editorial : title polish applied (score {current}->"
               f"{best_score}: {title[:38]!r} -> {best[:38]!r}).")

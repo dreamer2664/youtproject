@@ -1920,6 +1920,23 @@ def t_title_optimize():
                        'Nobody Understands Fully Here"]}'])
     _optimize_title(sc, tmp_cfg(), fp)
     assert sc.title == "Why Zebras Have Stripes", sc.title
+    # A/B lab, E2E lesson 2026-09-23: no candidate within 3 of the winner
+    # (8 vs 4/4), but the pre-polish title (6) is a fair B — it ships as
+    # title-b.txt, the control for the swap itself.
+    assert sc.title_alt == "The Strange Mystery of Zebra Coats", sc.title_alt
+    # Original far below the winner (4 vs 8): no honest B exists.
+    sc = script("Coats of the Zebra", narration)
+    fp = FakeProvider(['{"titles": ["Why Zebras Have Stripes", '
+                       '"The Secret Pattern Nobody Understands Fully Here"]}'])
+    _optimize_title(sc, tmp_cfg(), fp)
+    assert sc.title == "Why Zebras Have Stripes" and sc.title_alt == ""
+    # A candidate within 3 of the winner (5 vs 8) outranks the original as B.
+    sc = script("The Strange Mystery of Zebra Coats", narration)
+    fp = FakeProvider(['{"titles": ["Why Zebras Have Stripes", '
+                       '"The Great Pattern Mystery"]}'])
+    _optimize_title(sc, tmp_cfg(), fp)
+    assert sc.title == "Why Zebras Have Stripes"
+    assert sc.title_alt == "The Great Pattern Mystery", sc.title_alt
     # Already-good title: candidates must beat it by a margin or it stays.
     sc = script("Why Zebras Have Stripes", narration)
     fp = FakeProvider(['{"titles": ["Zebra Stripes Explained", '
