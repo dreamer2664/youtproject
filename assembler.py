@@ -571,9 +571,10 @@ def _build_mux_cmd(
     # -- picture: subtitles burn + progress bar + CTA end-card -----------
     vf_parts: list[str] = []
     if burn_path is not None and with_burn:
-        from subtitles import filter_args
+        from subtitles import filter_args, sub_style_from_cfg
 
-        vf_parts.append(filter_args(burn_path, cfg.format))
+        vf_parts.append(filter_args(burn_path, cfg.format,
+                                    sub_style_from_cfg(cfg)))
     # NOTE: no drawbox here on purpose — drawbox w/h evaluate ONCE (verified
     # on FFmpeg 7.0.2), so the progress bar rides the .ass burn-in instead
     # (subtitles.progress_ass_line). Plans below shed burn/CTA/candy only.

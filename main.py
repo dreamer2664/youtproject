@@ -538,6 +538,7 @@ def cmd_generate(cfg, args) -> int:
                     build_karaoke_events,
                     max_chars_for,
                     progress_ass_line,
+                    sub_style_from_cfg,
                     write_ass,
                     write_srt,
                 )
@@ -562,7 +563,8 @@ def cmd_generate(cfg, args) -> int:
                         cfg.progress_position)
                 ass_path = write_ass(events, out_path.with_suffix(".ass"),
                                      cfg.format, cfg.width, cfg.height,
-                                     progress=progress_line)
+                                     progress=progress_line,
+                                     style=sub_style_from_cfg(cfg))
                 karaoke_name = ass_path.name
                 print(f"      karaoke   : {len(events)} word events -> {ass_path.name}")
                 if _ffmpeg_has_filter("subtitles"):
@@ -1113,7 +1115,8 @@ def cmd_clip(cfg, args) -> int:
                      max_clips=args.max_clips, min_len=args.min_len,
                      max_len=args.max_len, use_vision=not args.no_vision,
                      keep_work=args.keep_work,
-                     out_dir=Path(args.out) if args.out else None)
+                     out_dir=Path(args.out) if args.out else None,
+                     sub_pos=getattr(args, "sub_pos", "default"))
             results.append((label, "ok", ""))
         except ClipError as exc:
             results.append((label, "failed", str(exc)[:120]))
@@ -1484,7 +1487,12 @@ def main() -> int:
                    help="skip the frame quality check")
     p.add_argument("--keep-work", action="store_true",
                    help="keep intermediate files (audio, frames, .ass)")
-    p.add_argument("--out", default=None, help="output folder (default clips/)")
+    p.add_argument("--out", default=None, help="output folder (default clips/) ")
+    p.add_argument("--sub-pos", choices=["default", "auto", "top", "middle",
+                                         "bottom"], default="default",
+                   help="subtitle placement for this run (default: config "
+                        "subtitles.position; auto = frame analysis picks "
+                        "the calmest third, no API)")
 
     p = sub.add_parser("bot", help="render videos from your phone via Telegram")
     p.add_argument("--seconds", type=int, help="target length for bot renders")

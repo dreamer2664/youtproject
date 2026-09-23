@@ -32,7 +32,7 @@ import requests
 
 from assembler import ffprobe_duration, resolve_encoder_args
 from config import Config
-from subtitles import build_karaoke_events, filter_args, write_ass
+from subtitles import build_karaoke_events, filter_args, sub_style_from_cfg, write_ass
 
 MAX_CLIPS_DEFAULT = 6
 MIN_CLIP_SECONDS = 20
@@ -825,23 +825,61 @@ def clip_words(words: list[dict], start: float, end: float) -> list[dict]:
 
 
 def build_clip_ass(words_in_clip: list[dict], clip_len: float,
-                   cfg: Config, work_dir: Path) -> Path:
+                   cfg: Config, work_dir: Path, style: dict | None = None) -> Path:
     """Karaoke .ass for one clip (adapter over subtitles.build_karaoke_events)."""
     narration = " ".join(w["word"] for w in words_in_clip)
     timings = [(w["start"], w["end"]) for w in words_in_clip]
     events = build_karaoke_events(
         [narration], [timings], [0.0], [clip_len], head_tail=0.0)
     path = work_dir / "clip.ass"
-    write_ass(events, path, cfg.format, cfg.width, cfg.height)
+    write_ass(events, path, cfg.format, cfg.width, cfg.height, style=style)
     return path
 
 
+def _auto_sub_position(src: Path, cand: Candidate, work_dir: Path) -> str | None:
+    """Calmest vertical third across 3 sampled frames (no API, no LLM).
+
+    Rule-based like smart-crop's subject_x: free, offline, deterministic.
+    None when no frame can be read — the caller keeps the configured
+    position instead of guessing.
+    """
+    from subtitles import frame_band_energies, pick_sub_band
+
+    length = cand.end - cand.start
+    totals = [0.0, 0.0, 0.0]
+    used = 0
+    for frac in (0.2, 0.5, 0.8):
+        try:
+            data = extract_frame(src, cand.start + length * frac,
+                                 work_dir / f"subpos_{int(frac * 100)}.jpg")
+        except Exception:  # noqa: BLE001 - a bad frame is not fatal
+            continue
+        bands = frame_band_energies(data)
+        if bands:
+            totals = [t + b for t, b in zip(totals, bands)]
+            used += 1
+    if not used:
+        return None
+    return pick_sub_band(totals)
+
+
 def render_clip(src: Path, cand: Candidate, words: list[dict],
-                cfg: Config, out_path: Path, work_dir: Path) -> Path:
+                cfg: Config, out_path: Path, work_dir: Path,
+                sub_pos: str = "default") -> Path:
     """Cut + crop + burn subtitles -> one vertical clip."""
     length = cand.end - cand.start
     window = clip_words(words, cand.start, cand.end)
-    ass_path = build_clip_ass(window, length, cfg, work_dir)
+    style = sub_style_from_cfg(cfg, sub_pos)
+    if style.get("position") == "auto":
+        resolved = _auto_sub_position(src, cand, work_dir)
+        if resolved:
+            print(f"  [clip] subs auto: the {resolved} third is the calmest")
+            style = {**style, "position": resolved}
+        else:
+            print("  [clip] subs auto: no frame readable — using the "
+                  "configured position")
+            style = {**style, "position": "default"}
+    ass_path = build_clip_ass(window, length, cfg, work_dir, style)
     width, height = probe_dims(src)
     treatment = vertical_treatment(width, height, cfg.clip_crop_mode)
     if treatment == "fit":
@@ -1102,7 +1140,8 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
              min_len: int = MIN_CLIP_SECONDS,
              max_len: int = MAX_CLIP_SECONDS,
              use_vision: bool = True, keep_work: bool = False,
-             out_dir: Path | None = None) -> int:
+             out_dir: Path | None = None,
+             sub_pos: str = "default") -> int:
     """The whole lane. Returns process exit code."""
     if not url and not file:
         raise ClipError("give me --url <youtube link> or --file <local mp4>")
@@ -1194,7 +1233,7 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
     kits = []
     for index, cand in enumerate(accepted, start=1):
         clip_path = out_root / f"{source_key[:8]}_clip_{index:02d}.mp4"
-        render_clip(src, cand, words, cfg, clip_path, work)
+        render_clip(src, cand, words, cfg, clip_path, work, sub_pos)
         clip_words_list = clip_words(words, cand.start, cand.end)
         title = pick_title(cand, clip_words_list)
         if cfg.clip_polish_titles:

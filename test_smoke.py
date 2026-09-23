@@ -392,6 +392,64 @@ def t_queue():
     assert tmp.with_suffix(".corrupt.json").exists()
 
 
+def t_sub_position():
+    # Subtitle placement + style knobs (2026-09-23): clips burned karaoke
+    # dead-center (Alignment=5) — right where the main event usually is.
+    from subtitles import (_karaoke_style, burn_style, pick_sub_band,
+                           sub_style_from_cfg, write_ass)
+
+    # style resolution: CLI > config > engine default; garbage -> default
+    cfg = tmp_cfg()
+    assert sub_style_from_cfg(cfg) == {
+        "position": "default", "font": "Arial", "scale": 1.0, "outline": 0}
+    assert sub_style_from_cfg(cfg, "top")["position"] == "top"
+    cfg2 = tmp_cfg(subtitles={"position": "bottom", "font": "Impact",
+                              "font_scale": 1.2, "outline": 4})
+    assert sub_style_from_cfg(cfg2)["position"] == "bottom"
+    assert sub_style_from_cfg(cfg2)["font"] == "Impact"
+    assert sub_style_from_cfg(cfg2, "top")["position"] == "top"  # CLI wins
+    junk = tmp_cfg(subtitles={"position": "diagonal"})
+    assert sub_style_from_cfg(junk)["position"] == "default"
+
+    # SRT force_style: bottom is the historic look; top/middle move it
+    assert "Alignment=2" in burn_style("portrait")
+    assert "Alignment=8" in burn_style("portrait", {"position": "top"})
+    assert "Alignment=5,MarginV=0" in burn_style(
+        "landscape", {"position": "middle"})
+    assert "FontName=Impact" in burn_style("portrait", {"font": "Impact"})
+    assert "FontSize=13" in burn_style("portrait", {"scale": 1.2})  # 11*1.2
+    assert "Outline=4" in burn_style("portrait", {"outline": 4})
+    assert "FontSize=11" in burn_style("portrait", {"outline": 9})  # independent
+
+    # karaoke: portrait center is the historic look; bottom clears the
+    # Shorts UI rail; top clears the top overlay
+    assert ",5,60,60,0,1" in _karaoke_style("portrait")
+    assert ",2,60,60,300,1" in _karaoke_style(
+        "portrait", {"position": "bottom"})
+    assert ",8,60,60,140,1" in _karaoke_style("portrait", {"position": "top"})
+    assert "Style: Karaoke,Impact," in _karaoke_style(
+        "portrait", {"font": "Impact"})
+    assert ",110," in _karaoke_style("portrait", {"scale": 1.25})  # 88*1.25
+    assert ",1,4,0," in _karaoke_style("portrait", {"outline": 4})
+
+    # calmest-third chooser: bottom bias within 10%, else top, else middle
+    assert pick_sub_band((9.0, 5.0, 4.0)) == "bottom"
+    assert pick_sub_band((5.0, 5.0, 5.0)) == "bottom"   # tie -> bottom
+    assert pick_sub_band((4.0, 9.0, 8.0)) == "top"      # bottom too busy
+    assert pick_sub_band((10.0, 3.0, 9.0)) == "middle"
+    assert pick_sub_band((4.0, 3.9, 6.0)) == "top"      # top within 10% of middle
+
+    # the .ass file itself carries the style; no style = historic look
+    import types
+
+    ev = [types.SimpleNamespace(start=0.0, end=1.0, text="hello")]
+    p = Path(tempfile.mkdtemp(prefix="youttest_")) / "a.ass"
+    write_ass(ev, p, "portrait", 1080, 1920, style={"position": "bottom"})
+    assert ",2,60,60,300,1" in p.read_text(encoding="utf-8")
+    write_ass(ev, p, "portrait", 1080, 1920)
+    assert ",5,60,60,0,1" in p.read_text(encoding="utf-8")
+
+
 def t_reclaim_interrupted():
     # A killed run leaves 'queued' jobs behind forever: the table says
     # queued, but nothing ever resumes them and their topics count as
@@ -4120,6 +4178,7 @@ def main() -> int:
         ("topics_clean", t_topics_clean),
         ("topics_norepeat", t_topics_norepeat),
         ("reclaim_interrupted", t_reclaim_interrupted),
+        ("sub_position", t_sub_position),
         ("bot_parser", t_bot_parser),
         ("package", t_package),
         ("audiofx", t_audiofx),

@@ -117,6 +117,15 @@ DEFAULTS: dict[str, Any] = {
         # Word-timed subtitles, burned into the video. A captions.srt is also
         # written for manual upload in YouTube Studio either way.
         "enabled": True,
+        # Where captions sit. "default" = the historic look (karaoke
+        # portrait dead-center — the TikTok look; everything else bottom).
+        # Force "top" / "middle" / "bottom" when the captions cover the
+        # main event. The clip lane also takes --sub-pos auto (frame
+        # analysis picks the calmest third; no API, no cost).
+        "position": "default",
+        "font": "Arial",      # any installed font name (Impact, Verdana...)
+        "font_scale": 1.0,    # 1.0 = current sizes; 1.2 = 20% bigger text
+        "outline": 0,         # 0 = engine default; 1-4 = heavier stroke
     },
     "disclosure": {
         # Appended to description.txt at package time (meta.json stays clean).
@@ -852,6 +861,31 @@ class Config:
     @property
     def subtitles_enabled(self) -> bool:
         return bool(self.data["subtitles"].get("enabled", True))
+
+    @property
+    def subtitles_position(self) -> str:
+        pos = str(self.data["subtitles"].get("position", "default")).strip()
+        return pos if pos in ("default", "top", "middle", "bottom", "auto") \
+            else "default"
+
+    @property
+    def subtitles_font(self) -> str:
+        return str(self.data["subtitles"].get("font", "Arial")).strip() \
+            or "Arial"
+
+    @property
+    def subtitles_font_scale(self) -> float:
+        try:
+            return float(self.data["subtitles"].get("font_scale", 1.0))
+        except (TypeError, ValueError):
+            return 1.0
+
+    @property
+    def subtitles_outline(self) -> int:
+        try:
+            return int(self.data["subtitles"].get("outline", 0))
+        except (TypeError, ValueError):
+            return 0
 
     # -- disclosure ------------------------------------------------------
     @property

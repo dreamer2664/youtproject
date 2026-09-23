@@ -106,6 +106,14 @@ subtitles:
   # written for manual upload in YouTube Studio either way (accessibility + SEO).
   # Skip for one run with:  python main.py generate --no-subs
   enabled: true
+  # Placement: "default" = center on portrait karaoke (the TikTok look),
+  # bottom otherwise. Force top/middle/bottom when captions cover the
+  # main event; the clip lane also takes --sub-pos auto per run
+  # (frame analysis picks the calmest third — free, no API).
+  position: "default"
+  font: "Arial"      # any installed font name (Impact, Verdana, ...)
+  font_scale: 1.0    # 1.0 = current sizes; 1.2 = 20% bigger text
+  outline: 0         # 0 = engine default; 1-4 = heavier stroke
 
 disclosure:
   # YouTube requires AI-made videos to be disclosed. This footer is appended

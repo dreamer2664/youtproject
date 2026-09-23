@@ -154,25 +154,40 @@ def max_chars_for(fmt: str) -> int:
     return MAX_CHARS.get(fmt, MAX_CHARS["landscape"])
 
 
-def burn_style(video_format: str) -> str:
+def burn_style(video_format: str, style: dict | None = None) -> str:
     """force_style value for the burn-in (libass). No surrounding quotes.
 
     NOTE: FontSize AND margins are in PlayRes units (libass default
     PlayResY=288) and get scaled up to video size — portrait x6.67,
     landscape x3.75. Margins must be tiny numbers here or the text lands
     off-screen (MarginV=330 on portrait = 2200px = invisible!).
+
+    style: {"position": top|middle|bottom, "font", "scale", "outline"} —
+    see sub_style_from_cfg. "default" keeps the historic bottom burn.
     """
+    style = style or {}
+    pos = str(style.get("position", "default"))
+    font = str(style.get("font", "Arial") or "Arial")
+    scale = float(style.get("scale", 1.0) or 1.0)
+    outline = int(style.get("outline", 0) or 0)
     if video_format == "portrait":
         # ~73px text sitting ~333px up — clears the Shorts UI overlay.
         fontsize, margin_v = 11, 50
+        top_margin = 40          # PlayRes units — ~267px on a portrait frame
     else:
         # ~52px text, ~45px from the bottom.
         fontsize, margin_v = 14, 12
+        top_margin = 12
+    align, margin = {
+        "default": (2, margin_v), "bottom": (2, margin_v),
+        "middle": (5, 0), "top": (8, top_margin),
+    }.get(pos, (2, margin_v))
     return (
-        f"FontName=Arial,FontSize={fontsize},"
+        f"FontName={font},FontSize={max(4, int(round(fontsize * scale)))},"
         "PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,"
-        "BackColour=&H80000000,BorderStyle=1,Outline=2,Shadow=0,"
-        f"Alignment=2,MarginV={margin_v}"
+        "BackColour=&H80000000,BorderStyle=1,"
+        f"Outline={outline or 2},Shadow=0,"
+        f"Alignment={align},MarginV={margin}"
     )
 
 
@@ -213,7 +228,8 @@ def system_fonts_dir() -> Path | None:
     return cand if cand.is_dir() else None
 
 
-def filter_args(sub_path: Path, video_format: str) -> str:
+def filter_args(sub_path: Path, video_format: str,
+                style: dict | None = None) -> str:
     """Full `subtitles=...` filter argument value (without -vf quotes)."""
     parts = [f"subtitles={esc_subs_path(sub_path)}"]
     fonts = system_fonts_dir()
@@ -221,8 +237,66 @@ def filter_args(sub_path: Path, video_format: str) -> str:
         parts.append(f"fontsdir={esc_subs_path(fonts)}")
     if sub_path.suffix.lower() != ".ass":
         # SRT carries no styling; ASS files style themselves.
-        parts.append(f"force_style='{burn_style(video_format)}'")
+        parts.append(f"force_style='{burn_style(video_format, style)}'")
     return ":".join(parts)
+
+
+def sub_style_from_cfg(cfg, cli_pos: str = "default") -> dict:
+    """Subtitle style knobs: --sub-pos CLI > config > engine defaults.
+
+    "default" means each engine's historic placement (karaoke portrait
+    dead-center, everything else bottom). "auto" is resolved by the clip
+    lane (frame analysis) before it reaches a style builder; if it leaks
+    through, builders treat it as "default".
+    """
+    pos = cli_pos if cli_pos in ("top", "middle", "bottom", "auto") \
+        else str(getattr(cfg, "subtitles_position", "default") or "default")
+    if pos not in ("top", "middle", "bottom", "auto"):
+        pos = "default"
+    return {
+        "position": pos,
+        "font": str(getattr(cfg, "subtitles_font", "Arial") or "Arial"),
+        "scale": float(getattr(cfg, "subtitles_font_scale", 1.0) or 1.0),
+        "outline": int(getattr(cfg, "subtitles_outline", 0) or 0),
+    }
+
+
+def pick_sub_band(energies) -> str:
+    """Calmest horizontal third for subtitles, from (top, middle, bottom).
+
+    Bottom wins within 10% (captions read best at the bottom); top beats
+    middle on near-ties. Pure, tested.
+    """
+    top, middle, bottom = (float(x) for x in energies)
+    calmest = min(top, middle, bottom)
+    if bottom <= calmest * 1.10:
+        return "bottom"
+    if top <= calmest * 1.10:
+        return "top"
+    return "middle"
+
+
+def frame_band_energies(frame: bytes):
+    """(top, middle, bottom) edge-energy of one JPEG/PNG frame.
+
+    Pillow + numpy only — no API, no network, deterministic. None on any
+    decode failure so the caller can fall back to the configured position.
+    """
+    try:
+        import io
+
+        from PIL import Image
+        import numpy as np
+
+        img = Image.open(io.BytesIO(frame)).convert("L")
+        arr = np.asarray(img, dtype=np.float32)
+        rows = np.abs(np.diff(arr, axis=0)).sum(axis=1)  # per-row busyness
+        third = max(1, arr.shape[0] // 3)
+        return (float(rows[:third].sum()),
+                float(rows[third:2 * third].sum()),
+                float(rows[2 * third:].sum()))
+    except Exception:  # noqa: BLE001 - unreadable frame -> caller falls back
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -355,18 +429,37 @@ def build_karaoke_events(
     return events
 
 
-def _karaoke_style(video_format: str) -> str:
+def _karaoke_style(video_format: str, style: dict | None = None) -> str:
+    """Style line for karaoke .ass files (true pixels; see note above).
+
+    style: {"position": top|middle|bottom, "font", "scale", "outline"} —
+    see sub_style_from_cfg. "default" keeps the historic placement
+    (portrait dead-center, landscape bottom).
+    """
+    style = style or {}
+    pos = str(style.get("position", "default"))
+    font = str(style.get("font", "Arial") or "Arial")
+    scale = float(style.get("scale", 1.0) or 1.0)
+    outline = int(style.get("outline", 0) or 0)
     if video_format == "portrait":
         # Big centered captions = the TikTok look; center also dodges the
         # Shorts UI (bottom ~300px + right rail). TRUE pixels: PlayRes is set
         # to the video resolution in write_ass.
         fontsize, align, margin_v = 88, 5, 0
+        bottom_margin, top_margin = 300, 140
     else:
         fontsize, align, margin_v = 52, 2, 45
+        bottom_margin, top_margin = 45, 45
+    if pos in ("top", "middle", "bottom"):
+        align = {"top": 8, "middle": 5, "bottom": 2}[pos]
+        margin_v = {"top": top_margin, "middle": 0,
+                    "bottom": bottom_margin}[pos]
     return (
-        "Style: Karaoke,Arial,"
-        f"{fontsize},&H00FFFFFF,&H00001919,&H80000000,&H80000000,"
-        f"-1,0,0,0,100,100,0,0,1,3,0,{align},60,60,{margin_v},1"
+        f"Style: Karaoke,{font},"
+        f"{max(12, int(round(fontsize * scale)))},"
+        f"&H00FFFFFF,&H00001919,&H80000000,&H80000000,"
+        f"-1,0,0,0,100,100,0,0,1,{outline or 3},0,"
+        f"{align},60,60,{margin_v},1"
     )
 
 
@@ -407,6 +500,7 @@ def write_ass(
     width: int,
     height: int,
     progress: str | None = None,
+    style: dict | None = None,
 ) -> Path:
     """Write karaoke events as an .ass file styled for the video size."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -423,7 +517,7 @@ def write_ass(
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        _karaoke_style(video_format),
+        _karaoke_style(video_format, style),
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
