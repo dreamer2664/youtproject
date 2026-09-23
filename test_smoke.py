@@ -450,6 +450,68 @@ def t_sub_position():
     assert ",5,60,60,0,1" in p.read_text(encoding="utf-8")
 
 
+def t_subpreview():
+    # The style picker (2026-09-23): pure helpers render a captioned frame
+    # and emit the config block; the tkinter shell stays untested, like
+    # the bot lane's PhoneBot.
+    import io
+
+    import yaml
+    from PIL import Image
+    from subpreview import (preview_trio, render_preview, save_trio,
+                            style_yaml)
+
+    # the YAML block parses and round-trips the style
+    block = style_yaml({"position": "top", "font": "Impact",
+                        "scale": 1.2, "outline": 3})
+    loaded = yaml.safe_load(block)["subtitles"]
+    assert loaded["position"] == "top" and loaded["font"] == "Impact"
+    assert loaded["font_scale"] == 1.2 and loaded["outline"] == 3
+
+    # a plain dark portrait frame to draw on
+    buf = io.BytesIO()
+    Image.new("RGB", (1080, 1920), (24, 24, 28)).save(buf, format="PNG")
+    frame = buf.getvalue()
+
+    def bright_zone(png, top_frac, bottom_frac):
+        img = Image.open(io.BytesIO(png)).convert("RGB")
+        w, h = img.size
+        count = 0
+        for y in range(int(h * top_frac), int(h * bottom_frac)):
+            for x in range(0, w, 3):
+                r, g, b = img.getpixel((x, y))
+                if r > 200 and g > 200 and b > 200:
+                    count += 1
+        return count
+
+    top_png = render_preview(frame, {"position": "top"}, width=270)
+    mid_png = render_preview(frame, {"position": "middle"}, width=270)
+    bot_png = render_preview(frame, {"position": "bottom"}, width=270)
+    assert bright_zone(top_png, 0.0, 0.35) > 50      # caption up top
+    assert bright_zone(top_png, 0.75, 1.0) == 0
+    assert bright_zone(mid_png, 0.3, 0.7) > 50       # caption centered
+    assert bright_zone(bot_png, 0.65, 1.0) > 50      # caption at the bottom
+    assert bright_zone(bot_png, 0.0, 0.3) == 0
+    # "default" on portrait = the historic center look
+    assert render_preview(frame, {"position": "default"},
+                          width=270) != bot_png
+
+    # the karaoke gold highlight word is in there
+    img = Image.open(io.BytesIO(top_png)).convert("RGB")
+    gold = sum(1 for p in img.getdata()
+               if p[0] > 220 and 180 < p[1] < 240 and p[2] < 90)
+    assert gold > 20
+
+    # trio: three distinct placements; save_trio writes them out
+    trio = preview_trio(frame, {})
+    assert set(trio) == {"top", "middle", "bottom"}
+    assert len(set(trio.values())) == 3
+    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    paths = save_trio(tmp, frame, {"font": "Arial"})
+    assert len(paths) == 3 and all(p.exists() for p in paths)
+    assert (tmp / "subpreview_top.png").stat().st_size > 1000
+
+
 def t_reclaim_interrupted():
     # A killed run leaves 'queued' jobs behind forever: the table says
     # queued, but nothing ever resumes them and their topics count as
@@ -4179,6 +4241,7 @@ def main() -> int:
         ("topics_norepeat", t_topics_norepeat),
         ("reclaim_interrupted", t_reclaim_interrupted),
         ("sub_position", t_sub_position),
+        ("subpreview", t_subpreview),
         ("bot_parser", t_bot_parser),
         ("package", t_package),
         ("audiofx", t_audiofx),

@@ -1188,6 +1188,36 @@ def cmd_scout(cfg, args) -> int:
     return 0
 
 
+def cmd_subpreview(cfg, args) -> int:
+    """Subtitle style picker on a real frame — nothing is rendered."""
+    from clipper import extract_frame
+    from subpreview import SAMPLE_TEXT, build_app, probe_duration, save_trio, \
+        style_yaml
+    from subtitles import sub_style_from_cfg
+
+    src = Path(args.target)
+    if not src.exists():
+        die(f"video not found: {src}")
+    at = args.at if args.at is not None else max(
+        0.5, probe_duration(src) / 2)
+    work = cfg.work_dir / "subpreview"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        frame = extract_frame(src, at, work / "frame.jpg")
+    except Exception as exc:  # noqa: BLE001 - decode failure = bad input
+        die(f"could not read a frame at {at:.1f}s ({str(exc)[:100]})")
+    style = sub_style_from_cfg(cfg)
+    text = args.text or SAMPLE_TEXT
+    try:
+        return build_app(frame, style, text)
+    except Exception:  # noqa: BLE001 - headless/SSH: no window possible
+        for p in save_trio(src.parent, frame, style, text):
+            print(f"  [subpreview] wrote {p}")
+        print("  [subpreview] no display found — current style:\n")
+        print(style_yaml(style))
+        return 0
+
+
 def cmd_snap(cfg, args) -> int:
     """Daily channel snapshot via the public Data API (~4 units/day)."""
     from youtube import (YouTubeClient, build_report, extract_id,
@@ -1494,6 +1524,16 @@ def main() -> int:
                         "subtitles.position; auto = frame analysis picks "
                         "the calmest third, no API)")
 
+    p = sub.add_parser("subpreview",
+                       help="preview subtitle position/size/font on a real "
+                            "frame, then copy the config block")
+    p.add_argument("target", help="any video file (a clip, a rendered video)")
+    p.add_argument("--at", type=float, default=None,
+                   help="seconds into the video for the preview frame "
+                        "(default: middle)")
+    p.add_argument("--text", default=None,
+                   help="sample caption line (default: a zebra example)")
+
     p = sub.add_parser("bot", help="render videos from your phone via Telegram")
     p.add_argument("--seconds", type=int, help="target length for bot renders")
     p.add_argument("--format", choices=["landscape", "portrait"],
@@ -1605,6 +1645,7 @@ def main() -> int:
         "published": cmd_published,
         "snap": cmd_snap,
         "scout": cmd_scout,
+        "subpreview": cmd_subpreview,
         "queue": cmd_queue,
         "errors": cmd_errors,
         "costs": cmd_costs,
