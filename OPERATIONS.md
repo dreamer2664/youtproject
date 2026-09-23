@@ -108,7 +108,9 @@ python main.py costs    # Azure spend (if ever configured)
 | `generate` | **5–6 / video** | script 1 · factcheck 1 · punch-up 1 · title polish 1 · decringe 1 · topic top-up 1 (only when the backlog dips). Hook fix, title fix, expand/tighten fire only on violations/word-budget misses — normally 0. |
 | `clip` | **2 + 1/clip / source** | moment pick 1 · transcript fix 1 (`clip.transcript_fix`, on by default) · title polish 1 per clip written. |
 | `scout` | **1 / run** | proposals in one call; interest evidence is free keyless Wikimedia pageviews. |
-| `snap` · voice · images | **0** | YouTube API units only; edge-tts; Pexels/Pixabay — image QC is heuristic, no vision API. |
+| `snap` · voice | **0** | YouTube API units only; edge-tts. |
+| image QC | ~1 Gemini **vision** call per candidate photo | cached by photo+query, circuit breaker, fails OPEN on outage (storm-time renders ship un-QC'd images). Live catch 2026-09-24: rejected Tokyo Tower photos posing as Eiffel. |
+| `snap` · images | **0** | YouTube API units; Pexels/Pixabay fetch only. |
 
 Verdict: nothing left to cut — the diet already happened (premium voices
 off by default, template fallback, single-call scout, heuristic QC). The

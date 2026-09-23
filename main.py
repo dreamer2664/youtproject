@@ -737,7 +737,7 @@ def _subtitle_render_test(cfg) -> bool:
 def cmd_reburn(cfg, args) -> int:
     """Burn subtitles into an already-generated video (no regeneration)."""
     from assembler import AssemblyError, _ffmpeg_has_filter, run
-    from subtitles import filter_args
+    from subtitles import filter_args, restyle_ass, sub_style_from_cfg
 
     queue = Queue(cfg.state_file)
     job = queue.get(args.id)
@@ -756,12 +756,19 @@ def cmd_reburn(cfg, args) -> int:
             f"This job was made with subtitles off — regenerate instead.")
     if not _ffmpeg_has_filter("subtitles"):
         die("this FFmpeg build has no subtitles filter — can't burn in.")
+    # Current style knobs apply: .ass gets its Style line rebuilt (an
+    # old file carries the placement it was generated with), .srt gets
+    # force_style.
+    style = sub_style_from_cfg(cfg)
+    if sub_path.suffix == ".ass":
+        sub_path = restyle_ass(sub_path, cfg.format, style,
+                               cfg.work_dir / "reburn.ass")
     tmp = video_path.with_name(video_path.stem + "_reburn.mp4")
     print(f"Burning {sub_path.name} into {video_path.name} ...")
     try:
         run(["ffmpeg", "-y", "-loglevel", "warning",
              "-i", str(video_path),
-             "-vf", filter_args(sub_path, cfg.format),
+             "-vf", filter_args(sub_path, cfg.format, style),
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
              "-c:a", "copy",
              str(tmp)], "reburn")
@@ -1433,6 +1440,9 @@ def cmd_keys(cfg, args) -> int:
 
 
 def main() -> int:
+    from clipper import (MAX_CLIP_SECONDS, MAX_CLIPS_DEFAULT,
+                         MIN_CLIP_SECONDS)
+
     parser = argparse.ArgumentParser(
         description="Free AI video generator (manual-upload edition).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1512,12 +1522,12 @@ def main() -> int:
                    help="local video file instead of a link (repeatable)")
     p.add_argument("target", nargs="?",
                    help="shortcut: a link or file path (same as --url/--file)")
-    p.add_argument("--max-clips", type=int, default=6,
-                   help="how many clips to keep (default 6)")
-    p.add_argument("--min-len", type=int, default=20,
-                   help="minimum clip seconds (default 20)")
-    p.add_argument("--max-len", type=int, default=45,
-                   help="maximum clip seconds (default 45)")
+    p.add_argument("--max-clips", type=int, default=MAX_CLIPS_DEFAULT,
+                   help=f"how many clips to keep (default {MAX_CLIPS_DEFAULT})")
+    p.add_argument("--min-len", type=int, default=MIN_CLIP_SECONDS,
+                   help=f"minimum clip seconds (default {MIN_CLIP_SECONDS})")
+    p.add_argument("--max-len", type=int, default=MAX_CLIP_SECONDS,
+                   help=f"maximum clip seconds (default {MAX_CLIP_SECONDS})")
     p.add_argument("--no-vision", action="store_true",
                    help="skip the frame quality check")
     p.add_argument("--keep-work", action="store_true",

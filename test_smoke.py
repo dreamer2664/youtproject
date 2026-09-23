@@ -501,6 +501,32 @@ def t_sub_position():
     write_ass(ev, p, "portrait", 1080, 1920)
     assert ",5,60,60,0,1" in p.read_text(encoding="utf-8")
 
+    # restyle_ass: reburn's style refresh — Style line swapped, events
+    # untouched, refuses files without a Karaoke style
+    from subtitles import restyle_ass
+
+    write_ass(ev, p, "portrait", 1080, 1920, style={"position": "top"})
+    p2 = p.with_name("restyled.ass")
+    restyle_ass(p, "portrait", {"position": "bottom"}, p2)
+    body = p2.read_text(encoding="utf-8")
+    assert ",2,60,60,300,1" in body            # new placement
+    assert ",8,60,60,140,1" not in body        # old placement gone
+    assert "Dialogue: 0,0:00:00.00,0:00:01.00,Karaoke,,0,0,0,,hello" in body
+    bad = p.with_name("bad.ass")
+    bad.write_text("[Script Info]\nScriptType: v4.00+", encoding="utf-8")
+    try:
+        restyle_ass(bad, "portrait", None, p2)
+        raise AssertionError("should refuse a style-less .ass")
+    except ValueError:
+        pass
+
+    # drift guard (2026-09-24 diagnostic): the clip parser once carried
+    # a literal default=6 while the library said 10 — argparse always
+    # wins, so the constants must rule the parser.
+    src = Path(__file__).with_name("main.py").read_text(encoding="utf-8")
+    assert "default=MAX_CLIPS_DEFAULT" in src
+    assert '"--max-clips", type=int, default=6' not in src
+
 
 def t_subpreview():
     # The style picker (2026-09-23): pure helpers render a captioned frame

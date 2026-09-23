@@ -566,3 +566,28 @@ def write_ass(
         lines.append(progress)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
+
+
+def restyle_ass(ass_path: Path, video_format: str, style: dict | None,
+                dest: Path) -> Path:
+    """Copy an .ass, replacing the Karaoke style line (tested).
+
+    reburn's tool: an .ass generated before a style change carries its
+    old placement. This rewrites ONLY the Style line with the current
+    knobs — true-pixel sizes, no force_style (which would mis-scale
+    against the file's PlayRes). Events are copied untouched.
+    """
+    lines = Path(ass_path).read_text(encoding="utf-8").splitlines()
+    out: list[str] = []
+    hit = False
+    for line in lines:
+        if line.startswith("Style: Karaoke,"):
+            out.append(_karaoke_style(video_format, style))
+            hit = True
+        else:
+            out.append(line)
+    if not hit:
+        raise ValueError(f"no Karaoke style line in {ass_path.name}")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("\n".join(out) + "\n", encoding="utf-8")
+    return dest
