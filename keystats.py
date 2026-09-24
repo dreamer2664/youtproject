@@ -112,13 +112,21 @@ def _write(path: Path, events: list[dict]) -> None:
 
 
 def bump(provider: str, key: str, req: int = 0, tok: int = 0,
-         chars: int = 0, units: int = 0) -> None:
-    """Record one provider call. Never raises; no-op until init()."""
+         chars: int = 0, units: int = 0, tag: str = "") -> None:
+    """Record one provider call. Never raises; no-op until init().
+
+    tag = the call's origin ("script", "clipfix", "vision", "probe", ...)
+    so `keys --month` can show what the tokens were FOR. Agent-run
+    diagnostics go through the probe helpers below, which log themselves
+    — nothing spends off the books.
+    """
     if _path is None or not (req or tok or chars or units):
         return
     event = {"t": datetime.now(timezone.utc).isoformat(timespec="seconds"),
              "p": provider, "k": _mask(key), "req": int(req),
              "tok": int(tok), "chars": int(chars), "units": int(units)}
+    if tag:
+        event["tag"] = str(tag)[:24]
     try:
         events = _load(_path)
         events.append(event)
@@ -296,3 +304,189 @@ def cmd_keys(cfg, args) -> int:
     """`python main.py keys` — the dashboard."""
     print(build_status(cfg))
     return 0
+
+
+# --------------------------------------------------------------- month view
+def month_totals(events: list[dict], now: datetime | None = None) -> dict:
+    """Last-30-day spend per provider, split by call tag (pure, tested).
+
+    {"gemini": {"req": 12, "tok": 3400, "chars": 0, "units": 0,
+                "tags": {"script": {"req": 10, "tok": 3200},
+                         "probe": {"req": 2, "tok": 200}}}, ...}
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=30)
+    out: dict = {}
+    for event in events:
+        try:
+            when = datetime.fromisoformat(str(event.get("t")))
+        except ValueError:
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if when < cutoff:
+            continue
+        prov = str(event.get("p") or "?")
+        row = out.setdefault(prov, {"req": 0, "tok": 0, "chars": 0,
+                                    "units": 0, "tags": {}})
+        for field in ("req", "tok", "chars", "units"):
+            row[field] += int(event.get(field) or 0)
+        tag = str(event.get("tag") or "(untagged)")
+        trow = row["tags"].setdefault(tag, {"req": 0, "tok": 0})
+        trow["req"] += int(event.get("req") or 0)
+        trow["tok"] += int(event.get("tok") or 0)
+    return out
+
+
+def month_report() -> str:
+    """`python main.py keys --month` — what the last 30 days cost, by lane."""
+    events = _load(_path) if _path else []
+    totals = month_totals(events)
+    if not totals:
+        return "Ledger is empty (last 30 days): nothing spent yet."
+    lines = ["Spend, last 30 days (self-counted ledger)", ""]
+    for provider in ORDER:
+        if provider not in totals:
+            continue
+        row = totals[provider]
+        spent = (f"{row['req']} req · {row['tok']:,} tok"
+                 if provider in ("gemini", "groq", "openrouter", "deepseek")
+                 else f"{row['req']} req"
+                 + (f" · {row['chars']:,} chars" if row["chars"] else "")
+                 + (f" · {row['units']} units" if row["units"] else ""))
+        lines.append(f"{LIMITS[provider]['title']}: {spent}")
+        for tag, trow in sorted(row["tags"].items(),
+                                key=lambda kv: -kv[1]["req"]):
+            extra = f" · {trow['tok']:,} tok" if trow["tok"] else ""
+            lines.append(f"    {tag:<12} {trow['req']} req{extra}")
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------- live probes
+def probe_gemini(key: str, model: str) -> tuple[bool, str]:
+    """One tiny Gemini call; logs itself. (ok?, detail) Never raises."""
+    import requests
+
+    try:
+        r = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent",
+            params={"key": key},
+            json={"contents": [{"parts": [{"text": "reply with: ok"}]}],
+                  "generationConfig": {"maxOutputTokens": 128}},
+            timeout=20)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"unreachable ({type(exc).__name__})"
+    bump("gemini", key, req=1, tag="probe")
+    if r.status_code == 200:
+        return True, "ok"
+    return False, f"HTTP {r.status_code}"
+
+
+def probe_chat(name: str, api_url: str, key: str, model: str,
+               extra_body: dict | None = None) -> tuple[bool, str]:
+    """One tiny OpenAI-compatible chat call; logs itself. Never raises."""
+    import requests
+
+    body = {"model": model, "max_tokens": 16, "temperature": 0.0,
+            "messages": [{"role": "user", "content": "reply with: ok"}]}
+    if extra_body:
+        body.update(extra_body)
+    try:
+        r = requests.post(api_url, json=body, timeout=30,
+                          headers={"Authorization": f"Bearer {key}"})
+    except Exception as exc:  # noqa: BLE001
+        return False, f"unreachable ({type(exc).__name__})"
+    tok = 0
+    if r.status_code == 200:
+        try:
+            tok = int(r.json().get("usage", {}).get("total_tokens") or 0)
+        except (ValueError, AttributeError):
+            tok = 0
+    bump(name, key, req=1, tok=tok, tag="probe")
+    if r.status_code == 200:
+        return True, "ok"
+    return False, f"HTTP {r.status_code}: {r.text[:60]}"
+
+
+def probe_get(name: str, url: str, key: str, headers: dict | None = None,
+              params: dict | None = None, units: int = 0) -> tuple[bool, str]:
+    """One GET with the key (ElevenLabs / Pexels / Pixabay / YouTube)."""
+    import requests
+
+    try:
+        r = requests.get(url, headers=headers or {}, params=params or {},
+                         timeout=20)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"unreachable ({type(exc).__name__})"
+    bump(name, key, req=1, units=units, tag="probe")
+    if r.status_code == 200:
+        return True, "ok"
+    return False, f"HTTP {r.status_code}"
+
+
+def run_probes(cfg) -> str:
+    """`python main.py keys --probe` — every lane, per key, logged as probe."""
+    lines = ["Live probe — every check below is ledgered (tag=probe)", ""]
+
+    def section(title: str, results: list) -> None:
+        lines.append(title)
+        for mask, ok, detail in results:
+            mark = "✅" if ok else "❌"
+            lines.append(f"  {mark} ...{mask[-4:]}: {detail}")
+        lines.append("")
+
+    keys = [k for k in _configured_keys(cfg, "gemini") if k]
+    section("GEMINI",
+            [(_mask(k), *probe_gemini(k, cfg.gemini_model)) for k in keys]
+            or [("none", False, "not configured")])
+    keys = [k for k in _configured_keys(cfg, "groq") if k]
+    section("GROQ",
+            [(_mask(k), *probe_chat(
+                "groq", "https://api.groq.com/openai/v1/chat/completions",
+                k, cfg.groq_model,
+                {"reasoning_format": "hidden"}
+                if "gpt-oss" in cfg.groq_model else None)) for k in keys]
+            or [("none", False, "not configured")])
+    # OpenRouter: 50/day SHARED pool — one key tests the lane; the next
+    # key is only spent if the previous one failed.
+    results = []
+    for k in [k for k in _configured_keys(cfg, "openrouter") if k]:
+        if results and results[-1][1]:
+            break
+        results.append((_mask(k), *probe_chat(
+            "openrouter", "https://openrouter.ai/api/v1/chat/completions",
+            k, cfg.openrouter_model)))
+    section("OPENROUTER (shared pool — probed until first success)",
+            results or [("none", False, "not configured")])
+    keys = [k for k in _configured_keys(cfg, "elevenlabs") if k]
+    section("ELEVENLABS (quota-free /user check)",
+            [(_mask(k), *probe_get(
+                "elevenlabs", "https://api.elevenlabs.io/v1/user", k,
+                headers={"xi-api-key": k})) for k in keys]
+            or [("none", False, "not configured")])
+    pex = _configured_keys(cfg, "pexels")
+    section("PEXELS",
+            [(_mask(pex[0]), *probe_get(
+                "pexels", "https://api.pexels.com/v1/search",
+                pex[0], headers={"Authorization": pex[0]},
+                params={"query": "ocean", "per_page": 1}))]
+            if pex and pex[0] else [("none", False, "not configured")])
+    pix = [k for k in _configured_keys(cfg, "pixabay") if k]
+    section("PIXABAY",
+            [(_mask(k), *probe_get(
+                "pixabay", "https://pixabay.com/api/", k,
+                params={"key": k, "q": "ocean", "per_page": 3}))
+             for k in pix[:1]]
+            or [("none", False, "not configured")])
+    yt = [k for k in _configured_keys(cfg, "youtube") if k]
+    section("YOUTUBE (1 quota unit)",
+            [(_mask(k), *probe_get(
+                "youtube", "https://www.googleapis.com/youtube/v3/videos",
+                k, params={"part": "id", "chart": "mostPopular",
+                           "maxResults": 1, "regionCode": "US", "key": k},
+                units=1)) for k in yt[:1]]
+            or [("none", False, "not configured")])
+    lines.append("Every probe above is in the ledger: "
+                 "python main.py keys --month")
+    return "\n".join(lines)

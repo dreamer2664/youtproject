@@ -1698,6 +1698,38 @@ def t_keystats():
     assert all(event["k"] != "...old1"
                for event in keystats._load(keystats._path))
 
+    # Tagged entries (2026-09-25): every call carries its origin so
+    # `keys --month` can attribute spend — including agent probes.
+    keystats.bump("gemini", "AIzaSyFULL-KEY-MATERIALL-x7f2", req=1, tok=50,
+                  tag="probe")
+    keystats.bump("groq", "gsk-full-secret-0001", req=1, tok=1234, tag="clipfix")
+    events = keystats._load(keystats._path)
+    tagged = [e for e in events if e.get("tag")]
+    assert {e["tag"] for e in tagged} == {"probe", "clipfix"}
+    assert all("gsk-full-secret" not in json.dumps(e) for e in tagged)
+    # month_totals: per-provider sums with per-tag split, old rows dropped
+    now = datetime.now(timezone.utc)
+    sample = [
+        {"t": now.isoformat(), "p": "groq", "k": "...a", "req": 2, "tok": 100,
+         "chars": 0, "units": 0, "tag": "script"},
+        {"t": now.isoformat(), "p": "groq", "k": "...a", "req": 1, "tok": 40,
+         "chars": 0, "units": 0, "tag": "probe"},
+        {"t": now.isoformat(), "p": "groq", "k": "...a", "req": 7, "tok": 700,
+         "chars": 0, "units": 0},                      # untagged (old format)
+        {"t": (now - timedelta(days=31)).isoformat(), "p": "groq",
+         "k": "...a", "req": 99, "tok": 9900, "chars": 0, "units": 0,
+         "tag": "ancient"},                            # outside the window
+    ]
+    totals = keystats.month_totals(sample, now=now)
+    row = totals["groq"]
+    assert row["req"] == 10 and row["tok"] == 840
+    assert row["tags"]["script"] == {"req": 2, "tok": 100}
+    assert row["tags"]["probe"] == {"req": 1, "tok": 40}
+    assert row["tags"]["(untagged)"] == {"req": 7, "tok": 700}
+    assert "ancient" not in row["tags"]
+    report = keystats.month_report()
+    assert "30 days" in report and "probe" in report
+
     # Dashboard: sections, masked keys, refill wording, no secrets.
     cfg.data["ai"]["gemini_api_key"] = "AIzaSyFULL-KEY-MATERIALL-x7f2"
     cfg.data["channel"]["elevenlabs_api_keys"] = ["sk-full-secret-3d10"]

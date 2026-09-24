@@ -90,9 +90,15 @@ Retention (APV) is only in Studio Analytics — the public API can't see it.
 Everything runs on free tiers. Check the tanks any time:
 
 ```powershell
-python main.py keys     # per-key usage vs every free-tier limit
-python main.py costs    # Azure spend (if ever configured)
+python main.py keys           # per-key usage vs every free-tier limit
+python main.py keys --probe   # live-check EVERY lane, per key (each check logged)
+python main.py keys --month   # 30-day spend per provider, split by call tag
+python main.py costs          # Azure spend (if ever configured)
 ```
+
+The ledger counts everything with an origin tag — `script`, `clipfix`,
+`clippick`, `vision`, `probe`, … — so `keys --month` answers "what were
+the tokens FOR", including the agent's own diagnostic probes.
 
 - Gemini's free tier saturates at US peak hours — EU mornings are fast and
   quiet. The fallback chain (groq → openrouter → template) carries you

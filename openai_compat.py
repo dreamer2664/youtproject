@@ -175,7 +175,13 @@ class OpenAICompatProvider(GeminiProvider):
                     tok = len(text) // 4 if status == 200 else 0
                 except TypeError:  # mocked transport in tests
                     tok = 0
-                keystats.bump(self.name, key, req=1, tok=tok)
+                try:
+                    usage = (payload or {}).get("usage") or {}
+                    exact = int(usage.get("total_tokens") or 0)
+                except (TypeError, ValueError, AttributeError):
+                    exact = 0
+                keystats.bump(self.name, key, req=1, tok=exact or tok,
+                              tag=tag)
                 if status == 200:
                     try:
                         message = payload["choices"][0]["message"]

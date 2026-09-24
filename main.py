@@ -1433,8 +1433,14 @@ def cmd_voices(cfg, args) -> int:
 
 def cmd_keys(cfg, args) -> int:
     """API key dashboard: self-counted usage + free-tier refill times."""
-    from keystats import build_status
+    from keystats import build_status, month_report, run_probes
 
+    if getattr(args, "probe", False):
+        print(run_probes(cfg))
+        return 0
+    if getattr(args, "month", False):
+        print(month_report())
+        return 0
     print(build_status(cfg))
     return 0
 
@@ -1610,7 +1616,12 @@ def main() -> int:
 
     p = sub.add_parser("errors", help="full text of recent failures (for debugging)")
     sub.add_parser("costs", help="Azure OpenAI spend vs caps")
-    sub.add_parser("keys", help="API key usage: requests spent, what's left, when quotas refill")
+    pk = sub.add_parser("keys", help="API key usage: requests spent, what's left, when quotas refill")
+    pk.add_argument("--probe", action="store_true",
+                    help="live-check every provider/key (each check is "
+                         "ledgered as tag=probe — nothing spends off the books)")
+    pk.add_argument("--month", action="store_true",
+                    help="30-day spend rollup per provider, split by call tag")
     p.add_argument("--count", type=int, default=3, help="how many failures to show")
 
     sub.add_parser("queue", help="show the queue")

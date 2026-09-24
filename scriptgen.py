@@ -434,7 +434,7 @@ class GeminiProvider:
                     tok = (len(str(payload)) + len(response.text)) // 4
                 except TypeError:  # mocked transport in tests
                     tok = 0
-                keystats.bump("gemini", key, req=1, tok=tok)
+                keystats.bump("gemini", key, req=1, tok=tok, tag=tag)
                 return response.json(), 200, ""
 
             last_status = response.status_code
