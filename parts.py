@@ -28,6 +28,7 @@ PARTS_MAX_DEFAULT = 50
 PART_TITLE_LIMIT = 95     # YouTube title ceiling is 100; stay under it
 HEADER_TITLE_CHARS = 44   # header title line, truncated to fit 1080px
 HEADER_MARGIN_V = 110     # true pixels from the top (shorts-safe)
+HEADER_SECONDS_DEFAULT = 4.0  # header visibility; 0 = the whole part
 
 
 # ------------------------------------------------------------------ planning
@@ -118,23 +119,31 @@ def esc_header(text: str, limit: int = HEADER_TITLE_CHARS) -> str:
 
 def parts_header_line(title: str, index: int, total: int,
                       part_len: float,
-                      margin_v: int = HEADER_MARGIN_V) -> str:
-    """Full-duration Dialogue for the persistent top header (pure, tested).
+                      margin_v: int = HEADER_MARGIN_V,
+                      show_seconds: float = HEADER_SECONDS_DEFAULT) -> str:
+    """Timed Dialogue for the opening top header (pure, tested).
 
     "" when the video is a single part (no header on solo episodes) or the
-    title is blank. Mirrors subtitles.progress_ass_line: rides the same
-    .ass burn as the karaoke, zero extra FFmpeg cost, restyleable later
-    via reburn.
+    title is blank. The header shows for show_seconds (then fades via
+    \\fad — ignored by players without fade support, where it just cuts);
+    0 or negative keeps it up the whole part. Mirrors
+    subtitles.progress_ass_line: rides the same .ass burn as the karaoke,
+    zero extra FFmpeg cost, restyleable later via reburn.
     """
     from subtitles import ass_timestamp, mask_profanity
 
     if total <= 1 or not str(title or "").strip():
         return ""
+    try:
+        show = float(show_seconds)
+    except (TypeError, ValueError):
+        show = HEADER_SECONDS_DEFAULT
+    end = float(part_len) if show <= 0 else min(float(part_len), show)
     head = esc_header(mask_profanity(str(title)))
     return (
-        f"Dialogue: 0,0:00:00.00,{ass_timestamp(part_len)},"
+        f"Dialogue: 0,0:00:00.00,{ass_timestamp(end)},"
         f"Karaoke,,0,0,{int(margin_v)},,"
-        f"{{\\an8\\bord2\\shad0\\fs52\\c&H00FFFFFF&}}{head}\\N"
+        f"{{\\an8\\fad(200,400)\\bord2\\shad0\\fs52\\c&H00FFFFFF&}}{head}\\N"
         f"{{\\fs78\\c&H0000D7FF&}}Part {int(index)}"
     )
 
@@ -343,7 +352,8 @@ def run_parts(cfg, url: str = "", file: str = "",
         cand = Candidate(start=start, end=end, hook=f"Part {num}")
         length = end - start
         header_line = parts_header_line(
-            str(source.get("title") or ""), num, total, length) \
+            str(source.get("title") or ""), num, total, length,
+            show_seconds=cfg.parts_header_seconds) \
             if want_header else ""
         # The clip renderer cuts, treats vertical, and burns — header rides
         # the same .ass, subs default to the bottom (shorts-safe).

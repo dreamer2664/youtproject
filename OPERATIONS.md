@@ -86,8 +86,9 @@ python main.py parts <link> --dry-run          # windows only, $0
 Same ingest as clips (download once, transcript once — cached and shared
 with the clip lane), but the cuts are mechanical: every `--part-len`
 seconds snapped to the nearest sentence end (±10 s), never mid-word.
-Each part gets a persistent top header ("<title> / Part X", free — it
-rides the subtitle burn), karaoke subs at the bottom, and its own kit
+Each part opens with a top header ("<title> / Part X", 4 s, then it
+fades — free, it rides the subtitle burn; `parts.header_seconds: 0`
+keeps it up the whole part), karaoke subs at the bottom, and its own kit
 with `captions.srt` + `part.ass` included. Solo videos (< 1 part) render
 with no header. ~2 API calls per source, then pure FFmpeg. Post parts in
 order, one per day — the numbering only works as a sequence.

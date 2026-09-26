@@ -484,7 +484,15 @@ def t_parts_header():
     assert parts_header_line("", 2, 5, 60.0) == ""
     assert parts_header_line("  ", 2, 5, 60.0) == ""
     line = parts_header_line("Testing 100 phones", 2, 5, 63.2)
-    assert line.startswith("Dialogue: 0,0:00:00.00,0:01:03.20,")
+    assert line.startswith("Dialogue: 0,0:00:00.00,0:00:04.00,")
+    assert "\\fad" in line  # gentle in/out, ignored where unsupported
+    # 0 (or huge) show_seconds keeps it up the whole part.
+    long = parts_header_line("Testing 100 phones", 2, 5, 63.2,
+                             show_seconds=0)
+    assert long.startswith("Dialogue: 0,0:00:00.00,0:01:03.20,")
+    assert parts_header_line("T", 1, 3, 63.2,
+                             show_seconds=999).startswith(
+        "Dialogue: 0,0:00:00.00,0:01:03.20,")
     assert ",0,0,110,," in line  # top margin overrides the style
     assert "\\an8" in line  # top-center, karaoke stays centered/bottom
     assert "Testing 100 phones" in line and "Part 2" in line

@@ -345,9 +345,11 @@ DEFAULTS: dict[str, Any] = {
         "part_len": 60,
         # Past this many episodes the target widens so nothing is dropped.
         "max_parts": 50,
-        # Persistent top header ("<title> / Part X"). Solo videos skip it
-        # even when true. --no-header disables it for one run.
+        # Opening top header ("<title> / Part X", then it fades). Solo
+        # videos skip it even when true. --no-header disables it for one run.
         "header": True,
+        # Header visibility in seconds (0 = stays up the whole part).
+        "header_seconds": 4.0,
         # A trailing tail shorter than this joins the previous part.
         "tail_merge": 15.0,
         # Sentence-snap search radius around each ideal cut.
@@ -810,8 +812,17 @@ class Config:
 
     @property
     def parts_header(self) -> bool:
-        """Persistent top header on multi-part videos (default true)."""
+        """Opening top header on multi-part videos (default true)."""
         return bool(self.data.get("parts", {}).get("header", True))
+
+    @property
+    def parts_header_seconds(self) -> float:
+        """Header visibility in seconds; 0 = whole part (garbage -> 4)."""
+        try:
+            return max(0.0, min(120.0, float(self.data.get("parts", {})
+                                                 .get("header_seconds", 4.0))))
+        except (ValueError, TypeError):
+            return 4.0
 
     @property
     def parts_tail_merge(self) -> float:
