@@ -339,6 +339,20 @@ DEFAULTS: dict[str, Any] = {
         # gets cached). false = raw Whisper output.
         "transcript_fix": True,
     },
+    "parts": {
+        # Series splitter: mechanical N-second episodes ("Title — Part X").
+        # Target episode length in seconds (15-600; --part-len overrides).
+        "part_len": 60,
+        # Past this many episodes the target widens so nothing is dropped.
+        "max_parts": 50,
+        # Persistent top header ("<title> / Part X"). Solo videos skip it
+        # even when true. --no-header disables it for one run.
+        "header": True,
+        # A trailing tail shorter than this joins the previous part.
+        "tail_merge": 15.0,
+        # Sentence-snap search radius around each ideal cut.
+        "snap_window": 10.0,
+    },
     "youtube": {
         # YouTube Data API v3 keys (https://console.cloud.google.com/apis/
         # library/youtube.googleapis.com) — one Cloud project per key, each
@@ -774,6 +788,48 @@ class Config:
         """Path to a cookies.txt for clip downloads (overrides browser)."""
         return str(self.data.get("clip", {}).get("cookies_file")
                    or "").strip()
+
+    @property
+    def parts_part_len(self) -> float:
+        """Target episode seconds (15-600; garbage -> 60)."""
+        try:
+            return min(600.0, max(15.0,
+                                 float(self.data.get("parts", {})
+                                       .get("part_len", 60))))
+        except (ValueError, TypeError):
+            return 60.0
+
+    @property
+    def parts_max_parts(self) -> int:
+        """Episode cap before the target widens (garbage -> 50)."""
+        try:
+            return max(1, min(200, int(self.data.get("parts", {})
+                                          .get("max_parts", 50))))
+        except (ValueError, TypeError):
+            return 50
+
+    @property
+    def parts_header(self) -> bool:
+        """Persistent top header on multi-part videos (default true)."""
+        return bool(self.data.get("parts", {}).get("header", True))
+
+    @property
+    def parts_tail_merge(self) -> float:
+        """Short trailing tails join the previous part (garbage -> 15)."""
+        try:
+            return max(0.0, min(300.0, float(self.data.get("parts", {})
+                                                 .get("tail_merge", 15.0))))
+        except (ValueError, TypeError):
+            return 15.0
+
+    @property
+    def parts_snap_window(self) -> float:
+        """Sentence-snap radius around ideal cuts (garbage -> 10)."""
+        try:
+            return max(0.0, min(60.0, float(self.data.get("parts", {})
+                                                .get("snap_window", 10.0))))
+        except (ValueError, TypeError):
+            return 10.0
 
     @property
     def qc_candidates(self) -> int:

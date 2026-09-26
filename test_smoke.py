@@ -408,11 +408,137 @@ def t_profanity_mask():
     # word count preserved (karaoke timing depends on it)
     assert len(mask_profanity("no damn way around it").split()) == 5
     assert mask_profanity("") == ""
+    # vowel-less entries still mask (mf has no vowels to star)
+    assert mask_profanity("mf") == "m*"
+    assert mask_profanity("MF") == "M*"
     # config default + switch
     cfg = tmp_cfg()
     assert cfg.subtitles_mask_profanity is True
     cfg.data["subtitles"]["mask_profanity"] = False
     assert cfg.subtitles_mask_profanity is False
+
+
+def t_timestamp_rollover():
+    from subtitles import ass_timestamp, srt_timestamp
+
+    # Minute/hour rollovers carry correctly (was 00:01:60,000).
+    assert srt_timestamp(119.99996) == "00:02:00,000"
+    assert ass_timestamp(119.99996) == "0:02:00.00"
+    assert srt_timestamp(3599.9999) == "01:00:00,000"
+    assert ass_timestamp(3599.9999) == "1:00:00.00"
+    # Ordinary values are unchanged.
+    assert srt_timestamp(3661.25) == "01:01:01,250"
+    assert srt_timestamp(61.5) == "00:01:01,500"
+    assert ass_timestamp(61.5) == "0:01:01.50"
+    assert srt_timestamp(0) == "00:00:00,000"
+    assert srt_timestamp(-3) == "00:00:00,000"
+    assert ass_timestamp(-1) == "0:00:00.00"
+
+
+def t_parts_plan():
+    from parts import plan_parts
+
+    spans = [(0.0, 9.5), (10.0, 21.0), (21.5, 32.0), (33.0, 44.0)]
+    # Ideal cut at 20s snaps to the sentence end at 21s.
+    plan = plan_parts(44.0, spans, target_len=20.0, tail_merge=15.0,
+                      snap_window=10.0)
+    assert plan == [(0.0, 21.0), (21.0, 44.0)]
+    # A tail shorter than tail_merge joins the previous part.
+    short = [(0.0, 10.0), (10.0, 20.0), (20.0, 30.0), (30.0, 34.0)]
+    assert plan_parts(34.0, short, target_len=20.0, tail_merge=15.0,
+                      snap_window=10.0) == [(0.0, 34.0)]
+    # Short video, empty plan, garbage target.
+    assert plan_parts(25.0, [], target_len=60.0) == [(0.0, 25.0)]
+    assert plan_parts(0, []) == []
+    assert plan_parts(-5, None) == []
+    assert plan_parts(100.0, [], target_len="junk") == [(0.0, 60.0), (60.0, 100.0)]
+    assert len(plan_parts(100.0, [], target_len=-5)) == 6  # clamped to 15s
+    # Past max_parts the target widens; coverage stays edge to edge.
+    capped = plan_parts(600.0, [], target_len=60.0, max_parts=5)
+    assert len(capped) == 5
+    assert capped[0] == (0.0, 120.0) and capped[-1] == (480.0, 600.0)
+    # No sentences nearby: fall back to word starts, then exact cuts.
+    words = plan_parts(130.0, [], target_len=60.0,
+                       word_starts=[59.5, 119.0])
+    assert words == [(0.0, 59.5), (59.5, 130.0)]
+    exact = plan_parts(130.0, [], target_len=60.0)
+    assert exact == [(0.0, 60.0), (60.0, 130.0)]
+    # Config surface + garbage tolerance.
+    cfg = tmp_cfg()
+    assert cfg.parts_part_len == 60.0
+    assert cfg.parts_max_parts == 50
+    assert cfg.parts_header is True
+    assert cfg.parts_tail_merge == 15.0
+    assert cfg.parts_snap_window == 10.0
+    cfg.data["parts"]["part_len"] = "junk"
+    cfg.data["parts"]["max_parts"] = "junk"
+    assert cfg.parts_part_len == 60.0
+    assert cfg.parts_max_parts == 50
+
+
+def t_parts_header():
+    from parts import esc_header, part_kit_title, parts_header_line
+
+    # Solo videos get no header; blank titles neither.
+    assert parts_header_line("Hello", 1, 1, 60.0) == ""
+    assert parts_header_line("", 2, 5, 60.0) == ""
+    assert parts_header_line("  ", 2, 5, 60.0) == ""
+    line = parts_header_line("Testing 100 phones", 2, 5, 63.2)
+    assert line.startswith("Dialogue: 0,0:00:00.00,0:01:03.20,")
+    assert ",0,0,110,," in line  # top margin overrides the style
+    assert "\\an8" in line  # top-center, karaoke stays centered/bottom
+    assert "Testing 100 phones" in line and "Part 2" in line
+    assert "Part 2 of" not in line  # the overlay stays short
+    # Header text: collapsed, truncated, ASS-escaped.
+    assert esc_header("a  b") == "a b"
+    long = esc_header("x" * 100)
+    assert len(long) <= 44 and long.endswith("…")
+    assert esc_header("a{b}\\c") == "a\\{b\\}\\\\c"
+    # Kit titles: series suffix, truncation, masking.
+    assert part_kit_title("Testing 100 phones", 3, 8) == \
+        "Testing 100 phones — Part 3"
+    assert part_kit_title("Solo", 1, 1) == "Solo"
+    capped = part_kit_title("y" * 120, 1, 9)
+    assert len(capped) <= 95 and capped.endswith("...")
+    assert part_kit_title("What the fuck", 1, 2) == "What the f*ck — Part 1"
+
+
+def t_parts_kit():
+    from parts import (build_part_description, build_part_srt,
+                       write_part_kit)
+
+    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    clip = tmp / "ab12_part_01.mp4"
+    clip.write_bytes(b"fake")
+    src = {"title": "Source Vid", "channel": "Chan", "url": "http://x"}
+    # captions.srt from part words; None for wordless stretches.
+    words = [{"word": "hello", "start": 0.0, "end": 0.5},
+             {"word": "world.", "start": 0.6, "end": 1.0}]
+    srt = build_part_srt(words, 60.0, tmp / "p.srt")
+    assert srt is not None and srt.exists()
+    assert "hello world" in srt.read_text(encoding="utf-8")
+    assert build_part_srt([], 60.0, tmp / "empty.srt") is None
+    # Description carries the sibling index + attribution; solo skips it.
+    desc = build_part_description("T — Part 1", 1, 2, src,
+                                  ["a.mp4", "b.mp4"])
+    assert "Part 1 of 2" in desc and "Series: a.mp4, b.mp4" in desc
+    assert "Source Vid" in desc and "http://x" in desc
+    solo = build_part_description("Solo", 1, 1, src, [])
+    assert "Part 1 of" not in solo and "Full credit" in solo
+    # The kit: media + titles + credit + captions + checklist.
+    kit = write_part_kit(clip, "Source Vid — Part 1", 1, 2, src,
+                         (0.0, 60.0), ["ab12_part_01.mp4", "ab12_part_02.mp4"],
+                         srt, None, tmp)
+    assert (kit / "TITLE.txt").read_text(encoding="utf-8") == \
+        "Source Vid — Part 1"
+    assert "Part 1 of 2" in (kit / "DESCRIPTION.txt").read_text(
+        encoding="utf-8")
+    credit = (kit / "CREDIT.txt").read_text(encoding="utf-8")
+    assert "window: 0.0s - 60.0s" in credit and "part: 1/2" in credit
+    assert (kit / "captions.srt").exists()
+    assert not (kit / "part.ass").exists()  # None in -> no file out
+    assert (kit / "CHECKLIST.md").exists()
+    assert (kit / "tiktok.txt").exists() and (kit / "reels.txt").exists()
 
 
 def t_top_video():
@@ -4362,6 +4488,10 @@ def main() -> int:
         ("sub_position", t_sub_position),
         ("subpreview", t_subpreview),
         ("profanity_mask", t_profanity_mask),
+        ("timestamp_rollover", t_timestamp_rollover),
+        ("parts_plan", t_parts_plan),
+        ("parts_header", t_parts_header),
+        ("parts_kit", t_parts_kit),
         ("top_video", t_top_video),
         ("bot_parser", t_bot_parser),
         ("package", t_package),

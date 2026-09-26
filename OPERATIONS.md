@@ -74,6 +74,24 @@ More from one source: `--max-clips 12` (default 10), and
 run's best clips — numbered cards, best moment revealed last, no
 extra API calls. Its kit lands next to the clip kits.
 
+## Parts (series splitter — mechanical, not editorial)
+
+```powershell
+python main.py parts <youtube link>            # ~60s episodes, header + subs
+python main.py parts --file C:\path\to.mp4    # a local file
+python main.py parts <link> --part-len 90      # 90-second episodes
+python main.py parts <link> --dry-run          # windows only, $0
+```
+
+Same ingest as clips (download once, transcript once — cached and shared
+with the clip lane), but the cuts are mechanical: every `--part-len`
+seconds snapped to the nearest sentence end (±10 s), never mid-word.
+Each part gets a persistent top header ("<title> / Part X", free — it
+rides the subtitle burn), karaoke subs at the bottom, and its own kit
+with `captions.srt` + `part.ass` included. Solo videos (< 1 part) render
+with no header. ~2 API calls per source, then pure FFmpeg. Post parts in
+order, one per day — the numbering only works as a sequence.
+
 ## Decision rules (what the data says to do)
 
 | Signal | Rule | Where |

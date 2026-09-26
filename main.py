@@ -1143,6 +1143,43 @@ def cmd_clip(cfg, args) -> int:
     return 0 if any(status == "ok" for _, status, _ in results) else 1
 
 
+def cmd_parts(cfg, args) -> int:
+    """Parts lane: one source video -> N 'Title - Part X' Shorts + kits."""
+    print(BANNER)
+    from clipper import ClipError, plan_clip_sources
+    from parts import run_parts
+
+    sources = plan_clip_sources(
+        getattr(args, "target", ""), args.url or [], args.file or [])
+    if not sources:
+        die("give me a source: parts <link-or-path>, or --url/--file "
+            "(both repeatable for batch runs)")
+    results: list[tuple[str, str, str]] = []  # (label, status, detail)
+    for index, (url, file) in enumerate(sources, start=1):
+        label = url or file
+        if len(sources) > 1:
+            print(f"\n  [parts] source {index}/{len(sources)}: {label}")
+        try:
+            run_parts(cfg, url=url, file=file,
+                      part_len=args.part_len, max_parts=args.max_parts,
+                      sub_pos=getattr(args, "sub_pos", "bottom"),
+                      header=False if args.no_header else None,
+                      out_dir=Path(args.out) if args.out else None,
+                      keep_work=args.keep_work, dry_run=args.dry_run)
+            results.append((label, "ok", ""))
+        except ClipError as exc:
+            results.append((label, "failed", str(exc)[:120]))
+        except Exception as exc:  # noqa: BLE001 - one bad source kills
+            results.append((label, "failed", f"unexpected: {exc}"[:120]))
+    if len(sources) > 1:
+        print("\n  parts batch summary:")
+        for label, status, detail in results:
+            mark = "ok " if status == "ok" else "FAIL"
+            print(f"    [{mark}] {label}"
+                  + (f" — {detail}" if detail else ""))
+    return 0 if any(status == "ok" for _, status, _ in results) else 1
+
+
 def cmd_bot(cfg, args) -> int:
     """Poll Telegram for topics; render each; send back the finished video."""
     print(BANNER)
@@ -1549,6 +1586,29 @@ def main() -> int:
                         "from this run's best clips (cards + concat, no "
                         "extra API calls)")
 
+    p = sub.add_parser("parts", help="split a video into a 'Title - Part X' Shorts series")
+    p.add_argument("--url", action="append",
+                   help="YouTube link of the source video (repeatable)")
+    p.add_argument("--file", action="append",
+                   help="local video file instead of a link (repeatable)")
+    p.add_argument("target", nargs="?",
+                   help="shortcut: a link or file path (same as --url/--file)")
+    p.add_argument("--part-len", type=float, default=None, metavar="SECONDS",
+                   help="target seconds per part (default: config parts.part_len, 60)")
+    p.add_argument("--max-parts", type=int, default=None, metavar="N",
+                   help="episode cap; past it the target widens (default 50)")
+    p.add_argument("--keep-work", action="store_true",
+                   help="keep intermediate files (audio, .ass, frames)")
+    p.add_argument("--no-header", action="store_true",
+                   help="skip the persistent top header for this run")
+    p.add_argument("--out", default=None, help="output folder (default parts/)")
+    p.add_argument("--sub-pos", choices=["default", "auto", "top", "middle",
+                                         "bottom"], default="bottom",
+                   help="subtitle placement for this run (default bottom: "
+                        "shorts-safe, never collides with the top header)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print the part windows only: no renders, $0")
+
     p = sub.add_parser("subpreview",
                        help="preview subtitle position/size/font on a real "
                             "frame, then copy the config block")
@@ -1665,6 +1725,7 @@ def main() -> int:
         "topics": cmd_topics,
         "schedule": cmd_schedule,
         "clip": cmd_clip,
+        "parts": cmd_parts,
         "bot": cmd_bot,
         "jarvis": cmd_jarvis,
         "stats": cmd_stats,

@@ -36,14 +36,12 @@ class Cue:
 
 
 def srt_timestamp(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    millis = int(round((seconds - int(seconds)) * 1000))
-    if millis == 1000:
-        secs += 1
-        millis = 0
+    # Total-millis divmod: carries roll minutes->hours correctly, so a word
+    # boundary at 119.99996 renders 00:02:00,000 — never 00:01:60,000.
+    total_ms = max(0, int(round(seconds * 1000)))
+    hours, rem = divmod(total_ms, 3600000)
+    minutes, rem = divmod(rem, 60000)
+    secs, millis = divmod(rem, 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
@@ -257,7 +255,11 @@ def mask_profanity(text: str) -> str:
     def _mask(match) -> str:
         word = match.group(0)
         if word.lower() in PROFANITY:
-            return re.sub(r"[aeiouAEIOU]", "*", word)
+            starred = re.sub(r"[aeiouAEIOU]", "*", word)
+            if starred == word and len(word) > 1:
+                # No vowels to star (mf) — keep the first letter only.
+                starred = word[0] + "*" * (len(word) - 1)
+            return starred
         return word
 
     return re.sub(r"[A-Za-z]+", _mask, text or "")
@@ -355,14 +357,11 @@ class KaraokeEvent:
 
 
 def ass_timestamp(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    centis = int(round((seconds - int(seconds)) * 100))
-    if centis == 100:
-        secs += 1
-        centis = 0
+    # Same total-centis divmod as srt_timestamp: no :60 rollovers.
+    total_cs = max(0, int(round(seconds * 100)))
+    hours, rem = divmod(total_cs, 360000)
+    minutes, rem = divmod(rem, 6000)
+    secs, centis = divmod(rem, 100)
     return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
 
 

@@ -837,14 +837,20 @@ def clip_words(words: list[dict], start: float, end: float) -> list[dict]:
 
 
 def build_clip_ass(words_in_clip: list[dict], clip_len: float,
-                   cfg: Config, work_dir: Path, style: dict | None = None) -> Path:
-    """Karaoke .ass for one clip (adapter over subtitles.build_karaoke_events)."""
+                   cfg: Config, work_dir: Path, style: dict | None = None,
+                   extra: str | None = None) -> Path:
+    """Karaoke .ass for one clip (adapter over subtitles.build_karaoke_events).
+
+    extra: one full Dialogue line appended to the file (the progress-bar
+    mechanism reused — the parts lane's persistent header rides here).
+    """
     narration = " ".join(w["word"] for w in words_in_clip)
     timings = [(w["start"], w["end"]) for w in words_in_clip]
     events = build_karaoke_events(
         [narration], [timings], [0.0], [clip_len], head_tail=0.0)
     path = work_dir / "clip.ass"
-    write_ass(events, path, cfg.format, cfg.width, cfg.height, style=style)
+    write_ass(events, path, cfg.format, cfg.width, cfg.height,
+              progress=extra, style=style)
     return path
 
 
@@ -877,8 +883,13 @@ def _auto_sub_position(src: Path, cand: Candidate, work_dir: Path) -> str | None
 
 def render_clip(src: Path, cand: Candidate, words: list[dict],
                 cfg: Config, out_path: Path, work_dir: Path,
-                sub_pos: str = "default") -> Path:
-    """Cut + crop + burn subtitles -> one vertical clip."""
+                sub_pos: str = "default",
+                extra_ass: str | None = None) -> Path:
+    """Cut + crop + burn subtitles -> one vertical clip.
+
+    extra_ass: one full Dialogue line appended to the clip's .ass
+    (the parts lane's persistent header rides here, zero extra cost).
+    """
     length = cand.end - cand.start
     window = clip_words(words, cand.start, cand.end)
     style = sub_style_from_cfg(cfg, sub_pos)
@@ -891,7 +902,8 @@ def render_clip(src: Path, cand: Candidate, words: list[dict],
             print("  [clip] subs auto: no frame readable — using the "
                   "configured position")
             style = {**style, "position": "default"}
-    ass_path = build_clip_ass(window, length, cfg, work_dir, style)
+    ass_path = build_clip_ass(window, length, cfg, work_dir, style,
+                                extra=extra_ass)
     width, height = probe_dims(src)
     treatment = vertical_treatment(width, height, cfg.clip_crop_mode)
     if treatment == "fit":
