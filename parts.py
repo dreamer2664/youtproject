@@ -3,10 +3,11 @@
     python main.py parts <youtube-link-or-file> [--part-len 60]
 
 Mechanical, not editorial: fixed-length episodes snapped to sentence
-boundaries (never mid-word), each with a persistent top header
+boundaries (never mid-word), each with a timed top header
 ("<title> / Part X") and karaoke subtitles at the bottom, plus one
 upload kit per part. ~2 API calls per source total (transcript + fix),
-then pure FFmpeg — the cheapest lane in the project.
++1 only when an over-long header title needs shortening — the
+cheapest lane in the project.
 
 Reuses the clip lane end to end (download, cached transcript, render,
 vertical treatment); the only new machinery is the window planner and
@@ -15,7 +16,9 @@ the header overlay line.
 
 from __future__ import annotations
 
+import html
 import shutil
+import textwrap
 from pathlib import Path
 
 PART_LEN_DEFAULT = 60.0
@@ -26,7 +29,8 @@ PART_SNAP_WINDOW = 10.0   # sentence-snap search radius around each ideal cut
 PART_WORD_SNAP = 2.0      # word-boundary fallback radius (no sentence nearby)
 PARTS_MAX_DEFAULT = 50
 PART_TITLE_LIMIT = 95     # YouTube title ceiling is 100; stay under it
-HEADER_TITLE_CHARS = 44   # header title line, truncated to fit 1080px
+HEADER_TITLE_CHARS = 44   # chars per header title line at 1080px wide
+HEADER_MAX_LINES_DEFAULT = 3  # wrap budget before shorten/truncate kicks in
 HEADER_MARGIN_V = 110     # true pixels from the top (shorts-safe)
 HEADER_SECONDS_DEFAULT = 4.0  # header visibility; 0 = the whole part
 
@@ -117,6 +121,120 @@ def esc_header(text: str, limit: int = HEADER_TITLE_CHARS) -> str:
     return clean.replace("\\", "\\\\").replace("{", "\\{").replace("}", "\\}")
 
 
+def _clean_title(text: str) -> str:
+    """Collapse whitespace + decode HTML entities (`&amp;` -> `&`) (pure)."""
+    return html.unescape(" ".join(str(text or "").split()))
+
+
+def wrap_header_title(title: str,
+                      width: int = HEADER_TITLE_CHARS) -> list[str]:
+    """Word-wrap a header title to ~width chars per line (pure).
+
+    Words are never split (one pathological word may exceed width — the
+    renderer still truncates it safely). [] for blank input.
+    """
+    clean = _clean_title(title)
+    if not clean:
+        return []
+    try:
+        size = max(10, int(width))
+    except (TypeError, ValueError):
+        size = HEADER_TITLE_CHARS
+    return textwrap.wrap(clean, width=size,
+                         break_long_words=False, break_on_hyphens=False)
+
+
+def shorten_header_title(title: str, provider,
+                         max_chars: int) -> str | None:
+    """Ask the LLM chain to compress an over-long header title.
+
+    Returns the shortened title, or None to keep the truncation fallback.
+    Validation-gated — strictly shorter, fits the budget, shares a
+    subject word with the original (no weird rewrites) — and never
+    raises: any failure keeps the draft with a printed note.
+    """
+    clean = _clean_title(title)
+    if not clean or provider is None:
+        return None
+    try:
+        budget = max(20, int(max_chars))
+    except (TypeError, ValueError):
+        budget = HEADER_TITLE_CHARS
+    prompt = (
+        f"Shorten this YouTube video title to under {budget} characters "
+        f"so it fits as an on-screen header.\n"
+        f"TITLE: {clean}\n"
+        "RULES: keep the meaning and the main subject words; plain words "
+        "only; no quotes, no hashtags, no ALL CAPS, no ellipsis.\n"
+        "Return ONLY the shortened title, nothing else."
+    )
+    try:
+        raw = provider.generate_text(prompt, temperature=0.3,
+                                     tag="headertitle")
+    except Exception as exc:  # noqa: BLE001 - shorten never kills a render
+        print(f"  [parts] title shorten failed ({str(exc)[:80]}) — "
+              f"truncating instead.")
+        return None
+    short = ""
+    for raw_line in str(raw or "").splitlines():
+        short = raw_line.strip().strip("\"'").strip()
+        if short:
+            break
+    if not short or len(short) >= len(clean) or len(short) > budget:
+        return None
+    common = {w.strip(".,!?;:()\"'").lower() for w in clean.split()}
+    common = {w for w in common if len(w) > 3}
+    if common and not (common & {w.strip(".,!?;:()\"'").lower()
+                                  for w in short.split()}):
+        print(f"  [parts] title shorten drifted ({short[:40]!r}) — "
+              f"truncating instead.")
+        return None
+    print(f"  [parts] title shortened: {clean[:44]!r} -> {short[:44]!r}")
+    return short
+
+
+def prepare_header_title(title: str, *,
+                         max_lines: int = HEADER_MAX_LINES_DEFAULT,
+                         shorten_enabled: bool = True,
+                         provider=None) -> str:
+    """Final on-video header title, newline-joined when multi-line.
+
+    Pure unless the LLM path runs; never raises. Fits in max_lines ->
+    returned verbatim (word-wrapped). Longer -> one LLM shorten attempt
+    over the existing key chain (no new signup), kept only if it
+    validates and fits. Anything else -> the first max_lines lines with
+    "…" on the last one. "" for blank input.
+    """
+    try:
+        lines = wrap_header_title(title)
+    except Exception:
+        return ""
+    if not lines:
+        return ""
+    try:
+        limit = max(1, int(max_lines))
+    except (TypeError, ValueError):
+        limit = HEADER_MAX_LINES_DEFAULT
+    if len(lines) <= limit:
+        return "\n".join(lines)
+    if shorten_enabled and provider is not None:
+        try:
+            short = shorten_header_title(title, provider,
+                                         limit * HEADER_TITLE_CHARS)
+        except Exception:
+            short = None
+        if short:
+            short_lines = wrap_header_title(short)
+            if 0 < len(short_lines) <= limit:
+                return "\n".join(short_lines)
+    head = lines[:limit]
+    last = head[-1][:-1].rstrip() if head[-1].endswith("…") else head[-1]
+    if len(last) >= HEADER_TITLE_CHARS:
+        last = last[:HEADER_TITLE_CHARS - 1].rstrip()
+    head[-1] = last.rstrip() + "…"
+    return "\n".join(head)
+
+
 def parts_header_line(title: str, index: int, total: int,
                       part_len: float,
                       margin_v: int = HEADER_MARGIN_V,
@@ -128,18 +246,24 @@ def parts_header_line(title: str, index: int, total: int,
     \\fad — ignored by players without fade support, where it just cuts);
     0 or negative keeps it up the whole part. Mirrors
     subtitles.progress_ass_line: rides the same .ass burn as the karaoke,
-    zero extra FFmpeg cost, restyleable later via reburn.
+    zero extra FFmpeg cost, restyleable later via reburn. Titles may span
+    lines (newline-joined by prepare_header_title), stacked above Part X.
     """
     from subtitles import ass_timestamp, mask_profanity
 
-    if total <= 1 or not str(title or "").strip():
+    if total <= 1:
         return ""
     try:
         show = float(show_seconds)
     except (TypeError, ValueError):
         show = HEADER_SECONDS_DEFAULT
     end = float(part_len) if show <= 0 else min(float(part_len), show)
-    head = esc_header(mask_profanity(str(title)))
+    lines = [esc_header(mask_profanity(_clean_title(chunk)))
+             for chunk in str(title or "").split("\n")]
+    lines = [line for line in lines if line]
+    if not lines:
+        return ""
+    head = "\\N".join(lines)
     return (
         f"Dialogue: 0,0:00:00.00,{ass_timestamp(end)},"
         f"Karaoke,,0,0,{int(margin_v)},,"
@@ -153,7 +277,7 @@ def part_kit_title(source_title: str, index: int, total: int) -> str:
     """TITLE.txt: "<title> — Part X", plain title when solo (pure, tested)."""
     from subtitles import mask_profanity
 
-    title = " ".join(str(source_title or "").split()) or f"Part {index}"
+    title = _clean_title(source_title) or f"Part {index}"
     if total > 1:
         title = f"{title} — Part {index}"
     if len(title) > PART_TITLE_LIMIT:
@@ -170,8 +294,8 @@ def build_part_description(title: str, index: int, total: int,
         if siblings:
             lines.append("Series: " + ", ".join(siblings))
         lines.append("")
-    lines += [f"Clipped from: {source.get('title', 'this video')} — "
-              f"{source.get('channel', 'unknown channel')}",
+    lines += [f"Clipped from: {_clean_title(source.get('title')) or 'this video'} — "
+              f"{_clean_title(source.get('channel')) or 'unknown channel'}",
               f"Source: {source.get('url', '')}",
               "Full credit to the original creator."]
     return "\n".join(lines)
@@ -344,6 +468,16 @@ def run_parts(cfg, url: str = "", file: str = "",
         return 0
 
     out_root.mkdir(parents=True, exist_ok=True)
+    # One header title per video (not per part): wrap verbatim when it
+    # fits, else a single LLM shorten attempt over the existing chain —
+    # after the dry-run return, so dry runs stay $0.
+    header_title = ""
+    if want_header and total > 1:
+        header_title = prepare_header_title(
+            str(source.get("title") or ""),
+            max_lines=cfg.parts_header_max_lines,
+            shorten_enabled=cfg.parts_shorten_titles,
+            provider=provider)
     stem = source_key[:8]
     siblings = [f"{stem}_part_{num:02d}.mp4" for num in range(1, total + 1)]
     kits = []
@@ -352,7 +486,7 @@ def run_parts(cfg, url: str = "", file: str = "",
         cand = Candidate(start=start, end=end, hook=f"Part {num}")
         length = end - start
         header_line = parts_header_line(
-            str(source.get("title") or ""), num, total, length,
+            header_title, num, total, length,
             show_seconds=cfg.parts_header_seconds) \
             if want_header else ""
         # The clip renderer cuts, treats vertical, and burns — header rides

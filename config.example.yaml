@@ -119,6 +119,23 @@ subtitles:
   # Mask swear words in captions (fuck -> f*ck), whole words only.
   mask_profanity: true
 
+parts:
+  # Series splitter: mechanical ~60s episodes ("Title — Part X").
+  part_len: 60
+  max_parts: 50
+  # Opening top header ("<title> / Part X", fades after 4 s). Solo
+  # videos skip it even when true. --no-header disables it for one run.
+  header: true
+  header_seconds: 4.0
+  # Header title wraps to this many lines before the lane asks the LLM
+  # to shorten it (existing keys, never fatal). false = always truncate.
+  header_max_lines: 3
+  shorten_titles: true
+  # A trailing tail shorter than this joins the previous part.
+  tail_merge: 15.0
+  # Sentence-snap search radius around each ideal cut.
+  snap_window: 10.0
+
 disclosure:
   # YouTube requires AI-made videos to be disclosed. This footer is appended
   # to description.txt at package time. You ALSO tick the "altered content"

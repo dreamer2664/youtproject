@@ -511,6 +511,91 @@ def t_parts_header():
     assert part_kit_title("What the fuck", 1, 2) == "What the f*ck — Part 1"
 
 
+def t_parts_header_wrap():
+    from parts import (prepare_header_title, parts_header_line,
+                       wrap_header_title)
+
+    # User's real case: fits two lines -> verbatim, entities decoded.
+    two = prepare_header_title(
+        "Every Mental Disorder &amp; Their Effects Explained",
+        provider=None)
+    assert two == "Every Mental Disorder & Their Effects\nExplained"
+    assert "&amp;" not in two
+    # Short titles stay one line; blanks stay blank.
+    assert prepare_header_title("Testing 100 phones") == \
+        "Testing 100 phones"
+    assert prepare_header_title("  ", provider=None) == ""
+    assert wrap_header_title("") == []
+    assert wrap_header_title("a &amp; b") == ["a & b"]
+    # Garbage width / max_lines fall back, never raise.
+    assert wrap_header_title("hello world", width="junk") == \
+        ["hello world"]
+    assert prepare_header_title("hello", max_lines="junk") == "hello"
+    # Over-long titles with no LLM: first 3 lines + … on the last.
+    long_title = " ".join(["lorem ipsum dolor sit amet"] * 6)
+    assert len(wrap_header_title(long_title)) > 3
+    for kwargs in ({"provider": None}, {"shorten_enabled": False}):
+        cut = prepare_header_title(long_title, **kwargs)
+        assert len(cut.split("\n")) == 3
+        assert cut.split("\n")[-1].endswith("…")
+    solo = prepare_header_title(long_title, max_lines=1, provider=None)
+    assert "\n" not in solo and solo.endswith("…")
+    # The Dialogue stacks wrapped lines above Part X.
+    multi = parts_header_line("Line One\nLine Two", 2, 5, 63.2)
+    assert "Line One\\NLine Two" in multi and "Part 2" in multi
+    assert "\\an8" in multi
+
+
+def t_parts_header_shorten():
+    from parts import prepare_header_title, shorten_header_title
+
+    class Stub:
+        """Canned generate_text; records the tag it was called with."""
+
+        def __init__(self, reply="", explode=False):
+            self.reply = reply
+            self.explode = explode
+            self.calls = 0
+            self.tags = []
+
+        def generate_text(self, prompt, temperature=0.7, tag="",
+                          json_mode=False):
+            self.calls += 1
+            self.tags.append(tag)
+            assert "TITLE:" in prompt
+            if self.explode:
+                raise RuntimeError("no keys")
+            return self.reply
+
+    long_title = " ".join(["lorem ipsum dolor sit amet"] * 6)
+    # A good shorten is kept: shorter, fits, shares subject words.
+    good = Stub("lorem ipsum dolor sit amet, shortened")
+    kept = prepare_header_title(long_title, provider=good)
+    assert good.calls == 1 and good.tags == ["headertitle"]
+    assert "…" not in kept and kept.replace("\n", " ") == good.reply
+    # Quoted / chatty replies are cleaned to the title itself.
+    assert prepare_header_title(long_title,
+                                provider=Stub('"lorem ipsum dolor"')) == \
+        "lorem ipsum dolor"
+    assert prepare_header_title(long_title, provider=Stub(
+        "lorem ipsum\nHere is why I chose it")) == "lorem ipsum"
+    # Short titles never touch the LLM.
+    cold = Stub(explode=True)
+    assert prepare_header_title("Testing 100 phones",
+                                provider=cold) == "Testing 100 phones"
+    assert cold.calls == 0
+    # Every failure mode falls back to truncation, never raises.
+    bad_replies = ["", "   ", long_title + " plus even more words",
+                   "quantum banana recipes for dinner parties tonight"]
+    for reply in bad_replies:
+        cut = prepare_header_title(long_title, provider=Stub(reply))
+        assert cut.split("\n")[-1].endswith("…"), reply
+    cut = prepare_header_title(long_title, provider=Stub(explode=True))
+    assert cut.split("\n")[-1].endswith("…")
+    assert shorten_header_title("", Stub("x"), 44) is None
+    assert shorten_header_title(long_title, None, 44) is None
+
+
 def t_parts_kit():
     from parts import (build_part_description, build_part_srt,
                        write_part_kit)
@@ -4553,6 +4638,8 @@ def main() -> int:
         ("timestamp_rollover", t_timestamp_rollover),
         ("parts_plan", t_parts_plan),
         ("parts_header", t_parts_header),
+        ("parts_header_wrap", t_parts_header_wrap),
+        ("parts_header_shorten", t_parts_header_shorten),
         ("parts_kit", t_parts_kit),
         ("sub_caps", t_sub_caps),
         ("sub_highlight", t_sub_highlight),

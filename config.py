@@ -356,6 +356,12 @@ DEFAULTS: dict[str, Any] = {
         "tail_merge": 15.0,
         # Sentence-snap search radius around each ideal cut.
         "snap_window": 10.0,
+        # Header title wraps to this many lines before the lane asks the
+        # LLM to shorten it (existing keys, never fatal — truncation
+        # with … is the fallback). 1-6; garbage -> 3.
+        "header_max_lines": 3,
+        # False = never call the LLM for titles, always truncate.
+        "shorten_titles": True,
     },
     "youtube": {
         # YouTube Data API v3 keys (https://console.cloud.google.com/apis/
@@ -843,6 +849,20 @@ class Config:
                                                 .get("snap_window", 10.0))))
         except (ValueError, TypeError):
             return 10.0
+
+    @property
+    def parts_header_max_lines(self) -> int:
+        """Header title wrap budget before shorten/truncate (garbage -> 3)."""
+        try:
+            return max(1, min(6, int(self.data.get("parts", {})
+                                        .get("header_max_lines", 3))))
+        except (ValueError, TypeError):
+            return 3
+
+    @property
+    def parts_shorten_titles(self) -> bool:
+        """LLM-shorten over-long header titles (default true)."""
+        return bool(self.data.get("parts", {}).get("shorten_titles", True))
 
     @property
     def qc_candidates(self) -> int:

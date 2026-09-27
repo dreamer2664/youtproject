@@ -92,8 +92,12 @@ Each part opens with a top header ("<title> / Part X", 4 s, then it
 fades — free, it rides the subtitle burn; `parts.header_seconds: 0`
 keeps it up the whole part), karaoke subs at the bottom, and its own kit
 with `captions.srt` + `part.ass` included. Solo videos (< 1 part) render
-with no header. ~2 API calls per source, then pure FFmpeg. Post parts in
-order, one per day — the numbering only works as a sequence.
+with no header. Long titles word-wrap to 3 lines (`parts.header_max_lines`)
+instead of truncating; past that the lane asks the LLM chain to shorten
+the title once per video (existing keys, validation-gated, never fatal —
+`parts.shorten_titles: false` keeps pure truncation). ~2 API calls per
+source, then pure FFmpeg. Post parts in order, one per day — the numbering
+only works as a sequence.
 
 ## Decision rules (what the data says to do)
 
