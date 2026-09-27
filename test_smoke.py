@@ -2762,6 +2762,34 @@ def t_clip_cookies():
     assert cfg.qc_candidates == 1  # clamped
 
 
+def t_clip_cookies_status():
+    from clipper import cookie_status
+
+    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    # A real export: comment header + cookie lines.
+    good = tmp / "cookies.txt"
+    good.write_text(
+        "# Netscape HTTP Cookie File\n"
+        ".youtube.com\tTRUE\t/\tTRUE\t0\tSID\tabc\n"
+        ".youtube.com\tTRUE\t/\tTRUE\t0\tHSID\tdef\n", encoding="utf-8")
+    assert cookie_status("", str(good)) == \
+        f"cookies: file {good} (2 cookies)"
+    # Missing / header-only files warn loudly, never raise.
+    missing = str(tmp / "nope.txt")
+    assert "WARNING" in cookie_status("", missing)
+    assert "not found" in cookie_status("", missing)
+    blank = tmp / "blank.txt"
+    blank.write_text("# nothing exported yet\n\n", encoding="utf-8")
+    assert "no cookies" in cookie_status("", str(blank))
+    # File wins over browser, even when the file is the problem.
+    assert "WARNING" in cookie_status("firefox", missing)
+    # Browsers: known names pass through, typos get corrected.
+    assert cookie_status(" Brave ", "") == "cookies: browser 'brave'"
+    assert "unknown browser" in cookie_status("internet explorer", "")
+    # Neither: honest anonymous label.
+    assert "anonymous" in cookie_status("", "")
+
+
 def t_clip_title_polish():
     import json as _json
 
@@ -4667,6 +4695,7 @@ def main() -> int:
         ("voice_pauses", t_voice_pauses),
         ("voice_stitch_mechanism", t_voice_stitch_mechanism),
         ("clip_cookies", t_clip_cookies),
+        ("clip_cookies_status", t_clip_cookies_status),
         ("clip_title_polish", t_clip_title_polish),
         ("clip_cache", t_clip_cache),
         ("clip_windows", t_clip_windows),

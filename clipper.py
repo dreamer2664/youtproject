@@ -84,6 +84,46 @@ def cookie_opts(cookies_browser: str, cookies_file: str) -> dict:
     return {}
 
 
+# Browsers yt-dlp can read cookies from (--cookies-from-browser).
+COOKIE_BROWSERS = ("brave", "chrome", "chromium", "edge", "firefox",
+                   "opera", "safari", "vivaldi")
+
+
+def cookie_status(cookies_browser: str, cookies_file: str) -> str:
+    """One log line describing the cookie setup (tested).
+
+    Loud by design: silent cookie misconfig used to surface as a bare
+    mid-download 403 with no hint cookies were never in effect. A missing
+    file or unknown browser is reported, never fatal — anonymous
+    downloads sometimes still work.
+    """
+    file = (cookies_file or "").strip()
+    if file:
+        path = Path(file)
+        if not path.exists():
+            return (f"cookies: WARNING — cookies_file not found: {file} "
+                    f"(downloading anonymously)")
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return (f"cookies: WARNING — cookies_file unreadable: {file} "
+                    f"(downloading anonymously)")
+        count = sum(1 for line in text.splitlines()
+                    if line.strip() and not line.startswith("#"))
+        if count == 0:
+            return (f"cookies: WARNING — {file} holds no cookies "
+                    f"(downloading anonymously)")
+        return f"cookies: file {file} ({count} cookies)"
+    browser = (cookies_browser or "").strip().lower()
+    if browser:
+        if browser not in COOKIE_BROWSERS:
+            return (f"cookies: WARNING — unknown browser {browser!r} "
+                    f"(yt-dlp knows: {', '.join(COOKIE_BROWSERS)})")
+        return f"cookies: browser '{browser}'"
+    return ("cookies: none — anonymous download "
+            "(expect throttling/403s on some videos)")
+
+
 def retryable_download_error(message: str) -> bool:
     """True when another player client might still succeed (pure, tested)."""
     low = (message or "").lower()
@@ -187,6 +227,7 @@ def download_source(url: str, work_dir: Path, cookies_browser: str = "",
     # and A/B-tests clients per region: what 403s on one client often
     # downloads fine on another (live case 2026-09-21).
     errors: list[str] = []
+    print(f"  [clip] {cookie_status(cookies_browser, cookies_file)}")
     for client in CLIENT_FALLBACKS:
         attempt = dict(opts)
         if client:

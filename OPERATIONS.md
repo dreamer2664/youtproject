@@ -157,6 +157,7 @@ the top-up call.
 | `final mux failed (exit 3221225477)` | Intel QSV driver crashed (now auto-retries on CPU) | update Intel graphics driver, or `encoder: cpu` |
 | voice reads markup / odd pacing | old edge-tts (pre-7.2) | `pip install -r requirements.txt` |
 | `Sign in to confirm you're not a bot` | YouTube distrusts the network | `clip.cookies_browser: "firefox"` in config.yaml |
+| mid-download `HTTP 403` | cookies never took effect (wrong path?) | read the `cookies:` line each download prints; `Test-Path` your `clip.cookies_file` |
 | HTTP 503 storms from Gemini | free-tier saturation at US peak | just wait / EU morning; fallbacks engage automatically |
 | `[queue] state.json was unreadable` | a crash interrupted a queue write | already auto-quarantined; nothing to do |
 | job shows `reclaimed` | that render was killed mid-run (timeout, Ctrl-C, power cut) | nothing to do — the next generate put its topic back on the backlog |
