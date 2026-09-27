@@ -126,6 +126,8 @@ DEFAULTS: dict[str, Any] = {
         "font": "Arial",      # any installed font name (Impact, Verdana...)
         "font_scale": 1.0,    # 1.0 = current sizes; 1.2 = 20% bigger text
         "outline": 0,         # 0 = engine default; 1-4 = heavier stroke
+        # ALL-CAPS captions (the TikTok look) — SRT + karaoke + clips.
+        "caps": False,
         # Mask swear words in captions (fuck -> f*ck) — word-for-word,
         # timings untouched, whole words only ("class" never matches).
         "mask_profanity": True,
@@ -960,6 +962,11 @@ class Config:
     @property
     def subtitles_mask_profanity(self) -> bool:
         return bool(self.data["subtitles"].get("mask_profanity", True))
+
+    @property
+    def subtitles_caps(self) -> bool:
+        """ALL-CAPS captions across SRT + karaoke + clips (default false)."""
+        return bool(self.data["subtitles"].get("caps", False))
 
     # -- disclosure ------------------------------------------------------
     @property

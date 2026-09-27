@@ -198,7 +198,7 @@ def _parts_checklist() -> str:
 
 
 def build_part_srt(words_in_part: list[dict], part_len: float,
-                   dest: Path) -> Path | None:
+                   dest: Path, caps: bool = False) -> Path | None:
     """captions.srt for one part (single pseudo-scene over build_cues).
 
     None when the part has no words (a music-only stretch) — the kit
@@ -212,7 +212,7 @@ def build_part_srt(words_in_part: list[dict], part_len: float,
     timings = [(float(w.get("start") or 0.0), float(w.get("end") or 0.0))
                for w in words_in_part]
     cues = build_cues([narration], [timings], [0.0], [float(part_len)],
-                      max_chars_for("portrait"), 0.0)
+                      max_chars_for("portrait"), 0.0, caps=caps)
     if not cues:
         return None
     return write_srt(cues, dest)
@@ -358,9 +358,10 @@ def run_parts(cfg, url: str = "", file: str = "",
         # The clip renderer cuts, treats vertical, and burns — header rides
         # the same .ass, subs default to the bottom (shorts-safe).
         render_clip(src, cand, words or [], cfg, clip_path, work, sub_pos,
-                    extra_ass=header_line or None)
+                    extra_ass=header_line or None, caps=cfg.subtitles_caps)
         window = clip_words(words or [], start, end)
-        srt_path = build_part_srt(window, length, work / f"part_{num:02d}.srt")
+        srt_path = build_part_srt(window, length, work / f"part_{num:02d}.srt",
+                                  caps=cfg.subtitles_caps)
         ass_src = work / "clip.ass"
         title = part_kit_title(str(source.get("title") or ""), num, total)
         kits.append(write_part_kit(

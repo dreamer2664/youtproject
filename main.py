@@ -554,11 +554,13 @@ def cmd_generate(cfg, args) -> int:
 
                     narrations = [mask_profanity(n) for n in narrations]
                 cues = build_cues(narrations, timings, starts, durations,
-                                  max_chars_for(cfg.format), HEAD_TAIL)
+                                  max_chars_for(cfg.format), HEAD_TAIL,
+                                  caps=cfg.subtitles_caps)
                 srt_path = write_srt(cues, out_path.with_suffix(".srt"))
                 print(f"      subtitles : {len(cues)} cues -> {srt_path.name}")
                 events = build_karaoke_events(narrations, timings, starts,
-                                              durations, HEAD_TAIL)
+                                              durations, HEAD_TAIL,
+                                              caps=cfg.subtitles_caps)
                 progress_line = None
                 if cfg.progress_enabled:
                     progress_line = progress_ass_line(

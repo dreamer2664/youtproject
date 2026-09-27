@@ -838,16 +838,16 @@ def clip_words(words: list[dict], start: float, end: float) -> list[dict]:
 
 def build_clip_ass(words_in_clip: list[dict], clip_len: float,
                    cfg: Config, work_dir: Path, style: dict | None = None,
-                   extra: str | None = None) -> Path:
+                   extra: str | None = None, caps: bool = False) -> Path:
     """Karaoke .ass for one clip (adapter over subtitles.build_karaoke_events).
 
     extra: one full Dialogue line appended to the file (the progress-bar
-    mechanism reused — the parts lane's persistent header rides here).
+    mechanism reused — the parts lane's header rides here).
     """
     narration = " ".join(w["word"] for w in words_in_clip)
     timings = [(w["start"], w["end"]) for w in words_in_clip]
     events = build_karaoke_events(
-        [narration], [timings], [0.0], [clip_len], head_tail=0.0)
+        [narration], [timings], [0.0], [clip_len], head_tail=0.0, caps=caps)
     path = work_dir / "clip.ass"
     write_ass(events, path, cfg.format, cfg.width, cfg.height,
               progress=extra, style=style)
@@ -884,11 +884,11 @@ def _auto_sub_position(src: Path, cand: Candidate, work_dir: Path) -> str | None
 def render_clip(src: Path, cand: Candidate, words: list[dict],
                 cfg: Config, out_path: Path, work_dir: Path,
                 sub_pos: str = "default",
-                extra_ass: str | None = None) -> Path:
+                extra_ass: str | None = None, caps: bool = False) -> Path:
     """Cut + crop + burn subtitles -> one vertical clip.
 
     extra_ass: one full Dialogue line appended to the clip's .ass
-    (the parts lane's persistent header rides here, zero extra cost).
+    (the parts lane's header rides here, zero extra cost).
     """
     length = cand.end - cand.start
     window = clip_words(words, cand.start, cand.end)
@@ -903,7 +903,7 @@ def render_clip(src: Path, cand: Candidate, words: list[dict],
                   "configured position")
             style = {**style, "position": "default"}
     ass_path = build_clip_ass(window, length, cfg, work_dir, style,
-                                extra=extra_ass)
+                                extra=extra_ass, caps=caps)
     width, height = probe_dims(src)
     treatment = vertical_treatment(width, height, cfg.clip_crop_mode)
     if treatment == "fit":
@@ -1159,6 +1159,20 @@ def resolve_clip_target(target: str, url: str,
     return (url or "").strip(), (file or "").strip()
 
 
+def resolve_clip_sub_pos(cfg: Config, sub_pos: str = "default") -> str:
+    """Effective subtitle position for the clip lane (pure, tested).
+
+    Double-default (no --sub-pos flag, no subtitles.position in config)
+    resolves to bottom: centered captions sit on the fit-centered frame
+    (STUDY F2), while bottom is shorts-safe and never covers the subject.
+    Any explicit choice — flag or config — wins unchanged.
+    """
+    if (sub_pos or "default") == "default" \
+            and cfg.subtitles_position == "default":
+        return "bottom"
+    return sub_pos or "default"
+
+
 def run_clip(cfg: Config, url: str = "", file: str = "",
              max_clips: int = MAX_CLIPS_DEFAULT,
              min_len: int = MIN_CLIP_SECONDS,
@@ -1170,6 +1184,7 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
     """The whole lane. Returns process exit code."""
     if not url and not file:
         raise ClipError("give me --url <youtube link> or --file <local mp4>")
+    sub_pos = resolve_clip_sub_pos(cfg, sub_pos)
     out_root = Path(out_dir) if out_dir else cfg.root / "clips"
     work = new_clip_work_dir(cfg.work_dir)
     prune_stale_runs(cfg.work_dir, keep=work)
@@ -1266,7 +1281,8 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
     entries: list[dict] = []
     for index, cand in enumerate(accepted, start=1):
         clip_path = out_root / f"{source_key[:8]}_clip_{index:02d}.mp4"
-        render_clip(src, cand, words, cfg, clip_path, work, sub_pos)
+        render_clip(src, cand, words, cfg, clip_path, work, sub_pos,
+                    caps=cfg.subtitles_caps)
         clip_words_list = clip_words(words, cand.start, cand.end)
         title = pick_title(cand, clip_words_list)
         if cfg.clip_polish_titles:

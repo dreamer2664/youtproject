@@ -59,7 +59,9 @@ upload kits in `clips/` (with TikTok + Reels captions per clip). Batch
 runs isolate failures: one dead link doesn't kill the others. Costs ~15-17 API requests per source,
 less than one generated video.
 
-Subtitles covering the main event? Move them per run with
+Captions default to the bottom (the old centered default sat on the
+subject whenever the whole frame was kept). Still not right for a
+source? Move them per run with
 `--sub-pos top|middle|bottom`, or `--sub-pos auto` (free frame analysis
 picks the calmest third), or set it once in `subtitles.position` —
 plus `font` / `font_scale` / `outline` in the same block.

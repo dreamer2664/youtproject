@@ -102,18 +102,20 @@ video:
 
 subtitles:
   # TikTok-style karaoke captions: big centered text with a word-by-word
-  # yellow highlight, burned into the video. A captions.srt is ALSO
+  # gold highlight, burned into the video. A captions.srt is ALSO
   # written for manual upload in YouTube Studio either way (accessibility + SEO).
   # Skip for one run with:  python main.py generate --no-subs
   enabled: true
   # Placement: "default" = center on portrait karaoke (the TikTok look),
-  # bottom otherwise. Force top/middle/bottom when captions cover the
-  # main event; the clip lane also takes --sub-pos auto per run
-  # (frame analysis picks the calmest third — free, no API).
+  # bottom otherwise (the clip lane defaults to bottom: shorts-safe).
+  # Force top/middle/bottom when captions cover the main event; the clip
+  # lane also takes --sub-pos auto per run (frame analysis picks the
+  # calmest third — free, no API).
   position: "default"
   font: "Arial"      # any installed font name (Impact, Verdana, ...)
   font_scale: 1.0    # 1.0 = current sizes; 1.2 = 20% bigger text
-  outline: 0         # 0 = engine default; 1-4 = heavier stroke
+  outline: 0         # 0 = engine default (scales with font_scale); 1-6 = fixed stroke
+  caps: false        # true = ALL-CAPS captions (SRT + karaoke + clips)
   # Mask swear words in captions (fuck -> f*ck), whole words only.
   mask_profanity: true
 

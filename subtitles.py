@@ -67,13 +67,16 @@ def _word_times(
     scene_start: float,
     scene_seconds: float,
     head_tail: float,
+    caps: bool = False,
 ) -> list[tuple[str, float, float]]:
     """Absolute (word, start, end) for one scene's narration.
 
     Uses real voice timings when they plausibly match the text, else spreads
-    words evenly across the narration span.
+    words evenly across the narration span. caps uppercases every word —
+    the single choke point, so SRT + karaoke + clips all follow one knob.
     """
-    words = scrub_narration(narration).split()  # same scrub as TTS: aligned
+    text = scrub_narration(narration)  # same scrub as TTS: aligned
+    words = (text.upper() if caps else text).split()
     span = max(0.5, scene_seconds - 2 * head_tail)
     use_real = (
         timings
@@ -99,13 +102,15 @@ def build_cues(
     scene_durations: list[float],
     max_chars: int,
     head_tail: float,
+    caps: bool = False,
 ) -> list[Cue]:
     """Group each scene's words into timed cues (never crossing scenes)."""
     cues: list[Cue] = []
     for narration, timings, start, duration in zip(
         narrations, timings_per_scene, scene_starts, scene_durations
     ):
-        words = _word_times(narration, timings, start, duration, head_tail)
+        words = _word_times(narration, timings, start, duration, head_tail,
+                            caps=caps)
         if not words:
             continue
         group: list[tuple[str, float, float]] = []
@@ -346,7 +351,9 @@ KARAOKE_MAX_CHARS = 30
 KARAOKE_GAP_SPLIT = 0.30
 KARAOKE_HOLD_AFTER = 0.25
 KARAOKE_WHITE = r"{\c&HFFFFFF&}"
-KARAOKE_YELLOW = r"{\c&H00FFFF&}"
+# Gold, not pure yellow: unifies with the progress bar + Part-X header, and
+# holds contrast on bright frames (blurred fills) where #FFFF00 washes out.
+KARAOKE_YELLOW = r"{\c&H0000D7FF&}"
 
 
 @dataclass
@@ -391,6 +398,7 @@ def build_karaoke_events(
     head_tail: float,
     max_words: int = KARAOKE_MAX_WORDS,
     max_chars: int = KARAOKE_MAX_CHARS,
+    caps: bool = False,
 ) -> list[KaraokeEvent]:
     """One highlighted-word event per word; phrases never cross scenes.
 
@@ -402,7 +410,8 @@ def build_karaoke_events(
     for narration, timings, start, duration in zip(
         narrations, timings_per_scene, scene_starts, scene_durations
     ):
-        words = _word_times(narration, timings, start, duration, head_tail)
+        words = _word_times(narration, timings, start, duration, head_tail,
+                            caps=caps)
         if not words:
             continue
         scene_end = start + duration
@@ -492,7 +501,7 @@ def _karaoke_style(video_format: str, style: dict | None = None) -> str:
         f"Style: Karaoke,{font},"
         f"{max(12, int(round(fontsize * scale)))},"
         f"&H00FFFFFF,&H00001919,&H80000000,&H80000000,"
-        f"-1,0,0,0,100,100,0,0,1,{outline or 3},0,"
+        f"-1,0,0,0,100,100,0,0,1,{outline or max(2, int(round(3 * scale)))},0,"
         f"{align},60,60,{margin_v},1"
     )
 

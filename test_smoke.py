@@ -549,6 +549,60 @@ def t_parts_kit():
     assert (kit / "tiktok.txt").exists() and (kit / "reels.txt").exists()
 
 
+def t_sub_caps():
+    import re
+
+    from subtitles import build_cues, build_karaoke_events
+
+    narr = ["hello world"]
+    timings = [[(0.0, 0.5), (0.5, 1.0)]]
+    cues = build_cues(narr, timings, [0.0], [2.0], 26, 0.0, caps=True)
+    assert cues and all(line == line.upper() for c in cues for line in c.lines)
+    plain = build_cues(narr, timings, [0.0], [2.0], 26, 0.0)
+    assert "hello world" in " ".join(plain[0].lines)  # default unchanged
+    events = build_karaoke_events(narr, timings, [0.0], [2.0], 0.0, caps=True)
+    texts = [re.sub(r"\{[^}]*\}", "", e.text) for e in events]
+    assert texts and all(t == t.upper() for t in texts)
+    cfg = tmp_cfg()
+    assert cfg.subtitles_caps is False
+    cfg.data["subtitles"]["caps"] = True
+    assert cfg.subtitles_caps is True
+
+
+def t_sub_highlight():
+    from subtitles import (KARAOKE_YELLOW, build_karaoke_events,
+                           write_ass)
+
+    # Gold highlight, matching the progress bar + Part-X header.
+    assert "0000D7FF" in KARAOKE_YELLOW
+    events = build_karaoke_events(["hi there"], [[(0.0, 0.4), (0.4, 0.8)]],
+                                  [0.0], [2.0], 0.0)
+    assert events and "0000D7FF" in events[0].text
+    # Outline scales with font_scale; explicit outline stays absolute.
+    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    scaled = write_ass(events, tmp / "s.ass", "portrait", 1080, 1920,
+                       style={"scale": 2.0})
+    assert ",1,6,0," in scaled.read_text(encoding="utf-8")
+    base = write_ass(events, tmp / "b.ass", "portrait", 1080, 1920)
+    assert ",1,3,0," in base.read_text(encoding="utf-8")
+    fixed = write_ass(events, tmp / "f.ass", "portrait", 1080, 1920,
+                      style={"scale": 2.0, "outline": 5})
+    assert ",1,5,0," in fixed.read_text(encoding="utf-8")
+
+
+def t_clip_default_bottom():
+    from clipper import resolve_clip_sub_pos
+
+    # Double-default resolves to bottom (STUDY F2); explicit wins.
+    cfg = tmp_cfg()
+    assert resolve_clip_sub_pos(cfg, "default") == "bottom"
+    assert resolve_clip_sub_pos(cfg, "auto") == "auto"
+    assert resolve_clip_sub_pos(cfg, "top") == "top"
+    assert resolve_clip_sub_pos(cfg, "") == "bottom"
+    cfg.data["subtitles"]["position"] = "top"
+    assert resolve_clip_sub_pos(cfg, "default") == "default"
+
+
 def t_top_video():
     # Top-X countdown: pick the best N, worst first, best revealed last.
     from top import build_top_description, make_card, plan_top
@@ -4500,6 +4554,9 @@ def main() -> int:
         ("parts_plan", t_parts_plan),
         ("parts_header", t_parts_header),
         ("parts_kit", t_parts_kit),
+        ("sub_caps", t_sub_caps),
+        ("sub_highlight", t_sub_highlight),
+        ("clip_default_bottom", t_clip_default_bottom),
         ("top_video", t_top_video),
         ("bot_parser", t_bot_parser),
         ("package", t_package),
