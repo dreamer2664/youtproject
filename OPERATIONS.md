@@ -101,6 +101,33 @@ the title once per video (existing keys, validation-gated, never fatal —
 source, then pure FFmpeg. Post parts in order, one per day — the numbering
 only works as a sequence.
 
+## Phone queue (pregen — clips on your phone, PC on or off)
+
+```powershell
+python main.py pregen --push      # score new clips, park them on Telegram
+python main.py pregen --best      # today's winner + scorecard (no sends)
+python main.py pregen              # list parked + unpushed (no sends)
+python main.py pregen --push --dry-run   # predict the push, send nothing
+```
+
+One-time setup: create a PRIVATE Telegram channel, add your bot as admin,
+forward any channel post to @userinfobot to learn the channel id, and set
+`telegram.channel_id` in config.yaml. Then run `--push` after your renders
+(or schedule it): each finished clip/parts file is scored 0–100 (hook 30,
+topic 25, length 20, pace 15, title 10 — same hook/title rules the
+retention lane renders by, so question-hooks score LOW on purpose), sent to
+the channel with its scorecard, and the day's winner is announced with a
+copy-paste caption. `pregen.json` remembers what's parked — re-runs only
+send new clips, and a crash mid-push never double-sends.
+
+Phone side: with the PC **off**, open the channel and download — the files
+live on Telegram's servers. With the PC on and `python main.py bot`
+running, text the bot: `/today` (best pick + video), `/clips` (parked
+list), `/clip <id>` (pull one here). Delivery uses Telegram's own copy
+(`file_id`) first, so re-sends work even after the PC file is deleted.
+Files over 48 MB are skipped with a reason (Telegram caps bot files at
+50 MB).
+
 ## Decision rules (what the data says to do)
 
 | Signal | Rule | Where |

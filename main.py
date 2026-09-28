@@ -1208,6 +1208,73 @@ def cmd_parts(cfg, args) -> int:
     return 0 if any(status == "ok" for _, status, _ in results) else 1
 
 
+def cmd_pregen(cfg, args) -> int:
+    """Phone queue: list parked clips, show the best, or push new ones."""
+    from pregen import (best_of_day, bot_sender, collect_candidates,
+                        format_scorecard, load_manifest, push_pending,
+                        score_candidates, today_local)
+
+    print(BANNER)
+    if args.push:
+        channel = cfg.telegram_channel
+        if not channel:
+            die("no Telegram channel — create a private channel, add your "
+                "bot as admin, forward any channel post to @userinfobot "
+                "for the id, then set telegram.channel_id in config.yaml.")
+        if not cfg.telegram_token:
+            die("no Telegram bot token — set telegram.bot_token in "
+                "config.yaml (or export TELEGRAM_BOT_TOKEN).")
+        if args.dry_run:
+            report = push_pending(cfg, None, channel,  # type: ignore[arg-type]
+                                  limit=args.limit or 0, dry_run=True,
+                                  day=args.date)
+            if not report["pending"]:
+                print("Nothing unpushed — every finished clip is parked.")
+            else:
+                print(f"Would park {len(report['pending'])} clip(s): "
+                      + ", ".join(report["pending"]))
+                if report["best"]:
+                    print(f"Predicted best: {report['best']}")
+            return 0
+        report = push_pending(cfg, bot_sender(cfg), channel,
+                              limit=args.limit or 0, day=args.date)
+        if report["pushed"]:
+            print(f"\nParked {len(report['pushed'])} clip(s) "
+                  f"(best: {report['best']}).")
+        else:
+            print("\nNothing new to park.")
+        for clip_id, reason in report["skipped"]:
+            print(f"  skipped {clip_id}: {reason}")
+        for error in report["errors"]:
+            print(f"  ERROR {error}")
+        return 1 if report["errors"] and not report["pushed"] else 0
+    parked = load_manifest(cfg).get("clips") or []
+    if args.best:
+        day = args.date or today_local()
+        best = best_of_day(parked, day)
+        if best is None:
+            print(f"No clips parked on {day} yet — pregen --push parks them.")
+            return 0
+        print(f"Best of {day}:\n\n{format_scorecard(best)}")
+        return 0
+    pushed = [e for e in parked if e.get("pushed_at")]
+    if not pushed:
+        print("No parked clips yet — pregen --push parks finished clips.")
+    else:
+        print(f"{len(pushed)} parked clip(s):")
+        for entry in pushed[-20:]:
+            print(f"  {entry.get('day')}  {entry.get('id')}  "
+                  f"{int(entry.get('score') or 0)}/100  "
+                  f"{(entry.get('title') or '')[:50]}")
+    pushed_ids = {e.get("id") for e in pushed}
+    fresh = [c for c in score_candidates(collect_candidates(cfg))
+             if c.get("id") not in pushed_ids]
+    if fresh:
+        print(f"\n{len(fresh)} unpushed: "
+              + ", ".join(f"{c['id']} ({c['score']})" for c in fresh))
+    return 0
+
+
 def cmd_bot(cfg, args) -> int:
     """Poll Telegram for topics; render each; send back the finished video."""
     print(BANNER)
@@ -1658,6 +1725,17 @@ def main() -> int:
     p.add_argument("--no-gemini", action="store_true", dest="no_gemini",
                    help="bot renders skip Gemini (Groq/OpenRouter first)")
 
+    p = sub.add_parser("pregen", help="phone queue: park scored clips on Telegram")
+    p.add_argument("--push", action="store_true",
+                   help="score unpushed clips and send them to your channel")
+    p.add_argument("--best", action="store_true",
+                   help="show the day's winner + scorecard (no sends)")
+    p.add_argument("--date", default=None, metavar="YYYY-MM-DD",
+                   help="day bucket for --best/--push (default: today)")
+    p.add_argument("--limit", type=int, default=0, metavar="N",
+                   help="park at most N clips (0 = all)")
+    p.add_argument("--dry-run", action="store_true", dest="dry_run",
+                   help="score + predict the push without sending anything")
     p = sub.add_parser("crew", help="autonomous mission: the crew posts for N days")
     p.add_argument("--days", type=int, default=3, help="mission length")
     p.add_argument("--per-day", type=int, default=4, help="videos per day")
@@ -1757,6 +1835,7 @@ def main() -> int:
         "clip": cmd_clip,
         "parts": cmd_parts,
         "bot": cmd_bot,
+        "pregen": cmd_pregen,
         "jarvis": cmd_jarvis,
         "stats": cmd_stats,
         "yt": cmd_yt,

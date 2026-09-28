@@ -4793,6 +4793,470 @@ def t_pygarnish():
         assert handle.getnchannels() == 2
         assert handle.getframerate() == 48000
 
+# --------------------------------------------------------------------------
+# virality (pre-gen rater)
+# --------------------------------------------------------------------------
+def t_virality():
+    from virality import (DENSITY_WEIGHT, HOOK_WEIGHT, LENGTH_WEIGHT,
+                          TITLE_WEIGHT, TOPIC_WEIGHT, pick_best, score_clip,
+                          score_density, score_hook, score_length,
+                          score_title)
+
+    # Weights must always sum to 100 — the scorecard promises /100.
+    assert (HOOK_WEIGHT + TOPIC_WEIGHT + LENGTH_WEIGHT + DENSITY_WEIGHT
+            + TITLE_WEIGHT) == 100
+
+    # Hook: number + direct address + punchy-short stack. Question hooks
+    # ("Why…?") and weak openers are PENALIZED — editorial.hook_violated
+    # says live data retains worse on them, and the rater must agree
+    # with the renderer.
+    pts, why = score_hook("You lose 8 hours every single night")
+    assert pts == 30, (pts, why)
+    pts, why = score_hook("Why do you sleep 8 hours every night?")
+    assert pts == 10 and any("question/weak hook" in w for w in why), (pts, why)
+    pts, why = score_hook("There is a lake that never freezes over")
+    assert pts == 0 and any("question/weak hook" in w for w in why), (pts, why)
+    pts, _ = score_hook("Cats sleep sixteen hours a day mostly")
+    assert pts == 20  # plain but punchy-short
+    assert score_hook("")[0] == 0
+    assert score_hook("hi there")[0] == 3  # too thin to judge
+
+    # Length curve: every boundary, both sides.
+    assert score_length(20)[0] == 20 and score_length(40)[0] == 20
+    assert score_length(12)[0] == 14 and score_length(60)[0] == 14
+    assert score_length(19.9)[0] == 14 and score_length(40.1)[0] == 14
+    assert score_length(8)[0] == 8 and score_length(90)[0] == 8
+    assert score_length(11.9)[0] == 8 and score_length(60.1)[0] == 8
+    assert score_length(7.9)[0] == 4 and score_length(90.1)[0] == 4
+    assert score_length(0)[0] == 4 and score_length(-5)[0] == 4
+    assert score_length("nope")[0] == 4
+
+    # Density: pace bands + honest no-transcript neutral.
+    assert score_density(2.0)[0] == 15 and score_density(3.5)[0] == 15
+    assert score_density(1.2)[0] == 10 and score_density(4.5)[0] == 10
+    assert score_density(1.19)[0] == 5 and "dragging" in score_density(1.0)[1][0]
+    assert score_density(4.51)[0] == 5 and "rushed" in score_density(9.0)[1][0]
+    assert score_density(None) == (7, ["pace unscored — no transcript"])
+    assert score_density(0)[0] == 7
+
+    # Title: fit + digit + calm caps.
+    assert score_title("Why honey never expires (3,000-year-old pots)")[0] == 10
+    pts, why = score_title("YOU WON'T BELIEVE WHAT HAPPENS NEXT HERE")
+    assert pts == 4 and any("shouts" in w for w in why), (pts, why)
+    assert score_title("Hi")[0] == 3
+    assert score_title("")[0] == 0
+    assert score_title("x" * 200)[0] <= 6  # way too long, no length points
+
+    # Whole clip: signals add up to the score, deterministically.
+    verdict = score_clip("Why honey never expires",
+                         "Why does honey last 3000 years?",
+                         word_count=90, duration_s=30)
+    assert verdict["score"] == sum(verdict["signals"].values())
+    assert verdict["signals"] == {"hook": 6, "topic": verdict["signals"]["topic"],
+                                  "length": 20, "density": 15, "title": 7}
+    assert verdict["signals"]["topic"] >= 14  # "why" opener + specific
+    assert verdict == score_clip("Why honey never expires",
+                                 "Why does honey last 3000 years?",
+                                 word_count=90, duration_s=30)
+    assert 0 <= verdict["score"] <= 100
+    # Deaf scoring: no transcript -> hook 0, pace neutral, reasons say so.
+    deaf = score_clip("Some title here", "", word_count=0, duration_s=25)
+    assert deaf["signals"]["hook"] == 0
+    assert deaf["signals"]["density"] == 7
+    assert any("no transcript" in r for r in deaf["reasons"])
+
+    # Best pick: highest wins, ties break toward the shorter clip.
+    assert pick_best([]) is None
+    tied = [{"id": "long", "score": 60, "duration_s": 99},
+            {"id": "short", "score": 60, "duration_s": 20},
+            {"id": "weak", "score": 10, "duration_s": 5}]
+    assert pick_best(tied)["id"] == "short"
+    assert pick_best([{"score": 10}, {}])["score"] == 10
+
+
+# --------------------------------------------------------------------------
+# pregen (phone queue: scan / score / push)
+# --------------------------------------------------------------------------
+def _make_clip_tree(root: Path) -> None:
+    """Fake finished outputs: 2 clips + 1 part + decoys + 1 cache."""
+    clips, parts = root / "clips", root / "parts"
+    kit1 = clips / "a1b2c3d4_clip_01"
+    kit1.mkdir(parents=True)
+    (clips / "a1b2c3d4_clip_01.mp4").write_bytes(b"fakevideo01")
+    (kit1 / "a1b2c3d4_clip_01.mp4").write_bytes(b"kit copy, not a 2nd clip")
+    (kit1 / "TITLE.txt").write_text("Why honey never expires")
+    (kit1 / "CREDIT.txt").write_text(
+        "source: https://x\nchannel: y\nwindow: 10.0s - 42.0s\n")
+    kit2 = clips / "a1b2c3d4_clip_02"
+    kit2.mkdir(parents=True)
+    (clips / "a1b2c3d4_clip_02.mp4").write_bytes(b"fakevideo02")
+    (kit2 / "TITLE.txt").write_text("Some afternoon thoughts")
+    # kit2 has NO credit: unknown length, unscored hook — must not crash.
+    (clips / "notes.txt").write_text("not a clip")
+    (clips / "a1b2c3d4_top_2.mp4").write_bytes(b"compilation, not a clip")
+    pkit = parts / "b2c3d4e5_part_01"
+    pkit.mkdir(parents=True)
+    (parts / "b2c3d4e5_part_01.mp4").write_bytes(b"fakepart01")
+    (pkit / "TITLE.txt").write_text("Part one")
+    (pkit / "CREDIT.txt").write_text("source: z\nwindow: 0.0s - 60.0s\n")
+    (pkit / "captions.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n")
+    vocab = (["and"] * 25
+             + ["you", "burn", "8", "hours", "every", "single", "night",
+                "here"] + ["rest"] * 467)
+    words = [{"word": w, "start": i * 0.4, "end": i * 0.4 + 0.35}
+             for i, w in enumerate(vocab)]
+    cache = root / "work" / "clip_cache" / "a1b2c3d4e5f60718.json"
+    cache.parent.mkdir(parents=True)
+    cache.write_text(json.dumps({"version": 1, "words": words}))
+
+
+def t_pregen():
+    import re as _re
+
+    import pregen
+    from pregen import (best_of_day, collect_candidates, format_scorecard,
+                        load_manifest, parse_window, push_pending,
+                        save_manifest, score_candidates, today_local)
+
+    assert _re.fullmatch(r"\d{4}-\d{2}-\d{2}", today_local())
+
+    # Window parsing: the lane's exact format + every malformed cousin.
+    assert parse_window("window: 12.3s - 45.6s") == (12.3, 45.6)
+    assert parse_window("window: 0 - 60") == (0.0, 60.0)
+    assert parse_window("WINDOW: 1s-2s") == (1.0, 2.0)
+    assert parse_window("no window here") is None
+    assert parse_window("") is None
+    assert parse_window("window: 5 - 5") is None
+    assert parse_window("window: 9 - 2") is None
+
+    cfg = tmp_cfg()
+    _make_clip_tree(cfg.root)
+    cands = collect_candidates(cfg)
+    assert [c["id"] for c in cands] == ["c-a1b2c3d4-01", "c-a1b2c3d4-02",
+                                        "p-b2c3d4e5-01"], [c["id"] for c in cands]
+    one, two, part = cands
+    assert one["duration_s"] == 32.0 and one["word_count"] == 80
+    assert one["wps"] == 2.5
+    assert one["hook_text"].split() == ["you", "burn", "8", "hours",
+                                        "every", "single", "night", "here"]
+    assert one["title"] == "Why honey never expires"
+    assert two["duration_s"] == 0.0 and two["hook_text"] == ""
+    assert two["wps"] is None  # no window -> nothing sliced, honestly empty
+    assert part["caps"] is True and one["caps"] is False
+    assert part["hook_text"] == ""  # no cache for this source: deaf, not dead
+
+    # Scoring: verdicts attached, inputs untouched, the strong hook wins.
+    scored = score_candidates(cands)
+    assert all({"score", "reasons", "signals"} <= set(s) for s in scored)
+    assert all("score" not in c for c in cands)
+    by_id = {s["id"]: s for s in scored}
+    assert by_id["c-a1b2c3d4-01"]["score"] > 80
+    assert by_id["c-a1b2c3d4-01"]["score"] > by_id["c-a1b2c3d4-02"]["score"]
+    assert by_id["c-a1b2c3d4-01"]["score"] > by_id["p-b2c3d4e5-01"]["score"]
+
+    # Scorecard: title + score + capped reasons.
+    card = format_scorecard(by_id["c-a1b2c3d4-01"])
+    assert "Why honey never expires" in card and "/100" in card
+    assert "32s" in card and "80 words" in card
+    assert card.count("\n") == 8  # 2 head + 6 reasons + overflow line
+    assert "… +" in card
+    assert "c-a1b2c3d4-02" in format_scorecard({**by_id["c-a1b2c3d4-02"],
+                                               "title": ""})  # id fallback
+
+    # Manifest: round-trip, missing, corrupt.
+    assert load_manifest(cfg) == {"clips": []}
+    save_manifest(cfg, {"clips": [{"id": "x"}]})
+    assert load_manifest(cfg) == {"clips": [{"id": "x"}]}
+    (cfg.root / "pregen.json").write_text("[[[not json")
+    assert load_manifest(cfg) == {"clips": []}
+    (cfg.root / "pregen.json").write_text(json.dumps({"clips": {}}))
+    assert load_manifest(cfg) == {"clips": []}
+
+    # Push engine: videos + cards + winner announcement, all recorded.
+    calls: list = []
+
+    def fake_sender(kind, chat_id, payload, caption=""):
+        calls.append((kind, chat_id, str(payload)[:60], caption[:20]))
+        return {"message_id": len(calls),
+                "file_id": f"fid-{len(calls)}" if kind == "video" else None}
+
+    report = push_pending(cfg, fake_sender, 123, day="2026-09-28",
+                          now="2026-09-28T10:00:00+00:00")
+    assert report["pushed"] == ["c-a1b2c3d4-01", "c-a1b2c3d4-02",
+                                "p-b2c3d4e5-01"], report
+    assert report["best"] == "c-a1b2c3d4-01"
+    assert report["skipped"] == [] and report["errors"] == []
+    kinds = [c[0] for c in calls]
+    assert kinds.count("video") == 3 and kinds.count("message") == 4, kinds
+    assert calls[-1][0] == "message"  # winner announced last
+    assert "clip_01.mp4" in calls[0][2]
+    manifest = load_manifest(cfg)
+    assert [c["id"] for c in manifest["clips"]] == report["pushed"]
+    first = manifest["clips"][0]
+    assert first["file_id"] == "fid-1" and first["message_id"] == 1
+    assert first["day"] == "2026-09-28"
+    assert first["pushed_at"] == "2026-09-28T10:00:00+00:00"
+    assert first["score"] > 80 and first["reasons"] and first["signals"]
+
+    # Idempotent: a second push sends nothing.
+    before = len(calls)
+    again = push_pending(cfg, fake_sender, 123, day="2026-09-28")
+    assert again["pushed"] == [] and len(calls) == before
+    assert again["best"] == "c-a1b2c3d4-01"  # still known from the manifest
+
+    # Dry run: scores + predicts, sends nothing, writes nothing.
+    dry_cfg = tmp_cfg()
+    _make_clip_tree(dry_cfg.root)
+    dry_calls: list = []
+    dry = push_pending(dry_cfg,
+                       lambda *a, **k: dry_calls.append(a) or {}, 999,
+                       dry_run=True, day="2026-09-28")
+    assert dry["pushed"] == [] and dry_calls == []
+    assert dry["pending"] == ["c-a1b2c3d4-01", "c-a1b2c3d4-02",
+                              "p-b2c3d4e5-01"]
+    assert dry["best"] == "c-a1b2c3d4-01"
+    assert not (dry_cfg.root / "pregen.json").exists()
+
+    # Limit: park one, leave the rest pending.
+    lim_cfg = tmp_cfg()
+    _make_clip_tree(lim_cfg.root)
+    lim = push_pending(lim_cfg, fake_sender, 123, limit=1, day="2026-09-28")
+    assert lim["pushed"] == ["c-a1b2c3d4-01"] and lim["pending"] == [
+        "c-a1b2c3d4-01"]
+
+    # Oversize: skipped with the cap in the reason, rest still park.
+    big_cfg = tmp_cfg()
+    _make_clip_tree(big_cfg.root)
+    big_kit = big_cfg.root / "clips" / "a1b2c3d4_clip_03"
+    big_kit.mkdir()
+    (big_cfg.root / "clips" / "a1b2c3d4_clip_03.mp4").write_bytes(
+        b"\0" * (49 * 1024 * 1024))
+    (big_kit / "TITLE.txt").write_text("The heavy one")
+    (big_kit / "CREDIT.txt").write_text("window: 0s - 30s\n")
+    big_calls: list = []
+    big = push_pending(
+        big_cfg,
+        lambda k, c, p, caption="": big_calls.append(k) or {"message_id": 1},
+        123, day="2026-09-28")
+    assert ("c-a1b2c3d4-03", "49 MB over the 48 MB cap") in big["skipped"]
+    assert len(big["pushed"]) == 3
+
+    # Sender failure: that clip errors, the push goes on.
+    def flaky(kind, chat_id, payload, caption=""):
+        if kind == "video" and "clip_02" in str(payload):
+            raise RuntimeError("boom")
+        return {"message_id": 7, "file_id": "fid-7"}
+
+    flake_cfg = tmp_cfg()
+    _make_clip_tree(flake_cfg.root)
+    flake = push_pending(flake_cfg, flaky, 123, day="2026-09-28")
+    assert flake["errors"] == ["c-a1b2c3d4-02: boom"]
+    assert flake["pushed"] == ["c-a1b2c3d4-01", "p-b2c3d4e5-01"]
+
+    # Gone file (deleted between scan and send): skipped, never sent.
+    from unittest.mock import patch as _patch
+    gone_cfg = tmp_cfg()
+    stale = [{"id": "c-stale-01", "lane": "clip",
+              "file": str(gone_cfg.root / "clips" / "ghost.mp4"),
+              "title": "Ghost", "duration_s": 30.0, "hook_text": "",
+              "word_count": 0, "wps": None}]
+    with _patch.object(pregen, "collect_candidates", return_value=stale):
+        gone = push_pending(gone_cfg, fake_sender, 123, day="2026-09-28")
+    assert gone["skipped"] == [("c-stale-01", "file gone from disk")]
+    assert gone["pushed"] == []
+
+    # Best-of-day: day + pushed_at filter, None when empty.
+    assert best_of_day([], "2026-09-28") is None
+    mixed = [{"id": "a", "score": 99, "duration_s": 9, "day": "2026-09-27",
+              "pushed_at": "t"},
+             {"id": "b", "score": 10, "duration_s": 9, "day": "2026-09-28",
+              "pushed_at": "t"},
+             {"id": "c", "score": 50, "duration_s": 9, "day": "2026-09-28",
+              "pushed_at": ""}]
+    assert best_of_day(mixed, "2026-09-28")["id"] == "b"
+
+
+# --------------------------------------------------------------------------
+# pregen bot (today / clips / clip + delivery)
+# --------------------------------------------------------------------------
+def t_pregen_bot():
+    import argparse
+    import io
+    from contextlib import redirect_stdout
+    from unittest.mock import patch as _patch
+
+    import pregen
+    from bot import PhoneBot, match_clip, parse_incoming
+    from pregen import save_manifest, today_local
+
+    # Parser: the three pregen commands + typo guards.
+    assert parse_incoming("/today") == ("today", "")
+    assert parse_incoming("/clips") == ("clips", "")
+    assert parse_incoming("/CLIPS") == ("clips", "")
+    assert parse_incoming("/clip c-a1b2c3d4-01") == ("clip", "c-a1b2c3d4-01")
+    assert parse_incoming("/clip") == ("clips", "")  # bare: list, not guess
+    assert parse_incoming("/clipxyz") == ("help", "")
+    assert parse_incoming("/sendxyz") == ("help", "")  # old guard still holds
+
+    # Matcher: exact (case-insensitive), unique prefix, none, many, empty.
+    entries = [{"id": "c-aa-01"}, {"id": "c-bb-02"}, {"id": "p-aa-01"}]
+    assert match_clip(entries, "C-AA-01") == ({"id": "c-aa-01"}, "")
+    assert match_clip(entries, "c-bb") == ({"id": "c-bb-02"}, "")
+    assert match_clip(entries, "zzz") == (None, "none")
+    assert match_clip(entries, "c-") == (None, "many")
+    assert match_clip(entries, "") == (None, "empty")
+    assert match_clip(entries, "  ") == (None, "empty")
+
+    # Handler fixture: 3 pushed (file_id / local-only / gone) + 1 unpushed
+    # decoy with the HIGHEST score (must stay invisible everywhere).
+    cfg = tmp_cfg()
+    cfg.data["telegram"]["bot_token"] = "t"
+    cfg.data["telegram"]["owner_id"] = 42
+    local_mp4 = cfg.root / "b.mp4"
+    local_mp4.write_bytes(b"fake-B")
+    day = today_local()
+    save_manifest(cfg, {"clips": [
+        {"id": "c-aa-01", "title": "Alpha clip here", "score": 90,
+         "reasons": ["hook talks to you (+4)"], "signals": {"hook": 1},
+         "duration_s": 30.0, "word_count": 60, "caps": True,
+         "file_id": "fid-A", "file": str(cfg.root / "gone-a.mp4"),
+         "pushed_at": "t", "day": day},
+        {"id": "c-bb-02", "title": "Beta", "score": 50, "reasons": [],
+         "duration_s": 20.0, "word_count": 10, "file_id": "",
+         "file": str(local_mp4), "pushed_at": "t", "day": day},
+        {"id": "c-cc-03", "title": "", "score": 10, "reasons": [],
+         "duration_s": 0.0, "word_count": 0, "file_id": "",
+         "file": str(cfg.root / "gone-c.mp4"), "pushed_at": "t", "day": day},
+        {"id": "c-dd-04", "title": "Decoy", "score": 99, "reasons": [],
+         "duration_s": 9.0, "word_count": 9, "day": day},
+    ]})
+    bot = PhoneBot(cfg)
+    sent, vids, uploads = [], [], []
+    bot.send_message = lambda c, t: sent.append(t) or {"message_id": len(sent)}
+    bot.send_video_id = lambda c, f, caption="": vids.append((f, caption))
+    bot.send_video_file = lambda c, p, caption="": uploads.append((str(p), caption))
+
+    def say(text):
+        bot.handle_message({"chat": {"id": 42}, "from": {"id": 42},
+                            "text": text})
+
+    # /today: the best PUSHED clip (decoy excluded), via file_id.
+    say("/today")
+    assert any("Today's pick" in t for t in sent), sent
+    assert any("Alpha clip here" in t and "90/100" in t for t in sent), sent
+    assert vids == [("fid-A", "🎬 Alpha clip here")], vids
+    assert uploads == [] and not any("Decoy" in t for t in sent)
+
+    # /clips: pushed only, newest last, caps marked, decoy hidden.
+    sent.clear()
+    say("/clips")
+    body = "\n".join(sent)
+    assert "c-aa-01" in body and "c-bb-02" in body and "c-cc-03" in body
+    assert "c-dd-04" not in body and "· caps" in body
+    assert "90/100" in body and "/clip <id>" in body
+
+    # /clip: exact local-only -> upload; gone -> honest message; prefix ok.
+    sent.clear()
+    say("/clip c-bb-02")
+    assert uploads == [(str(local_mp4), "🎬 Beta")], uploads
+    sent.clear()
+    say("/clip c-cc-03")
+    assert any("gone" in t for t in sent), sent
+    assert len(uploads) == 1 and vids and len(vids) == 1  # no new sends
+    say("/clip c-bb")
+    assert len(uploads) == 2  # unique prefix delivers
+    sent.clear()
+    say("/clip c-")
+    assert any("several" in t for t in sent), sent
+    say("/clip nope")
+    assert any("No parked clip" in t for t in sent), sent
+
+    # Empty manifest: setup hints, no crashes.
+    empty_cfg = tmp_cfg()
+    empty_cfg.data["telegram"]["bot_token"] = "t"
+    empty_cfg.data["telegram"]["owner_id"] = 42
+    empty_bot = PhoneBot(empty_cfg)
+    empty_sent: list = []
+    empty_bot.send_message = lambda c, t: empty_sent.append(t)
+    empty_bot.handle_message({"chat": {"id": 42}, "from": {"id": 42},
+                              "text": "/today"})
+    empty_bot.handle_message({"chat": {"id": 42}, "from": {"id": 42},
+                              "text": "/clips"})
+    assert any("Nothing parked today" in t for t in empty_sent), empty_sent
+    assert any("No parked clips" in t for t in empty_sent), empty_sent
+
+    # Low-level plumbing: _api results propagate, uploads named right.
+    api_calls: list = []
+
+    def fake_api(method, **kwargs):
+        api_calls.append((method, kwargs))
+        return {"message_id": 5, "video": {"file_id": "f9"}}
+
+    bot2 = PhoneBot(cfg)
+    bot2._api = fake_api
+    assert bot2.send_message(42, "hi")["message_id"] == 5
+    assert api_calls[-1][0] == "sendMessage"
+    assert bot2.send_video_id(42, "f9")["video"]["file_id"] == "f9"
+    assert api_calls[-1][1]["data"]["video"] == "f9"
+    assert api_calls[-1][1]["data"]["supports_streaming"] is True
+    bot2.send_video_file(42, local_mp4)
+    assert api_calls[-1][1]["files"]["video"][0] == "b.mp4"
+
+    # bot_sender: extraction + unknown-kind guard.
+    with _patch.object(PhoneBot, "send_video_file",
+                       return_value={"message_id": 3,
+                                     "video": {"file_id": "fx"}}), \
+         _patch.object(PhoneBot, "send_message",
+                       return_value={"message_id": 4}):
+        sender = pregen.bot_sender(cfg)
+        assert sender("video", 1, local_mp4) == {"message_id": 3,
+                                                "file_id": "fx"}
+        assert sender("message", 1, "hi") == {"message_id": 4}
+        try:
+            sender("bogus", 1, "x")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unknown sender kind must raise")
+
+    # cmd_pregen: best / list / push-dry / push-live / missing channel.
+    import main as main_mod
+
+    def run_cmd(**kw):
+        merged = {"push": False, "best": False, "date": None, "limit": 0,
+                  "dry_run": False}
+        merged.update(kw)
+        args = argparse.Namespace(**merged)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = main_mod.cmd_pregen(cfg, args)
+        return code, buf.getvalue()
+
+    assert run_cmd(best=True, date=day)[0] == 0
+    assert "Alpha clip here" in run_cmd(best=True, date=day)[1]
+    code, out = run_cmd(best=True, date="1999-01-01")
+    assert code == 0 and "No clips parked on 1999-01-01" in out
+    code, out = run_cmd()
+    assert code == 0 and "3 parked clip(s)" in out and "c-aa-01" in out
+    try:
+        run_cmd(push=True)
+    except SystemExit:
+        pass  # channel 0 -> setup instructions, no sends
+    else:
+        raise AssertionError("push without channel must refuse")
+    cfg.data["telegram"]["channel_id"] = -1001
+    code, out = run_cmd(push=True, dry_run=True)
+    assert code == 0 and "Nothing unpushed" in out  # all 3 parked already
+    (cfg.root / "pregen.json").unlink()  # live push re-parks from disk
+    _make_clip_tree(cfg.root)
+    with _patch.object(pregen, "bot_sender",
+                       return_value=lambda k, c, p, caption="": {
+                           "message_id": 1, "file_id": "live"}):
+        code, out = run_cmd(push=True, date=day)
+    assert code == 0 and "Parked 3 clip(s)" in out, out
+    assert "(best: c-a1b2c3d4-01)" in out
+
+
 def main() -> int:
     tests = [
         ("config_defaults", t_config_defaults),
@@ -4916,6 +5380,9 @@ def main() -> int:
         ("render_debug", t_render_debug),
         ("emergency_mux", t_emergency_mux),
         ("pygarnish", t_pygarnish),
+        ("virality", t_virality),
+        ("pregen", t_pregen),
+        ("pregen_bot", t_pregen_bot),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
     for name, fn in tests:

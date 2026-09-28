@@ -48,6 +48,9 @@ Commands:
 /nogemini — toggle: render without Gemini (faster when it's flaky)
 /help — this message
 /send <id> — re-send a finished video
+/today — today's best pre-gen clip + scorecard
+/clips — clips parked on Telegram (your channel holds them for PC-off pickup)
+/clip <id> — pull one parked clip here
 
 One video renders at a time; extra topics queue up behind it.
 A video takes roughly 15–25 minutes. I'll send it here as a file
@@ -88,7 +91,9 @@ def parse_incoming(text: str) -> tuple[str, str]:
     """Pure command parser (unit-tested). Returns (action, argument).
 
     Actions: 'topic' (render this), 'queue', 'send', 'help', 'ignore',
-    'jarvis' (channel-manager task), 'crew' (mission), 'stop', 'log'.
+    'status', 'keys', 'nogemini', 'jarvis' (channel-manager task),
+    'crew' (mission), 'stop', 'log', 'today' (best pre-gen clip),
+    'clips' (parked-clip list), 'clip' (pull one parked clip).
     """
     text = (text or "").strip()
     if not text:
@@ -121,6 +126,17 @@ def parse_incoming(text: str) -> tuple[str, str]:
         return ("log", "")
     if low == "/send" or low.startswith("/send "):
         return ("send", text[5:].strip())
+    # Parked clips (pregen): /clips lists, /clip <id> pulls one. Exact
+    # "/clips" first (it starts with "/clip"); bare /clip lists rather
+    # than guessing; "/clipxyz" falls through to help (typo guard).
+    if low == "/clips":
+        return ("clips", "")
+    if low == "/clip":
+        return ("clips", "")
+    if low.startswith("/clip "):
+        return ("clip", text[6:].strip())
+    if low == "/today":
+        return ("today", "")
     if text.startswith("/"):
         return ("help", "")
     return ("topic", text[:200])
@@ -215,6 +231,27 @@ def plan_recovery(stuck_jobs, done_topics, cap: int = 3) -> tuple[list, list]:
     return requeue, skipped
 
 
+def match_clip(entries: list[dict], ref: str) -> tuple[dict | None, str]:
+    """Parked-clip lookup: exact id, else unique prefix (pure, tested).
+
+    Returns (entry, "") on a hit, (None, "none") on no match,
+    (None, "many") on an ambiguous prefix, (None, "empty") on no ref.
+    """
+    want = (ref or "").strip().lower()
+    if not want:
+        return None, "empty"
+    for entry in entries:
+        if str(entry.get("id") or "").lower() == want:
+            return entry, ""
+    hits = [entry for entry in entries
+            if str(entry.get("id") or "").lower().startswith(want)]
+    if len(hits) == 1:
+        return hits[0], ""
+    if not hits:
+        return None, "none"
+    return None, "many"
+
+
 def check_token(cfg: Config) -> str:
     """Validate the Telegram token. Returns the bot's @username."""
     return str(PhoneBot(cfg)._api("getMe").get("username") or "?")
@@ -266,17 +303,37 @@ class PhoneBot:
             return data["result"]
         raise TelegramError(f"Telegram rate-limited {method} twice — try later.")
 
-    def send_message(self, chat_id: int, text: str) -> None:
-        self._api("sendMessage", data={"chat_id": chat_id,
-                                       "text": trim(text)})
+    def send_message(self, chat_id: int, text: str) -> dict:
+        return self._api("sendMessage", data={"chat_id": chat_id,
+                                              "text": trim(text)})
 
     def send_document(self, chat_id: int, path, filename: str,
-                      caption: str = "") -> None:
+                      caption: str = "") -> dict:
         with open(path, "rb") as handle:
-            self._api("sendDocument", timeout=UPLOAD_TIMEOUT,
-                      data={"chat_id": chat_id,
-                            "caption": trim(caption, MAX_CAPTION)},
-                      files={"document": (filename, handle, "video/mp4")})
+            return self._api("sendDocument", timeout=UPLOAD_TIMEOUT,
+                             data={"chat_id": chat_id,
+                                   "caption": trim(caption, MAX_CAPTION)},
+                             files={"document": (filename, handle,
+                                                 "video/mp4")})
+
+    def send_video_file(self, chat_id: int, path, caption: str = "") -> dict:
+        """Upload a local mp4 as a playable video (returns the result)."""
+        with open(path, "rb") as handle:
+            return self._api("sendVideo", timeout=UPLOAD_TIMEOUT,
+                             data={"chat_id": chat_id,
+                                   "caption": trim(caption, MAX_CAPTION),
+                                   "supports_streaming": True},
+                             files={"video": (Path(path).name, handle,
+                                              "video/mp4")})
+
+    def send_video_id(self, chat_id: int, file_id: str,
+                      caption: str = "") -> dict:
+        """Re-send Telegram's own copy (no upload — works after the PC
+        file is gone)."""
+        return self._api("sendVideo",
+                         data={"chat_id": chat_id, "video": file_id,
+                               "caption": trim(caption, MAX_CAPTION),
+                               "supports_streaming": True})
 
     # -- message handling -------------------------------------------------
     def handle_message(self, message: dict) -> None:
@@ -338,6 +395,53 @@ class PhoneBot:
             self.send_message(chat_id, text)
         elif action == "send":
             self._send_existing(chat_id, arg)
+        elif action == "today":
+            from pregen import best_of_day, load_manifest, today_local
+
+            parked = load_manifest(self.cfg).get("clips") or []
+            best = best_of_day(parked, today_local())
+            if best is None:
+                self.send_message(
+                    chat_id, "📭 Nothing parked today yet — on the PC:\n"
+                             "python main.py pregen --push\n"
+                             "(clips land in your channel + I can send them "
+                             "here).")
+            else:
+                self._send_clip(chat_id, best, header="🏆 Today's pick:")
+        elif action == "clips":
+            from pregen import load_manifest
+
+            parked = [e for e in (load_manifest(self.cfg).get("clips") or [])
+                      if e.get("pushed_at")]
+            if not parked:
+                self.send_message(
+                    chat_id, "📭 No parked clips yet — on the PC:\n"
+                             "python main.py pregen --push")
+            else:
+                lines = ["📼 Parked clips (newest last):"]
+                for entry in parked[-12:]:
+                    title = (entry.get("title") or "").strip() or "?"
+                    caps = " · caps" if entry.get("caps") else ""
+                    lines.append(f"`{entry.get('id')}` · "
+                                 f"{int(entry.get('score') or 0)}/100 · "
+                                 f"{title[:40]}{caps}")
+                lines.append("\n/clip <id> pulls one here.")
+                self.send_message(chat_id, "\n".join(lines))
+        elif action == "clip":
+            from pregen import load_manifest
+
+            parked = [e for e in (load_manifest(self.cfg).get("clips") or [])
+                      if e.get("pushed_at")]
+            entry, problem = match_clip(parked, arg)
+            if entry is not None:
+                self._send_clip(chat_id, entry)
+            elif problem == "many":
+                self.send_message(
+                    chat_id, f"'{arg}' matches several clips — give me more "
+                             "of the id. /clips to list them.")
+            else:
+                self.send_message(chat_id, f"No parked clip '{arg}'. "
+                                           "/clips to list them.")
         elif action == "ignore":
             self.send_message(chat_id, HELP_TEXT)
         elif action == "jarvis":
@@ -468,6 +572,33 @@ class PhoneBot:
             print(f"  [bot] re-send failed: {exc}")
             try:
                 self.send_message(chat_id, f"\u274C couldn't send it: {exc}")
+            except TelegramError:
+                pass
+
+    def _send_clip(self, chat_id: int, entry: dict, header: str = "") -> None:
+        """Scorecard + video for a parked clip (file_id first: Telegram's
+        own copy, so delivery works even after the PC file is gone)."""
+        from pregen import format_scorecard
+
+        title = (entry.get("title") or "").strip() or str(entry.get("id"))
+        if header:
+            self.send_message(chat_id, header)
+        self.send_message(chat_id, format_scorecard(entry))
+        caption = f"🎬 {title}"[:MAX_CAPTION]
+        try:
+            if entry.get("file_id"):
+                self.send_video_id(chat_id, entry["file_id"], caption=caption)
+            elif entry.get("file") and Path(entry["file"]).exists():
+                self.send_video_file(chat_id, Path(entry["file"]),
+                                     caption=caption)
+            else:
+                self.send_message(
+                    chat_id, f"⚠️ The video for {entry.get('id')} is gone "
+                             "from the PC and has no Telegram copy — re-push "
+                             "it: python main.py pregen --push")
+        except TelegramError as exc:
+            try:
+                self.send_message(chat_id, f"❌ Couldn't send it: {exc}")
             except TelegramError:
                 pass
 

@@ -256,6 +256,11 @@ DEFAULTS: dict[str, Any] = {
         # Your numeric Telegram user id from @userinfobot. The bot ONLY
         # talks to this account — everyone else is ignored.
         "owner_id": 0,
+        # Pre-gen parking: id of your PRIVATE channel/group where finished
+        # clips land (create one, add the bot as admin, then forward any
+        # channel post to @userinfobot to learn the id — it looks like
+        # -1001234567890). 0 = `pregen --push` refuses with instructions.
+        "channel_id": 0,
     },
     "music": {
         # Ducked music bed. Source: music.file > first audio in music/ >
@@ -923,6 +928,13 @@ class Config:
     def telegram_owner(self) -> int:
         try:
             return int(str(self.data.get("telegram", {}).get("owner_id", 0)))
+        except (ValueError, TypeError):
+            return 0
+
+    @property
+    def telegram_channel(self) -> int:
+        try:
+            return int(str(self.data.get("telegram", {}).get("channel_id", 0)))
         except (ValueError, TypeError):
             return 0
 
