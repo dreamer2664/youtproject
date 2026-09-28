@@ -4977,7 +4977,9 @@ def t_pregen():
     calls: list = []
 
     def fake_sender(kind, chat_id, payload, caption=""):
-        calls.append((kind, chat_id, str(payload)[:60], caption[:20]))
+        # Full path recorded: Windows temp dirs blow past any truncation
+        # budget, and truncating here once broke this assert on PC only.
+        calls.append((kind, chat_id, str(payload), caption[:20]))
         return {"message_id": len(calls),
                 "file_id": f"fid-{len(calls)}" if kind == "video" else None}
 
