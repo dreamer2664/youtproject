@@ -2760,6 +2760,88 @@ def t_deepseek():
     assert "deepseek" in names and names[-1] == "template"
 
 
+def t_captions_first():
+    import sys
+    import types
+    from unittest.mock import patch
+
+    from clipper import (captions_to_words, fetch_youtube_captions,
+                         video_id_for_captions)
+
+    # URL -> video id; everything else -> "" (Whisper fallthrough).
+    assert video_id_for_captions("https://youtu.be/IpAjsMJKBvk") == \
+        "IpAjsMJKBvk"
+    assert video_id_for_captions(
+        "https://www.youtube.com/watch?v=abc123XYZ_-&t=5") == "abc123XYZ_-"
+    assert video_id_for_captions("IpAjsMJKBvk") == "IpAjsMJKBvk"
+    assert video_id_for_captions("local") == ""
+    assert video_id_for_captions("https://vimeo.com/123") == ""
+    assert video_id_for_captions("https://www.youtube.com/@SomeChannel") == ""
+    assert video_id_for_captions("") == ""
+    # Spread math: line-timed segments -> evenly spaced words.
+    words = captions_to_words([
+        {"text": "hello brave world", "start": 10.0, "duration": 3.0},
+        {"text": "", "start": 13.0, "duration": 1.0},
+        {"text": "again", "start": 14.0, "duration": 0.0}])
+    assert [(w["word"], w["start"], w["end"]) for w in words] == [
+        ("hello", 10.0, 11.0), ("brave", 11.0, 12.0), ("world", 12.0, 13.0)]
+    assert captions_to_words([]) == []
+    assert captions_to_words([{"text": "x"}]) == []  # no timing
+    assert captions_to_words([{"text": "x", "start": "junk",
+                               "duration": 1.0}]) == []
+    # Preference: manual EN > generated EN > translated; misses -> None.
+    class Track:
+        def __init__(self, code, generated, translatable=True, segs=()):
+            self.language_code = code
+            self.language = {"en": "English"}.get(code, code)
+            self.is_generated = generated
+            self.is_translatable = translatable
+            self._segs = segs
+
+        def fetch(self):
+            return self._segs
+
+        def translate(self, code):
+            return Track(code, True, True, self._segs)
+
+    segs = [{"text": "hi there", "start": 0.0, "duration": 2.0}]
+    manual = Track("en", False, True, segs)
+    gen = Track("en", True, True, segs)
+    italian = Track("it", False, True, segs)
+
+    class Api:
+        def __init__(self, tracks):
+            self._tracks = tracks
+
+        def list(self, video_id):
+            assert video_id == "vid1"
+            return self._tracks
+
+    def run_api(tracks):
+        mod = types.ModuleType("youtube_transcript_api")
+        mod.YouTubeTranscriptApi = lambda: Api(tracks)
+        with patch.dict(sys.modules, {"youtube_transcript_api": mod}):
+            return fetch_youtube_captions("vid1")
+
+    got, origin = run_api([gen, manual])
+    assert origin == "manual" and got == segs
+    got, origin = run_api([gen])
+    assert origin == "generated"
+    got, origin = run_api([italian])
+    assert origin == "translated"
+    assert run_api([]) is None
+
+    class BrokenApi(Api):
+        def list(self, video_id):
+            raise RuntimeError("IP blocked")
+
+    broken = types.ModuleType("youtube_transcript_api")
+    broken.YouTubeTranscriptApi = lambda: BrokenApi([])
+    with patch.dict(sys.modules, {"youtube_transcript_api": broken}):
+        assert fetch_youtube_captions("vid1") is None
+    assert fetch_youtube_captions("") is None
+
+
 def t_clip_cookies():
     from clipper import (bot_wall_error, cookie_opts,
                          retryable_download_error)
@@ -4728,6 +4810,7 @@ def main() -> int:
         ("director", t_director),
         ("voice_pauses", t_voice_pauses),
         ("voice_stitch_mechanism", t_voice_stitch_mechanism),
+        ("captions_first", t_captions_first),
         ("clip_cookies", t_clip_cookies),
         ("clip_cookies_status", t_clip_cookies_status),
         ("clip_title_polish", t_clip_title_polish),

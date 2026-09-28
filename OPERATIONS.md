@@ -52,8 +52,9 @@ python main.py clip --file C:\path\to.mp4    # a local file
 python main.py clip --url A --url B --file C # a batch: any mix, any count
 ```
 
-Downloads → transcript (mishears auto-corrected, cached — re-runs are
-free) → picks the strongest moments → cuts on sentence boundaries, opens
+Downloads → transcript (YouTube captions first when they exist — 0 Groq
+audio-minutes — else Whisper; mishears auto-corrected, cached — re-runs
+are free) → picks the strongest moments → cuts on sentence boundaries, opens
 on the hook → **landscape VODs keep their whole frame** (sharp, centered,
 blurred background fill; `clip.crop_mode` switches to the old crop) →
 upload kits in `clips/` (with TikTok + Reels captions per clip). Batch

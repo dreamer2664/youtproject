@@ -1,5 +1,7 @@
 # No Google/YouTube libraries on purpose — this project uses no YouTube API,
 # which is exactly why no audit or verification can ever be required.
+# (youtube-transcript-api below is keyless caption scraping, not the Data
+# API — no quota, no audit, no key.)
 # Ceilings block breaking majors; minors float for security fixes.
 requests>=2.31.0,<3
 edge-tts>=7.2.8,<8   # 7.2+ required: older builds are 403-locked out of the service
@@ -8,4 +10,5 @@ Pillow>=10.0.0,<12
 numpy>=1.26.0,<3
 sentry-sdk>=2,<3
 tzdata>=2024.1,<2027  # Windows: zoneinfo database for quota reset times
-yt-dlp>=2026.1.1,<2027  # clip lane: source video download\n
+yt-dlp>=2026.1.1,<2027  # clip lane: source video download
+youtube-transcript-api>=1.0,<2  # clip/parts: harvest captions before spending Groq audio-hours

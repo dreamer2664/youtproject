@@ -416,16 +416,146 @@ def fix_transcript_words(words: list[dict], title: str,
     return out
 
 
+def video_id_for_captions(source_url: str) -> str:
+    """YouTube video id for caption harvesting, "" when none (never raises).
+
+    Local files, channels, and non-YouTube links all yield "" — the caller
+    falls through to Groq Whisper.
+    """
+    try:
+        from youtube import extract_id
+
+        kind, ref = extract_id(source_url)
+    except (ValueError, AttributeError, TypeError):
+        return ""
+    return ref if kind == "video" else ""
+
+
+def _is_english_track(track) -> bool:
+    code = str(getattr(track, "language_code", "") or "").lower()
+    name = str(getattr(track, "language", "") or "").lower()
+    return code.startswith("en") or name == "english"
+
+
+def _pick_caption_track(tracks: list) -> tuple[object | None, bool]:
+    """(track, needs_translation): manual EN > generated EN > EN-capable."""
+    tracks = [t for t in (tracks or []) if t is not None]
+    for track in tracks:
+        if _is_english_track(track) and not getattr(track, "is_generated",
+                                                    False):
+            return track, False
+    for track in tracks:
+        if _is_english_track(track):
+            return track, False
+    for track in tracks:
+        if getattr(track, "is_translatable", False):
+            return track, True
+    return None, False
+
+
+def fetch_youtube_captions(video_id: str) -> tuple[list[dict], str] | None:
+    """(segments, origin) for a video, None when unavailable (never raises).
+
+    Keyless caption harvest (youtube-transcript-api: v1 instance API with a
+    0.x static fallback); every failure mode returns None so the caller
+    falls through to Groq Whisper. Origin is manual/generated/translated.
+    """
+    if not (video_id or "").strip():
+        return None
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+    except ImportError:
+        return None
+    try:
+        api = YouTubeTranscriptApi()
+    except Exception:
+        return None
+    if not hasattr(api, "list"):
+        try:
+            get_transcript = YouTubeTranscriptApi.get_transcript
+        except AttributeError:
+            return None
+        try:
+            raw = get_transcript(video_id)
+        except Exception:
+            return None
+        segments = [{"text": d.get("text", ""), "start": d.get("start", 0.0),
+                     "duration": d.get("duration", 0.0)} for d in raw]
+        return (segments, "captions") if segments else None
+    try:
+        track, translate = _pick_caption_track(list(api.list(video_id)))
+        if track is None:
+            return None
+        if translate:
+            track = track.translate("en")
+            origin = "translated"
+        elif getattr(track, "is_generated", False):
+            origin = "generated"
+        else:
+            origin = "manual"
+        fetched = track.fetch()
+    except Exception:
+        return None
+    segments = []
+    for item in fetched:
+        if isinstance(item, dict):
+            text = item.get("text", "")
+            start = item.get("start", 0.0)
+            dur = item.get("duration", item.get("dur", 0.0))
+        else:
+            text = getattr(item, "text", "")
+            start = getattr(item, "start", 0.0)
+            dur = getattr(item, "duration", 0.0)
+        segments.append({"text": text, "start": start, "duration": dur})
+    if not segments:
+        return None
+    return segments, origin
+
+
+def captions_to_words(segments: list[dict]) -> list[dict]:
+    """Caption segments -> word dicts with spread timings (pure, tested).
+
+    Captions are line-timed, not word-timed: each segment's words spread
+    evenly (same math as the Whisper segment fallback in transcribe_words).
+    """
+    words: list[dict] = []
+    for seg in segments or []:
+        try:
+            text_words = str(seg.get("text") or "").split()
+            s0 = float(seg.get("start") or 0.0)
+            dur = float(seg.get("duration") or 0.0)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if not text_words or dur <= 0:
+            continue
+        step = max(0.05, dur / len(text_words))
+        for i, word in enumerate(text_words):
+            words.append({"word": word, "start": s0 + i * step,
+                          "end": s0 + (i + 1) * step})
+    return words
+
+
 def transcribe_words(audio: Path, cfg: Config,
-                     title: str = "") -> list[dict]:
-    """Word-level transcript via Groq Whisper, chunked + key rotation.
+                     title: str = "", video_id: str = "") -> list[dict]:
+    """Word-level transcript: YouTube captions first, Groq Whisper fallback.
 
     Returns [{"word": str, "start": float, "end": float}, ...] with
-    ABSOLUTE times across chunks. Falls back to per-chunk segments with
-    words spread evenly when the endpoint returns no word timestamps.
+    ABSOLUTE times. Harvested captions cost 0 Groq audio-minutes (their
+    line timings spread evenly across words); Whisper runs chunked with
+    key rotation and falls back to per-chunk segments with words spread
+    evenly when the endpoint returns no word timestamps.
     """
     from voice import WHISPER_MODEL, WHISPER_URL
 
+    if (video_id or "").strip():
+        harvested = fetch_youtube_captions(video_id)
+        if harvested:
+            segments, origin = harvested
+            words = captions_to_words(segments)
+            if words:
+                print(f"  [clip] transcript: YouTube captions ({origin}, "
+                      f"{len(words)} words, 0 Groq audio-minutes)")
+                return words
     keys = [k for k in cfg.groq_api_keys if k]
     if not keys:
         raise ClipError("no Groq API keys — transcription is the one hard "
@@ -1255,7 +1385,8 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
         print(f"  [clip] transcript: cached ({len(words)} words)")
     else:
         audio = extract_audio(src, work)
-        words = transcribe_words(audio, cfg, title=source["title"])
+        words = transcribe_words(audio, cfg, title=source["title"],
+                                 video_id=video_id_for_captions(source["url"]))
         if cfg.clip_transcript_fix:
             fixed = fix_transcript_words(words, source["title"], provider)
             changed = sum(1 for a, b in zip(words, fixed)

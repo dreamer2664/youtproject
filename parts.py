@@ -390,7 +390,8 @@ def run_parts(cfg, url: str = "", file: str = "",
                          load_transcript_cache, new_clip_work_dir,
                          prune_stale_runs, render_clip, save_transcript_cache,
                          sentence_spans, transcript_cache_key,
-                         transcript_cache_path, transcribe_words)
+                         transcript_cache_path, transcribe_words,
+                         video_id_for_captions)
 
     if not url and not file:
         raise ClipError("give me --url <youtube link> or --file <local mp4>")
@@ -430,7 +431,8 @@ def run_parts(cfg, url: str = "", file: str = "",
         print(f"  [parts] transcript: cached ({len(words)} words)")
     else:
         audio = extract_audio(src, work)
-        words = transcribe_words(audio, cfg, title=source["title"])
+        words = transcribe_words(audio, cfg, title=source["title"],
+                                 video_id=video_id_for_captions(source["url"]))
         if cfg.clip_transcript_fix:
             fixed = fix_transcript_words(words, source["title"], provider)
             changed = sum(1 for a, b in zip(words, fixed)
