@@ -197,6 +197,43 @@ def best_of_day(entries: list[dict], day: str) -> dict | None:
     return pick_best(pushed)
 
 
+def file_fingerprint(path) -> tuple[int, int] | None:
+    """(size, mtime) for a file, None when unreadable (never raises)."""
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return None
+    return (stat.st_size, int(stat.st_mtime))
+
+
+def _needs_push(entry: dict, path) -> bool:
+    """A tracked clip needs (re-)push only when its file provably changed
+    since tracking. Missing fingerprint (old records) trusts the record;
+    a gone file is not 'changed' — there is nothing to send."""
+    if entry.get("size") is None or entry.get("mtime") is None:
+        return False
+    current = file_fingerprint(path)
+    if current is None:
+        return False
+    return current != (entry.get("size"), entry.get("mtime"))
+
+
+def pending_candidates(cfg, manifest: dict) -> list[dict]:
+    """Scored clips needing (re-)push: untracked, or tracked-but-changed.
+
+    Single source of truth for push_pending, --dry-run and the list view,
+    so the three can never disagree about what 'unpushed' means.
+    """
+    tracked = {c.get("id"): c for c in (manifest.get("clips") or [])
+               if isinstance(c, dict)}
+    pending = []
+    for cand in score_candidates(collect_candidates(cfg)):
+        entry = tracked.get(cand.get("id"))
+        if entry is None or _needs_push(entry, cand["file"]):
+            pending.append(cand)
+    return pending
+
+
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -216,9 +253,7 @@ def push_pending(cfg, sender, chat_id: int, limit: int = 0,
     day = day or today_local()
     manifest = load_manifest(cfg)
     parked = list(manifest.get("clips") or [])
-    pushed_ids = {c.get("id") for c in parked if c.get("pushed_at")}
-    fresh = [c for c in score_candidates(collect_candidates(cfg))
-             if c.get("id") not in pushed_ids]
+    fresh = pending_candidates(cfg, manifest)
     if limit and limit > 0:
         fresh = fresh[:limit]
     report: dict = {"pushed": [], "skipped": [], "pending": [c["id"] for c in fresh],
@@ -231,10 +266,12 @@ def push_pending(cfg, sender, chat_id: int, limit: int = 0,
 
     for cand in fresh:
         path = Path(cand["file"])
-        if not path.exists():
+        try:
+            stat = path.stat()
+        except OSError:
             report["skipped"].append((cand["id"], "file gone from disk"))
             continue
-        size_mb = path.stat().st_size / (1024 * 1024)
+        size_mb = stat.st_size / (1024 * 1024)
         if size_mb > MAX_SEND_MB:
             report["skipped"].append(
                 (cand["id"], f"{size_mb:.0f} MB over the {MAX_SEND_MB} MB cap"))
@@ -251,9 +288,14 @@ def push_pending(cfg, sender, chat_id: int, limit: int = 0,
             "score", "reasons", "signals", "caps")}
         record.update({"pushed_at": now or _utcnow(), "day": day,
                        "chat_id": chat_id,
+                       "size": stat.st_size, "mtime": int(stat.st_mtime),
                        "message_id": (sent or {}).get("message_id"),
                        "file_id": (sent or {}).get("file_id")})
-        parked.append(record)
+        ids = [c.get("id") for c in parked]
+        if cand["id"] in ids:
+            parked[ids.index(cand["id"])] = record  # re-push upgrades in place
+        else:
+            parked.append(record)
         manifest["clips"] = parked
         save_manifest(cfg, manifest)  # incremental: crash-safe
         report["pushed"].append(cand["id"])
@@ -281,6 +323,33 @@ def push_pending(cfg, sender, chat_id: int, limit: int = 0,
         except Exception as exc:  # noqa: BLE001 - announced or not, clips are parked
             report["errors"].append(f"best-announce: {str(exc)[:150]}")
     return report
+
+
+def baseline_pending(cfg, day: str | None = None) -> dict:
+    """Mark all currently-untracked clips as ignored (no sends).
+
+    Day-one tool: the backlog stays on the PC, the phone queue starts
+    from the next render. Ignored clips stay invisible to /clips, /today
+    and /clip (none of them match without pushed_at); re-rendering one
+    (changed file) makes it pending again automatically.
+    """
+    day = day or today_local()
+    manifest = load_manifest(cfg)
+    parked = list(manifest.get("clips") or [])
+    tracked_ids = {c.get("id") for c in parked if isinstance(c, dict)}
+    fresh = [c for c in score_candidates(collect_candidates(cfg))
+             if c.get("id") not in tracked_ids]
+    for cand in fresh:
+        size, mtime = file_fingerprint(cand["file"]) or (0, 0)
+        parked.append({"id": cand["id"], "lane": cand.get("lane"),
+                       "title": cand.get("title"), "file": cand["file"],
+                       "size": size, "mtime": mtime,
+                       "score": cand.get("score"), "ignored": True,
+                       "day": day})
+    manifest["clips"] = parked
+    save_manifest(cfg, manifest)
+    return {"baselined": [c["id"] for c in fresh],
+            "tracked_already": len(tracked_ids)}
 
 
 def bot_sender(cfg):

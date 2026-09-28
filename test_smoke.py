@@ -4914,9 +4914,10 @@ def t_pregen():
     import re as _re
 
     import pregen
-    from pregen import (best_of_day, collect_candidates, format_scorecard,
-                        load_manifest, parse_window, push_pending,
-                        save_manifest, score_candidates, today_local)
+    from pregen import (baseline_pending, best_of_day, collect_candidates,
+                        format_scorecard, load_manifest, parse_window,
+                        push_pending, save_manifest, score_candidates,
+                        today_local)
 
     assert _re.fullmatch(r"\d{4}-\d{2}-\d{2}", today_local())
 
@@ -5065,6 +5066,45 @@ def t_pregen():
     assert gone["skipped"] == [("c-stale-01", "file gone from disk")]
     assert gone["pushed"] == []
 
+    # Baseline: backlog marked ignored (no sends), phone queue starts new.
+    base_cfg = tmp_cfg()
+    _make_clip_tree(base_cfg.root)
+    watch_calls: list = []
+    base = baseline_pending(base_cfg, day="2026-09-28")
+    assert base["baselined"] == ["c-a1b2c3d4-01", "c-a1b2c3d4-02",
+                                 "p-b2c3d4e5-01"], base
+    assert base["tracked_already"] == 0
+    manifest = load_manifest(base_cfg)
+    assert all(c.get("ignored") and not c.get("pushed_at")
+               for c in manifest["clips"])
+    assert all(c.get("size") > 0 and c.get("mtime") for c in manifest["clips"])
+    assert all("score" in c for c in manifest["clips"])
+    quiet = push_pending(
+        base_cfg,
+        lambda *a, **k: watch_calls.append(a) or {"message_id": 1},
+        123, day="2026-09-28")
+    assert quiet["pushed"] == [] and quiet["pending"] == []
+    assert watch_calls == []  # nothing sent, not even the winner note
+    second = baseline_pending(base_cfg, day="2026-09-28")
+    assert second["baselined"] == [] and second["tracked_already"] == 3
+    # Re-render (changed bytes) -> pending again, record upgraded in place.
+    (base_cfg.root / "clips" / "a1b2c3d4_clip_01.mp4").write_bytes(
+        b"re-rendered bytes, provably different size!")
+    re_push = push_pending(base_cfg, fake_sender, 123, day="2026-09-28")
+    assert re_push["pushed"] == ["c-a1b2c3d4-01"], re_push
+    upgraded = load_manifest(base_cfg)["clips"]
+    assert len(upgraded) == 3  # replaced, not duplicated
+    record = [c for c in upgraded if c["id"] == "c-a1b2c3d4-01"][0]
+    assert record.get("pushed_at") and not record.get("ignored")
+    # Legacy pushed record (no fingerprint) never re-pushes.
+    legacy_cfg = tmp_cfg()
+    _make_clip_tree(legacy_cfg.root)
+    save_manifest(legacy_cfg, {"clips": [{"id": "c-a1b2c3d4-01",
+                                          "pushed_at": "t", "day": "d"}]})
+    legacy = push_pending(legacy_cfg, fake_sender, 123, day="2026-09-28")
+    assert "c-a1b2c3d4-01" not in legacy["pushed"]
+    assert "c-a1b2c3d4-02" in legacy["pushed"]  # untracked still flows
+
     # Best-of-day: day + pushed_at filter, None when empty.
     assert best_of_day([], "2026-09-28") is None
     mixed = [{"id": "a", "score": 99, "duration_s": 9, "day": "2026-09-27",
@@ -5129,6 +5169,8 @@ def t_pregen_bot():
          "file": str(cfg.root / "gone-c.mp4"), "pushed_at": "t", "day": day},
         {"id": "c-dd-04", "title": "Decoy", "score": 99, "reasons": [],
          "duration_s": 9.0, "word_count": 9, "day": day},
+        {"id": "c-ee-05", "title": "Baselined", "score": 95, "ignored": True,
+         "file": str(cfg.root / "gone-e.mp4"), "day": day},
     ]})
     bot = PhoneBot(cfg)
     sent, vids, uploads = [], [], []
@@ -5152,7 +5194,8 @@ def t_pregen_bot():
     say("/clips")
     body = "\n".join(sent)
     assert "c-aa-01" in body and "c-bb-02" in body and "c-cc-03" in body
-    assert "c-dd-04" not in body and "· caps" in body
+    assert "c-dd-04" not in body and "c-ee-05" not in body  # decoy + ignored
+    assert "· caps" in body
     assert "90/100" in body and "/clip <id>" in body
 
     # /clip: exact local-only -> upload; gone -> honest message; prefix ok.
@@ -5170,6 +5213,9 @@ def t_pregen_bot():
     assert any("several" in t for t in sent), sent
     say("/clip nope")
     assert any("No parked clip" in t for t in sent), sent
+    sent.clear()
+    say("/clip c-ee-05")
+    assert any("No parked clip" in t for t in sent), sent  # ignored: invisible
 
     # Empty manifest: setup hints, no crashes.
     empty_cfg = tmp_cfg()
@@ -5224,7 +5270,7 @@ def t_pregen_bot():
 
     def run_cmd(**kw):
         merged = {"push": False, "best": False, "date": None, "limit": 0,
-                  "dry_run": False}
+                  "dry_run": False, "baseline": False}
         merged.update(kw)
         args = argparse.Namespace(**merged)
         buf = io.StringIO()
@@ -5253,7 +5299,8 @@ def t_pregen_bot():
     buf = io.StringIO()
     with redirect_stdout(buf):
         code = main_mod.cmd_pregen(bare_cfg, argparse.Namespace(
-            push=True, best=False, date=day, limit=0, dry_run=True))
+            push=True, best=False, date=day, limit=0, dry_run=True,
+            baseline=False))
     assert code == 0 and "Would park 3 clip(s)" in buf.getvalue(), \
         buf.getvalue()
     (cfg.root / "pregen.json").unlink()  # live push re-parks from disk
@@ -5264,6 +5311,23 @@ def t_pregen_bot():
         code, out = run_cmd(push=True, date=day)
     assert code == 0 and "Parked 3 clip(s)" in out, out
     assert "(best: c-a1b2c3d4-01)" in out
+    # --baseline command: backlog ignored, list view admits it.
+    base_cmd_cfg = tmp_cfg()
+    _make_clip_tree(base_cmd_cfg.root)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = main_mod.cmd_pregen(base_cmd_cfg, argparse.Namespace(
+            push=False, best=False, date=day, limit=0, dry_run=False,
+            baseline=True))
+    assert code == 0 and "Baselined 3 clip(s)" in buf.getvalue()
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = main_mod.cmd_pregen(base_cmd_cfg, argparse.Namespace(
+            push=False, best=False, date=None, limit=0, dry_run=False,
+            baseline=False))
+    out = buf.getvalue()
+    assert code == 0 and "3 baselined (ignored)" in out, out
+    assert "unpushed" not in out
 
 
 def main() -> int:

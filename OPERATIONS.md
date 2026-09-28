@@ -108,6 +108,7 @@ python main.py pregen --push      # score new clips, park them on Telegram
 python main.py pregen --best      # today's winner + scorecard (no sends)
 python main.py pregen              # list parked + unpushed (no sends)
 python main.py pregen --push --dry-run   # predict the push, send nothing
+python main.py pregen --baseline        # ignore the backlog, start fresh (no sends)
 ```
 
 One-time setup: create a PRIVATE Telegram channel, add your bot as admin,
@@ -118,7 +119,11 @@ topic 25, length 20, pace 15, title 10 — same hook/title rules the
 retention lane renders by, so question-hooks score LOW on purpose), sent to
 the channel with its scorecard, and the day's winner is announced with a
 copy-paste caption. `pregen.json` remembers what's parked — re-runs only
-send new clips, and a crash mid-push never double-sends.
+send new clips, and a crash mid-push never double-sends. First day with a
+big backlog? `--baseline` marks everything on disk ignored (no sends,
+invisible to `/clips`/`/today`) so the queue starts from your next render;
+re-rendering an old source changes its file fingerprint, which
+automatically makes it pending again.
 
 Phone side: with the PC **off**, open the channel and download — the files
 live on Telegram's servers. With the PC on and `python main.py bot`

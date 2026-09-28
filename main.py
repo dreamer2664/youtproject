@@ -1210,11 +1210,19 @@ def cmd_parts(cfg, args) -> int:
 
 def cmd_pregen(cfg, args) -> int:
     """Phone queue: list parked clips, show the best, or push new ones."""
-    from pregen import (best_of_day, bot_sender, collect_candidates,
-                        format_scorecard, load_manifest, push_pending,
-                        score_candidates, today_local)
+    from pregen import (baseline_pending, best_of_day, bot_sender,
+                        format_scorecard, load_manifest, pending_candidates,
+                        push_pending, today_local)
 
     print(BANNER)
+    if args.baseline:
+        result = baseline_pending(cfg, day=args.date)
+        print(f"Baselined {len(result['baselined'])} clip(s) — they stay on "
+              f"the PC and will never push (re-render one and it becomes "
+              f"pending again).")
+        if result["tracked_already"]:
+            print(f"{result['tracked_already']} already tracked, untouched.")
+        return 0
     if args.push:
         if args.dry_run:
             # Prediction only: no channel, no token, no sends.
@@ -1267,9 +1275,11 @@ def cmd_pregen(cfg, args) -> int:
             print(f"  {entry.get('day')}  {entry.get('id')}  "
                   f"{int(entry.get('score') or 0)}/100  "
                   f"{(entry.get('title') or '')[:50]}")
-    pushed_ids = {e.get("id") for e in pushed}
-    fresh = [c for c in score_candidates(collect_candidates(cfg))
-             if c.get("id") not in pushed_ids]
+    fresh = pending_candidates(cfg, {"clips": parked})
+    ignored = sum(1 for e in parked
+                  if e.get("ignored") and not e.get("pushed_at"))
+    if ignored:
+        print(f"{ignored} baselined (ignored) — only new renders will push.")
     if fresh:
         print(f"\n{len(fresh)} unpushed: "
               + ", ".join(f"{c['id']} ({c['score']})" for c in fresh))
@@ -1737,6 +1747,9 @@ def main() -> int:
                    help="park at most N clips (0 = all)")
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
                    help="score + predict the push without sending anything")
+    p.add_argument("--baseline", action="store_true",
+                   help="mark the current backlog ignored (no sends) so the "
+                        "phone queue starts from the next render")
     p = sub.add_parser("crew", help="autonomous mission: the crew posts for N days")
     p.add_argument("--days", type=int, default=3, help="mission length")
     p.add_argument("--per-day", type=int, default=4, help="videos per day")
