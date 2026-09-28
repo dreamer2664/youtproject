@@ -893,10 +893,15 @@ def _next_slot(times: list[str], now):
 
 def cmd_topics(cfg, args) -> int:
     """View and refill the topic backlog."""
-    from topics import load_backlog, pop_topic, save_backlog, top_up_backlog
+    from topics import (_is_command_topic, load_backlog, pop_topic,
+                         save_backlog, top_up_backlog)
 
     path = cfg.topics_backlog_file
     if args.add:
+        if _is_command_topic(args.add):
+            print(f"  [topics] {args.add.strip()!r} is a command word, "
+                  f"not a video topic — not added.")
+            return 0
         topics = load_backlog(path)
         if args.add.strip().lower() in {t.lower() for t in topics}:
             print("already in backlog.")

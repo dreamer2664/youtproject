@@ -2331,7 +2331,8 @@ def t_scene_sentences():
 def t_topic_hygiene():
     from unittest.mock import patch
 
-    from topics import _clean, _looks_junky, pop_fresh_topic, propose_topics
+    from topics import (_clean, _is_command_topic, _looks_junky,
+                         load_backlog, pop_fresh_topic, propose_topics)
 
     # The live junk case and its family.
     assert _looks_junky("The GENIUS Scale! FactTechz Short AMAZING FACTS Show #shorts")
@@ -2375,6 +2376,20 @@ def t_topic_hygiene():
         propose_topics(tmp_cfg(), 2, [])
     assert "documentary" in fake.prompt and "ALL CAPS" in fake.prompt
     assert "BANNED" in fake.prompt and "#shorts" not in fake.prompt.split("BANNED")[0]
+    # Command words are never topics (the "Stop" zombie, 2026-09-19).
+    assert _is_command_topic("Stop")
+    assert _is_command_topic("  cancel! ")
+    assert _is_command_topic("STOP EVERYTHING")
+    assert not _is_command_topic("Why wombat poop comes out as perfect cubes")
+    assert not _is_command_topic("How to stop a nosebleed fast")
+    assert _clean("Stop\nWhy cats purr\ncancel\n", []) == ["Why cats purr"]
+    with tempfile.TemporaryDirectory() as tmp2:
+        zombie = Path(tmp2) / "backlog.txt"
+        zombie.write_text("Stop\nWhy the moon looks bigger near the horizon\n",
+                          encoding="utf-8")
+        assert pop_fresh_topic(zombie, []) == \
+            "Why the moon looks bigger near the horizon"
+        assert load_backlog(zombie) == []  # zombie dropped, fresh popped
 
 
 def t_title_optimize():

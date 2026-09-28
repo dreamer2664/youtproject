@@ -113,6 +113,15 @@ _JUNK_TOPIC_MARKERS = ("shorts", "tiktok", "compilation", "episode",
 # everything!!" sailed through both filters.
 _BANNED_TOPIC_PREFIXES = ("facts about", "top facts", "best facts",
                           "amazing facts", "interesting facts")
+# Command words are never video topics (live zombie 2026-09-19: a
+# transcribed "Stop" entered the backlog and recovery resurrected it at
+# every restart; the bot door was guarded the same day, but the entry
+# lived on — and `topics --add` / top-ups never filtered it at all).
+# Mirrors bot._SPOKEN_STOPS, plus the other control words.
+_COMMAND_TOPICS = frozenset({
+    "stop", "stop it", "stopp", "stop everything", "stop the video",
+    "stop rendering", "cancel", "cancel it", "abort", "abort it",
+    "halt", "quit", "exit", "pause", "wait", "help", "start"})
 
 
 def _looks_junky(topic: str, strict_caps: bool = True) -> bool:
@@ -130,6 +139,12 @@ def _looks_junky(topic: str, strict_caps: bool = True) -> bool:
     return False
 
 
+def _is_command_topic(topic: str) -> bool:
+    """True when a topic line is a control word, not a video (tested)."""
+    core = re.sub(r"[^a-z ]+", "", (topic or "").lower())
+    return re.sub(r"\s+", " ", core).strip() in _COMMAND_TOPICS
+
+
 def pop_fresh_topic(path: Path, used: list[str]) -> str | None:
     """Pop the first backlog topic the channel hasn't covered yet.
 
@@ -144,10 +159,14 @@ def pop_fresh_topic(path: Path, used: list[str]) -> str | None:
     fresh: str | None = None
     stale = 0
     junk = 0
+    commands = 0
     rest: list[str] = []
     for topic in topics:
         if any(is_same_topic(topic, old) for old in used):
             stale += 1
+            continue
+        if _is_command_topic(topic):
+            commands += 1
             continue
         if _looks_junky(topic, strict_caps=False):
             junk += 1
@@ -160,6 +179,9 @@ def pop_fresh_topic(path: Path, used: list[str]) -> str | None:
         print(f"  [topics] dropped {stale} stale backlog topic(s) already covered.")
     if junk:
         print(f"  [topics] dropped {junk} junk topic(s) (hashtags/platform words).")
+    if commands:
+        print(f"  [topics] dropped {commands} command word(s) "
+              f"(stop/cancel/… are not videos).")
     save_backlog(path, rest)
     return fresh
 
@@ -203,6 +225,8 @@ def _clean(raw: str, existing: list[str]) -> list[str]:
         if not text or len(text) > 140:
             continue
         if _looks_junky(text):
+            continue
+        if _is_command_topic(text):
             continue
         if any(is_same_topic(text, old) for old in seen):
             continue
