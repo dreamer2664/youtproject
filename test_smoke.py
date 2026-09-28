@@ -1969,7 +1969,8 @@ def t_keystats():
     assert raw.count("...x7f2") == 2
     sums = keystats.window_sum(events, "gemini",
                                datetime.now(timezone.utc) - timedelta(hours=24))
-    assert sums["...x7f2"] == {"req": 2, "tok": 600, "chars": 0, "units": 0}
+    assert sums["...x7f2"] == {"req": 2, "tok": 600, "chars": 0, "units": 0,
+                               "audio": 0}
     # Pruning: events older than the keep window vanish on write.
     stale = {"t": (datetime.now(timezone.utc)
                    - timedelta(days=40)).isoformat(),
@@ -2021,6 +2022,39 @@ def t_keystats():
     cfg.data["ai"]["groq_api_keys"] = ["gq-full-secret-bb18"]
     out = keystats.build_status(cfg)
     assert "GROQ" in out and "pool total" in out and "14,400" in out
+    # Audio formatter + bump round-trip for the Whisper pool.
+    assert keystats._fmt_audio(0) == "0s"
+    assert keystats._fmt_audio(30) == "30s"
+    assert keystats._fmt_audio(90) == "1m"
+    assert keystats._fmt_audio(3600) == "1h 00m"
+    assert keystats._fmt_audio(8100) == "2h 15m"
+    # Pexels month vs hour: separate windows (frozen clock for determinism).
+    fixed = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+    cfg.data["ai"]["pexels_api_key"] = "PX-full-secret-1234"
+    cfg.data["ai"]["deepseek_api_keys"] = ["ds-full-secret-99"]
+    crafted = keystats._load(keystats._path) + [
+        {"t": "2026-09-15T12:10:00+00:00", "p": "pexels", "k": "...1234",
+         "req": 1},
+        {"t": "2026-09-15T10:00:00+00:00", "p": "pexels", "k": "...1234",
+         "req": 1},
+        {"t": "2026-08-20T12:00:00+00:00", "p": "pexels", "k": "...1234",
+         "req": 1},
+        {"t": "2026-09-15T12:05:00+00:00", "p": "groq", "k": "...bb18",
+         "req": 1, "audio": 3600},
+    ]
+    keystats._write(keystats._path, crafted)
+    out = keystats.build_status(cfg, now=fixed)
+    assert "1 this hour" in out and "2 this month" in out
+    assert "19,998 left" in out
+    assert "DEEPSEEK" in out and "...t-99" in out
+    assert "audio pool" in out and "1h 00m / ~8h 00m" in out
+    # Audio bump round-trip on the live clock (crafted Sept-15 rows fall
+    # outside the 24h window, so the fresh reading is exactly this bump).
+    keystats.bump("groq", "gq-other-secret-zz99", req=1, audio=600)
+    fresh = keystats.window_sum(
+        keystats._load(keystats._path), "groq",
+        datetime.now(timezone.utc) - timedelta(hours=24))
+    assert fresh["...zz99"]["audio"] == 600
 
     # CLI entry: cmd_keys prints and returns 0.
     import io

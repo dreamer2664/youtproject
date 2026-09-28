@@ -22,8 +22,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-ORDER = ["gemini", "groq", "openrouter", "elevenlabs", "pexels", "pixabay",
-         "youtube", "pollinations"]
+ORDER = ["gemini", "groq", "openrouter", "deepseek", "elevenlabs", "pexels",
+         "pixabay", "youtube", "pollinations"]
 
 # Free-tier limits, verified Sep 2026 (sources in CAPACITY.md).
 LIMITS = {
@@ -35,17 +35,24 @@ LIMITS = {
     "groq": {
         "title": "GROQ",
         "day": 14400, "unit": "requests", "shared": True,
-        "rule": "~14,400 requests/day, ALL KEYS ONE POOL · resets midnight UTC",
+        "audio_day": 28800,
+        "rule": "~14,400 requests/day, ALL KEYS ONE POOL · ~8h Whisper "
+                "audio/day · resets midnight UTC",
         "tz": "utc"},
     "openrouter": {
         "title": "OPENROUTER",
         "day": 50, "unit": "requests", "shared": True,
         "rule": "50 requests/day on :free models (20/minute) · resets midnight UTC",
         "tz": "utc"},
+    "deepseek": {
+        "title": "DEEPSEEK",
+        "unit": "requests",
+        "rule": "free grant/tier — your balance lives on platform.deepseek.com"},
     "elevenlabs": {
         "title": "ELEVENLABS",
         "month": 10000, "unit": "characters",
-        "rule": "~10,000 characters/month per key (free tier resets on your signup day, not the 1st)"},
+        "rule": "~10,000 chars/month per key (shown per calendar month; "
+                "true reset: your signup day)"},
     "pexels": {
         "title": "PEXELS",
         "hour": 200, "month": 20000, "unit": "requests",
@@ -112,7 +119,8 @@ def _write(path: Path, events: list[dict]) -> None:
 
 
 def bump(provider: str, key: str, req: int = 0, tok: int = 0,
-         chars: int = 0, units: int = 0, tag: str = "") -> None:
+         chars: int = 0, units: int = 0, audio: int = 0,
+         tag: str = "") -> None:
     """Record one provider call. Never raises; no-op until init().
 
     tag = the call's origin ("script", "clipfix", "vision", "probe", ...)
@@ -120,11 +128,12 @@ def bump(provider: str, key: str, req: int = 0, tok: int = 0,
     diagnostics go through the probe helpers below, which log themselves
     — nothing spends off the books.
     """
-    if _path is None or not (req or tok or chars or units):
+    if _path is None or not (req or tok or chars or units or audio):
         return
     event = {"t": datetime.now(timezone.utc).isoformat(timespec="seconds"),
              "p": provider, "k": _mask(key), "req": int(req),
-             "tok": int(tok), "chars": int(chars), "units": int(units)}
+             "tok": int(tok), "chars": int(chars), "units": int(units),
+             "audio": int(audio)}
     if tag:
         event["tag"] = str(tag)[:24]
     try:
@@ -151,8 +160,9 @@ def window_sum(events: list[dict], provider: str,
         if when < since:
             continue
         key = str(event.get("k") or "anonymous")
-        row = sums.setdefault(key, {"req": 0, "tok": 0, "chars": 0, "units": 0})
-        for field in ("req", "tok", "chars", "units"):
+        row = sums.setdefault(key, {"req": 0, "tok": 0, "chars": 0,
+                                    "units": 0, "audio": 0})
+        for field in ("req", "tok", "chars", "units", "audio"):
             row[field] += int(event.get(field) or 0)
     return sums
 
@@ -201,10 +211,12 @@ def _configured_keys(cfg, provider: str) -> list[str]:
             return list(cfg.groq_api_keys)
         if provider == "openrouter":
             return list(cfg.openrouter_api_keys)
+        if provider == "deepseek":
+            return list(cfg.deepseek_api_keys)
         if provider == "elevenlabs":
             return list(cfg.elevenlabs_api_keys)
         if provider == "pexels":
-            return [cfg.pexels_api_key] if cfg.pexels_api_key else []
+            return list(cfg.pexels_api_keys)
         if provider == "pixabay":
             return list(cfg.pixabay_api_keys)
         if provider == "youtube":
@@ -226,6 +238,18 @@ def _fmt_num(value: int) -> str:
     return f"{value:,}"
 
 
+def _fmt_audio(seconds: int) -> str:
+    """Audio seconds -> '2h 05m' / '45m' / '30s' (pure, tested)."""
+    total = max(0, int(seconds))
+    hours, rest = divmod(total, 3600)
+    mins, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {mins:02d}m"
+    if mins:
+        return f"{mins}m"
+    return f"{secs}s"
+
+
 def build_status(cfg, now: datetime | None = None) -> str:
     """The dashboard text (pure-ish: reads the ledger file + config keys)."""
     now = now or datetime.now(timezone.utc)
@@ -238,6 +262,13 @@ def build_status(cfg, now: datetime | None = None) -> str:
         keys = [k for k in _configured_keys(cfg, provider) if k]
         masks = [_mask(k) for k in keys]
         day = window_sum(events, provider, _window(provider, now)[0])
+        month_sums: dict[str, dict] = {}
+        if provider == "pexels":
+            # The daily/hourly window above is NOT the month: Pexels shows
+            # both, so the month gets its own window (calendar month).
+            month_start = now.replace(day=1, hour=0, minute=0, second=0,
+                                      microsecond=0)
+            month_sums = window_sum(events, provider, month_start)
         if provider in ("pexels", "pixabay"):
             hour = window_sum(events, provider,
                               now.replace(minute=0, second=0, microsecond=0))
@@ -248,7 +279,8 @@ def build_status(cfg, now: datetime | None = None) -> str:
             continue
         lines.append(f"{spec['title']}  ·  {spec['rule']}")
         for mask in masks:
-            row = day.get(mask) or {"req": 0, "tok": 0, "chars": 0, "units": 0}
+            row = day.get(mask) or {"req": 0, "tok": 0, "chars": 0,
+                                        "units": 0, "audio": 0}
             if provider == "elevenlabs":
                 used, limit = row["chars"], spec["month"]
                 left = max(0, limit - used)
@@ -263,12 +295,13 @@ def build_status(cfg, now: datetime | None = None) -> str:
                 line = (f"  {mask:<12} {hour_row} this hour "
                         f"({_fmt_num(hour_left)} left)")
                 if spec.get("month"):
-                    month_used = row["req"]
+                    month_used = (month_sums.get(mask) or {}).get("req", 0)
                     month_left = max(0, spec["month"] - month_used)
                     line += (f" · {_fmt_num(month_used)} this month "
                              f"({_fmt_num(month_left)} left)")
                 lines.append(line + f" · hour resets {label}")
-            elif provider == "pollinations":
+            elif provider in ("pollinations", "deepseek"):
+                # No published daily cap: report spend, not remaining.
                 lines.append(f"  {mask:<12} {row['req']} requests today")
             else:
                 unit = "units" if provider == "youtube" else "requests"
@@ -290,6 +323,12 @@ def build_status(cfg, now: datetime | None = None) -> str:
             lines.append(f"  {'pool total':<12} {total} / "
                          f"{_fmt_num(spec['day'])} today   "
                          f"resets {label} (in {_fmt_delta(reset - now)})")
+            if provider == "groq" and spec.get("audio_day"):
+                audio_used = sum((day.get(m) or {}).get("audio", 0)
+                                 for m in masks)
+                lines.append(f"  {'audio pool':<12} "
+                             f"{_fmt_audio(audio_used)} / "
+                             f"~{_fmt_audio(spec['audio_day'])} today")
         lines.append("")
     if len(lines) <= 4:
         lines.append("No keys configured and nothing spent yet — set keys "
@@ -311,6 +350,7 @@ def month_totals(events: list[dict], now: datetime | None = None) -> dict:
     """Last-30-day spend per provider, split by call tag (pure, tested).
 
     {"gemini": {"req": 12, "tok": 3400, "chars": 0, "units": 0,
+                "audio": 0,
                 "tags": {"script": {"req": 10, "tok": 3200},
                          "probe": {"req": 2, "tok": 200}}}, ...}
     """
@@ -328,8 +368,8 @@ def month_totals(events: list[dict], now: datetime | None = None) -> dict:
             continue
         prov = str(event.get("p") or "?")
         row = out.setdefault(prov, {"req": 0, "tok": 0, "chars": 0,
-                                    "units": 0, "tags": {}})
-        for field in ("req", "tok", "chars", "units"):
+                                    "units": 0, "audio": 0, "tags": {}})
+        for field in ("req", "tok", "chars", "units", "audio"):
             row[field] += int(event.get(field) or 0)
         tag = str(event.get("tag") or "(untagged)")
         trow = row["tags"].setdefault(tag, {"req": 0, "tok": 0})
@@ -349,11 +389,14 @@ def month_report() -> str:
         if provider not in totals:
             continue
         row = totals[provider]
-        spent = (f"{row['req']} req · {row['tok']:,} tok"
-                 if provider in ("gemini", "groq", "openrouter", "deepseek")
-                 else f"{row['req']} req"
-                 + (f" · {row['chars']:,} chars" if row["chars"] else "")
-                 + (f" · {row['units']} units" if row["units"] else ""))
+        if provider in ("gemini", "groq", "openrouter", "deepseek"):
+            spent = f"{row['req']} req · {row['tok']:,} tok"
+            if provider == "groq" and row.get("audio"):
+                spent += f" · {_fmt_audio(row['audio'])} audio"
+        else:
+            spent = (f"{row['req']} req"
+                     + (f" · {row['chars']:,} chars" if row["chars"] else "")
+                     + (f" · {row['units']} units" if row["units"] else ""))
         lines.append(f"{LIMITS[provider]['title']}: {spent}")
         for tag, trow in sorted(row["tags"].items(),
                                 key=lambda kv: -kv[1]["req"]):
@@ -459,6 +502,12 @@ def run_probes(cfg) -> str:
             k, cfg.openrouter_model)))
     section("OPENROUTER (shared pool — probed until first success)",
             results or [("none", False, "not configured")])
+    keys = [k for k in _configured_keys(cfg, "deepseek") if k]
+    section("DEEPSEEK",
+            [(_mask(k), *probe_chat(
+                "deepseek", "https://api.deepseek.com/chat/completions",
+                k, cfg.deepseek_model)) for k in keys]
+            or [("none", False, "not configured")])
     keys = [k for k in _configured_keys(cfg, "elevenlabs") if k]
     section("ELEVENLABS (quota-free /user check)",
             [(_mask(k), *probe_get(

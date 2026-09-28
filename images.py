@@ -27,6 +27,8 @@ from pathlib import Path
 
 import requests
 
+import keystats
+
 from stock import pexels_fetch, pixabay_fetch
 
 from config import IMAGE_PROVIDERS as PROVIDERS, Config
@@ -288,6 +290,7 @@ def _pollinations_fetch(
                 print(f"  [image] warning: unusually large response "
                       f"({len(body) // 1024} KB) — keeping it")
             dest.write_bytes(body)
+            keystats.bump("pollinations", "anonymous", req=1, tag="image")
             return dest
         except _RateLimited as exc:
             last_error = exc

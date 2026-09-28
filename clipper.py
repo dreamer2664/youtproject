@@ -575,7 +575,8 @@ def transcribe_words(audio: Path, cfg: Config,
         print(f"  [clip] transcribing {int(offset//60)}:{int(offset%60):02d}"
               f"-{int((offset+length)//60)}:{int((offset+length)%60):02d} "
               f"({index}/{len(plan_chunks(total))})")
-        data = _whisper_request(chunk_path, keys, title=title)
+        data = _whisper_request(chunk_path, keys, title=title,
+                                seconds=length)
         got = data.get("words") or []
         if got:
             for item in got:
@@ -599,8 +600,12 @@ def transcribe_words(audio: Path, cfg: Config,
 
 
 def _whisper_request(path: Path, keys: list[str],
-                     title: str = "") -> dict:
-    """One chunk -> verbose_json with word timestamps (rotates keys)."""
+                     title: str = "", seconds: float = 0.0) -> dict:
+    """One chunk -> verbose_json with word timestamps (rotates keys).
+
+    seconds = chunk audio length, ledgered so `keys` can show the ~8h/day
+    audio pool (the binding Groq quota for clip/parts lanes).
+    """
     last = "no keys tried"
     for key in keys:
         try:
@@ -618,7 +623,7 @@ def _whisper_request(path: Path, keys: list[str],
             last = f"network: {str(exc)[:100]}"
             continue
         import keystats
-        keystats.bump("groq", key, req=1)
+        keystats.bump("groq", key, req=1, audio=max(0, int(seconds)))
         if response.status_code == 200:
             try:
                 return response.json()
