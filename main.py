@@ -1216,16 +1216,9 @@ def cmd_pregen(cfg, args) -> int:
 
     print(BANNER)
     if args.push:
-        channel = cfg.telegram_channel
-        if not channel:
-            die("no Telegram channel — create a private channel, add your "
-                "bot as admin, forward any channel post to @userinfobot "
-                "for the id, then set telegram.channel_id in config.yaml.")
-        if not cfg.telegram_token:
-            die("no Telegram bot token — set telegram.bot_token in "
-                "config.yaml (or export TELEGRAM_BOT_TOKEN).")
         if args.dry_run:
-            report = push_pending(cfg, None, channel,  # type: ignore[arg-type]
+            # Prediction only: no channel, no token, no sends.
+            report = push_pending(cfg, None, cfg.telegram_channel,  # type: ignore[arg-type]
                                   limit=args.limit or 0, dry_run=True,
                                   day=args.date)
             if not report["pending"]:
@@ -1236,6 +1229,14 @@ def cmd_pregen(cfg, args) -> int:
                 if report["best"]:
                     print(f"Predicted best: {report['best']}")
             return 0
+        channel = cfg.telegram_channel
+        if not channel:
+            die("no Telegram channel — create a private channel, add your "
+                "bot as admin, forward any channel post to @userinfobot "
+                "for the id, then set telegram.channel_id in config.yaml.")
+        if not cfg.telegram_token:
+            die("no Telegram bot token — set telegram.bot_token in "
+                "config.yaml (or export TELEGRAM_BOT_TOKEN).")
         report = push_pending(cfg, bot_sender(cfg), channel,
                               limit=args.limit or 0, day=args.date)
         if report["pushed"]:

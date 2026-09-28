@@ -5247,6 +5247,15 @@ def t_pregen_bot():
     cfg.data["telegram"]["channel_id"] = -1001
     code, out = run_cmd(push=True, dry_run=True)
     assert code == 0 and "Nothing unpushed" in out  # all 3 parked already
+    # Dry run needs neither channel nor token (prediction only).
+    bare_cfg = tmp_cfg()
+    _make_clip_tree(bare_cfg.root)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = main_mod.cmd_pregen(bare_cfg, argparse.Namespace(
+            push=True, best=False, date=day, limit=0, dry_run=True))
+    assert code == 0 and "Would park 3 clip(s)" in buf.getvalue(), \
+        buf.getvalue()
     (cfg.root / "pregen.json").unlink()  # live push re-parks from disk
     _make_clip_tree(cfg.root)
     with _patch.object(pregen, "bot_sender",
