@@ -894,9 +894,30 @@ def _next_slot(times: list[str], now):
 def cmd_topics(cfg, args) -> int:
     """View and refill the topic backlog."""
     from topics import (_is_command_topic, load_backlog, pop_topic,
-                         save_backlog, top_up_backlog)
+                         save_backlog, score_topic_interest,
+                         top_up_backlog)
 
     path = cfg.topics_backlog_file
+    if args.audit:
+        topics = load_backlog(path)
+        if not topics:
+            print("backlog empty — run: python main.py topics --topup")
+            return 0
+        scored = sorted(((score_topic_interest(t), t) for t in topics),
+                        key=lambda pair: pair[0][0], reverse=True)
+        print(f"backlog audit: {path} "
+              f"({len(topics)}/{cfg.topics_backlog_target})")
+        tallies = {"STRONG": 0, "ok": 0, "weak": 0}
+        for number, ((score, flags), topic) in enumerate(scored, 1):
+            verdict = "STRONG" if score >= 3 else ("ok" if score >= 1
+                                                   else "weak")
+            tallies[verdict] += 1
+            print(f"  {number}. [{score:+d}] {verdict:6} {topic} — "
+                  f"{', '.join(flags)}")
+        print(f"  {tallies['STRONG']} strong / {tallies['ok']} ok / "
+              f"{tallies['weak']} weak — drop or sharpen the weak ones "
+              f"before a sprint.")
+        return 0
     if args.add:
         if _is_command_topic(args.add):
             print(f"  [topics] {args.add.strip()!r} is a command word, "
@@ -1546,6 +1567,8 @@ def main() -> int:
                    help="append one topic by hand")
     p.add_argument("--pop", action="store_true",
                    help="print and remove the first topic")
+    p.add_argument("--audit", action="store_true",
+                   help="score every backlog topic for scroll-potential")
     p = sub.add_parser("schedule", help="render videos unattended every day")
     p.add_argument("--per-day", type=int, default=None,
                    help="videos per day (default: schedule.per_day)")

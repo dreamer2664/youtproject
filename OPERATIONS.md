@@ -36,6 +36,7 @@ Every kit with a strong enough title contest contains `title-b.txt`:
 python main.py scout             # LLM proposes, Wikipedia interest validates
 python main.py scout --count 12  # more topics per run
 python main.py topics            # see the backlog
+python main.py topics --audit   # score every topic for scroll-potential
 ```
 
 A topic only enters the backlog if its Wikipedia article got ≥500 views in

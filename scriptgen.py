@@ -267,6 +267,8 @@ def build_script_prompt(cfg, topic: str, target: int, scene_count: int,
     v2.2 (2026-09-19): title formula from live analytics — 4-7 words,
     concrete subject in the first 3 words (short titles outperformed
     long vague ones by ~100x in views).
+    v2.3 (2026-09-27): boring-topic rescue (open on the extreme, never the
+    dull thing) + first-frame rule (scene 1 image = the money shot).
     """
     art_brief = style_spec(cfg.style)["brief"]
     return f"""You are a script writer for a high-retention vertical video channel (TikTok, YouTube Shorts, Instagram Reels).
@@ -304,6 +306,11 @@ RETENTION ARCHITECTURE — follow every rule:
 - THE PROMISE (sentence 2, right after the hook): one short line that makes
   staying feel worth it — name the weirdness or the stakes in concrete
   words, never vaguely ("wait for it" is banned).
+- BORING-TOPIC RESCUE: if the topic sounds dull, open on its most EXTREME
+  concrete consequence, number, or visual — never on the dull thing itself.
+- FIRST FRAME: scene 1's image_prompt must be the single most arresting
+  visual in the script (extreme close-up, peak action, the money shot) —
+  scrollers judge the frozen frame before they unmute.
 - SHORT sentences: 12 words max each, one idea per sentence. Staccato rhythm.
 - RHYTHM: vary sentence length — mix punchy 4-7 word sentences with flowing
   9-12 word ones joined by commas. Never stack 4+ choppy sentences in a

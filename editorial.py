@@ -74,6 +74,11 @@ _QUESTION_OPENERS = ("why ", "what ", "how ", "who ", "when ", "where ",
 _BANNED_HOOK_OPENERS = ("here's why", "here is why", "let me tell", "fun fact",
                         "in this video", "today we", "today i", "imagine if",
                         "believe it or not")
+# Weak-verb openers that survived v2.1 — a grabber never opens "there is"
+# (the classic boring-topic tell: stating instead of grabbing).
+_WEAK_HOOK_OPENERS = ("there is ", "there are ", "there was ", "there were ",
+                      "this is a ", "this is an ", "this is the ",
+                      "it is a ", "it is an ", "here is a ", "here are ")
 
 
 # Vague tails that parse slowly — the titles that earned 3-8 views while
@@ -358,7 +363,8 @@ def hook_violated(narration: str) -> bool:
     """True if scene 1's opening line breaks a hook rule (pure, tested).
 
     Catches question hooks ("Why ...?"), throat-clearing openers ("Here's
-    why..."), and first sentences too bloated to grab a scroller (over 10
+    why..."), weak-verb openers ("There is a lake..." — stating instead of
+    grabbing), and first sentences too bloated to grab a scroller (over 10
     words) — the difference between a 42%-stayed video and a 28% one.
     """
     text = (narration or "").strip()
@@ -369,6 +375,8 @@ def hook_violated(narration: str) -> bool:
     if "did you know" in lowered:
         return True
     if any(lowered.startswith(banned) for banned in _BANNED_HOOK_OPENERS):
+        return True
+    if any(lowered.startswith(weak) for weak in _WEAK_HOOK_OPENERS):
         return True
     if len(first.split()) > 10:
         return True

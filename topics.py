@@ -145,6 +145,77 @@ def _is_command_topic(topic: str) -> bool:
     return re.sub(r"\s+", " ", core).strip() in _COMMAND_TOPICS
 
 
+# Detectable scroll-stopping signals for the interest scorer: extremes,
+# tired formulas, and vague hype adjectives. A heuristic, not a verdict —
+# the audit flags, the human decides.
+_EXTREME_WORDS = frozenset({
+    "deadliest", "biggest", "smallest", "fastest", "slowest", "longest",
+    "shortest", "oldest", "youngest", "first", "last", "only", "never",
+    "secret", "strange", "bizarre", "impossible", "illegal", "hidden",
+    "forbidden", "extinct", "immortal", "exploding", "poisonous",
+    "venomous", "heaviest", "lightest", "deepest", "hottest", "coldest"})
+_TIRED_FORMULAS = ("you need to know", "will shock you",
+                   "will blow your mind", "you won't believe")
+_VAGUE_HYPE = frozenset({
+    "cool", "amazing", "awesome", "incredible", "crazy", "insane",
+    "unbelievable", "mind-blowing", "mindblowing", "interesting",
+    "fascinating", "engaging", "fun", "epic", "shocking"})
+
+
+def score_topic_interest(topic: str) -> tuple[int, list[str]]:
+    """Scroll-potential score + human-readable flags (pure, tested).
+
+    Rewards detectable grab signals (why/how/what opener, numbers,
+    extremes, direct address, specific length); penalizes tired formulas,
+    hype caps, and vague adjectives. Bands: >=3 strong, 1-2 ok, <=0 weak.
+    """
+    text = (topic or "").strip()
+    if not text:
+        return -2, ["empty"]
+    score = 0
+    flags: list[str] = []
+    words = text.split()
+    lowered = text.lower()
+    bare = [w.strip(".,!?;:()\"'").lower() for w in words]
+    if len(text) < 20:
+        score -= 2
+        flags.append("too short to be specific")
+    elif len(text) > 120:
+        score -= 1
+        flags.append("too long")
+    else:
+        score += 2
+        flags.append("specific length")
+    if lowered.startswith(("why ", "how ", "what ")):
+        score += 1
+        flags.append("why/how/what opener")
+    if any(w.replace(",", "").isdigit() for w in bare):
+        score += 2
+        flags.append("number")
+    hits = sorted({w for w in bare if w in _EXTREME_WORDS})
+    if hits:
+        score += 2
+        flags.append("extreme word: " + hits[0])
+    if {"you", "your", "yours", "we", "our", "ours"} & set(bare):
+        score += 1
+        flags.append("direct address")
+    for formula in _TIRED_FORMULAS:
+        if formula in lowered:
+            score -= 2
+            flags.append("tired formula: " + formula)
+    if any(w.isupper() and len(w) >= 3 for w in words):
+        score -= 1
+        flags.append("ALL-CAPS hype")
+    if "!" in text:
+        score -= 1
+        flags.append("exclamation hype")
+    vague = sorted({w for w in bare if w in _VAGUE_HYPE})
+    if vague:
+        score -= min(2, len(vague))
+        flags.append("vague hype: " + ", ".join(vague[:3]))
+    return score, flags
+
+
 def pop_fresh_topic(path: Path, used: list[str]) -> str | None:
     """Pop the first backlog topic the channel hasn't covered yet.
 
@@ -209,6 +280,10 @@ places, everyday mysteries) and (2) genuinely USEFUL explainers (how everyday
 systems work, body and brain mechanics, food science, money).
 VISUAL RULE: every topic must be filmable with stock footage — real animals,
 places, objects, food, space. Nothing abstract, no real people needed.
+SCROLL TEST: every topic must pass "would a bored scroller stop for this?"
+— if an angle sounds dull, sharpen the ANGLE (an extremer case, nearer
+stakes, a weirder mechanism), never pad the words. Prefer topics with a
+number, an extreme, or a violated expectation baked in.
 Do not repeat or resemble these existing topics: {sample}
 RULES: one topic per line; no numbering, no bullets, no quotes, no explanations;
 each under 120 characters; nothing offensive, nothing needing visuals of real people."""

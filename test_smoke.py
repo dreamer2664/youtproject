@@ -1631,6 +1631,7 @@ def t_script_prompt_rules():
     prompt = build_script_prompt(cfg, "octopus arms", 65, 6, 169, 211, 28, 35)
     for rule in ("WRONG-BELIEF FLIP", "FIRST 5 WORDS", "MICRO-TEASES",
                  "LOOP-BACK ENDING", "CONCRETE CAMERA RULE", "RHYTHM",
+                 "BORING-TOPIC RESCUE", "FIRST FRAME",
                  "dead-air pauses", "COMPLETE sentences",
                  "stock-photo search", "no hashtags",
                  '"scenes": [', "octopus arms"):
@@ -1658,6 +1659,7 @@ def t_topup_prompt():
     assert "65-second" in spy.prompt  # real target, not stale 30-45
     assert "Why honey never expires" in spy.prompt  # dedupe sample
     assert "USEFUL explainers" in spy.prompt
+    assert "SCROLL TEST" in spy.prompt
 
 
 def t_batch_topics():
@@ -1700,6 +1702,11 @@ def t_hook_guard():
     assert not hook_violated("Sea otters hold hands to stay alive.")
     assert not hook_violated("Clocks could have spun the other way. One man "
                              "chose.")  # 8-word vivid scene
+    # v2.3: weak-verb openers are boring-topic tells, not grabbers.
+    assert hook_violated("There is a lake that turns birds to stone.")
+    assert hook_violated("There are 300 muscles in an elephant trunk.")
+    assert hook_violated("This is a story about the fastest ant alive.")
+    assert not hook_violated("Tanzania hides a lake that turns birds to stone.")
 
     def script(*lines):
         return types.SimpleNamespace(
@@ -2332,7 +2339,8 @@ def t_topic_hygiene():
     from unittest.mock import patch
 
     from topics import (_clean, _is_command_topic, _looks_junky,
-                         load_backlog, pop_fresh_topic, propose_topics)
+                         load_backlog, pop_fresh_topic, propose_topics,
+                         score_topic_interest)
 
     # The live junk case and its family.
     assert _looks_junky("The GENIUS Scale! FactTechz Short AMAZING FACTS Show #shorts")
@@ -2390,6 +2398,17 @@ def t_topic_hygiene():
         assert pop_fresh_topic(zombie, []) == \
             "Why the moon looks bigger near the horizon"
         assert load_backlog(zombie) == []  # zombie dropped, fresh popped
+    # Interest scorer: detectable scroll-stopping signals.
+    strong, flags = score_topic_interest(
+        "Why wombat poop comes out as perfect cubes")
+    assert strong >= 3, flags
+    assert score_topic_interest("How Honey Never Expires")[0] >= 3
+    assert "number" in score_topic_interest("7 animals that never sleep")[1]
+    assert score_topic_interest("Stop")[0] <= 0
+    assert score_topic_interest("fun and useful facts, engaging and cool")[0] <= 0
+    mid, mflags = score_topic_interest("3 Facts You NEED To Know")
+    assert "tired formula: you need to know" in mflags
+    assert "number" in mflags and "ALL-CAPS hype" in mflags
 
 
 def t_title_optimize():
