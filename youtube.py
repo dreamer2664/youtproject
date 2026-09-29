@@ -262,19 +262,53 @@ def snapshot_videos(client: YouTubeClient, ids: list[str]) -> list[dict]:
     """Vitals for many videos, 50 per call (1 unit per call, tested)."""
     out: list[dict] = []
     for batch in chunk_ids(ids):
-        data = client._get("videos", {"part": "snippet,statistics",
+        # contentDetails rides along free: a videos.list call costs 1 unit
+        # whatever parts it asks for.
+        data = client._get("videos", {"part": "snippet,statistics,contentDetails",
                                       "id": ",".join(batch)})
         for item in data.get("items") or []:
             snippet = item.get("snippet", {}) or {}
             stats = item.get("statistics", {}) or {}
+            details = item.get("contentDetails", {}) or {}
+            published_at = str(snippet.get("publishedAt", "") or "")
             out.append({"id": item.get("id", ""),
                         "title": snippet.get("title", "?"),
                         "channel": snippet.get("channelTitle", "?"),
                         "channel_id": snippet.get("channelId", ""),
-                        "published": (snippet.get("publishedAt", "") or "")[:10],
+                        "published": published_at[:10],
+                        "published_at": published_at,
+                        "duration_s": parse_duration(details.get("duration")),
                         "views": _num(stats.get("viewCount")),
                         "likes": _num(stats.get("likeCount")),
                         "comments": _num(stats.get("commentCount"))})
+    return out
+
+
+def channels_vitals(client: YouTubeClient,
+                    channel_ids: list[str]) -> dict[str, dict]:
+    """Subs/views/uploads playlist for many channels, 50 per call (1 unit).
+
+    Channels the API no longer returns (deleted, terminated) are simply
+    absent from the result — the caller reports them, never crashes.
+    """
+    out: dict[str, dict] = {}
+    for batch in chunk_ids([c for c in channel_ids if c]):
+        data = client._get("channels", {
+            "part": "snippet,statistics,contentDetails",
+            "id": ",".join(batch)})
+        for item in data.get("items") or []:
+            snippet = item.get("snippet", {}) or {}
+            stats = item.get("statistics", {}) or {}
+            playlist = ((item.get("contentDetails") or {})
+                        .get("relatedPlaylists") or {}).get("uploads", "")
+            out[item.get("id", "")] = {
+                "title": snippet.get("title", "?"),
+                "handle": snippet.get("customUrl", "") or "",
+                "subs": _num(stats.get("subscriberCount")),
+                "subs_hidden": bool(stats.get("hiddenSubscriberCount")),
+                "views": _num(stats.get("viewCount")),
+                "videos": _num(stats.get("videoCount")),
+                "uploads": playlist}
     return out
 
 
@@ -313,12 +347,25 @@ def save_snapshots(path, history: dict) -> None:
     path.write_text(json.dumps(history, indent=1), encoding="utf-8")
 
 
-def record_snapshot(history: dict, videos: list[dict], today: str) -> dict:
-    """Store today's numbers (re-running the same day replaces, tested)."""
-    entry = {"date": today, "videos": {v["id"]: {
-        "title": v["title"], "channel": v["channel"], "views": v["views"],
-        "likes": v["likes"], "comments": v["comments"],
-        "published": v["published"]} for v in videos}}
+def record_snapshot(history: dict, videos: list[dict], today: str,
+                    channels: dict | None = None) -> dict:
+    """Store today's numbers (re-running the same day replaces, tested).
+
+    Optional fields (channel_id, published_at, duration_s) are kept when
+    the fetch provided them; `channels` = per-channel subs/views vitals.
+    """
+    def row(v: dict) -> dict:
+        out = {"title": v["title"], "channel": v["channel"],
+               "views": v["views"], "likes": v["likes"],
+               "comments": v["comments"], "published": v["published"]}
+        for key in ("channel_id", "published_at", "duration_s"):
+            if v.get(key) not in (None, ""):
+                out[key] = v[key]
+        return out
+
+    entry = {"date": today, "videos": {v["id"]: row(v) for v in videos}}
+    if channels:
+        entry["channels"] = channels
     history["days"] = [d for d in history["days"] if d.get("date") != today]
     history["days"].append(entry)
     history["days"].sort(key=lambda d: d.get("date") or "")

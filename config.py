@@ -368,6 +368,12 @@ DEFAULTS: dict[str, Any] = {
         # False = never call the LLM for titles, always truncate.
         "shorten_titles": True,
     },
+    # `snap` stats tracker (public Data API, ~3 units/channel per run).
+    "snap": {
+        "recent": 10,        # videos shown per channel
+        "fetch_limit": 50,   # newest uploads fetched + stored per channel
+        "keep_days": 180,    # daily history kept in work/snapshots.json
+    },
     "youtube": {
         # YouTube Data API v3 keys (https://console.cloud.google.com/apis/
         # library/youtube.googleapis.com) — one Cloud project per key, each
@@ -551,6 +557,23 @@ class Config:
         if isinstance(raw, str):
             raw = [raw]
         return [str(k).strip() for k in raw if str(k).strip()]
+
+    @property
+    def snap_settings(self) -> dict:
+        """`snap` knobs, clamped (garbage -> defaults, never crash)."""
+        raw = self.data.get("snap") or {}
+        raw = raw if isinstance(raw, dict) else {}
+
+        def pick(key: str, default: int, low: int, high: int) -> int:
+            try:
+                value = int(raw.get(key, default))
+            except (TypeError, ValueError):
+                value = default
+            return max(low, min(high, value))
+
+        return {"recent": pick("recent", 10, 1, 200),
+                "fetch_limit": pick("fetch_limit", 50, 1, 500),
+                "keep_days": pick("keep_days", 180, 7, 3650)}
 
     @property
     def crew_cycle_minutes(self) -> int:

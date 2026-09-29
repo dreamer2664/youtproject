@@ -1374,63 +1374,86 @@ def cmd_subpreview(cfg, args) -> int:
 
 
 def cmd_snap(cfg, args) -> int:
-    """Daily channel snapshot via the public Data API (~4 units/day)."""
-    from youtube import (YouTubeClient, build_report, extract_id,
-                         load_snapshots, playlist_video_ids, previous_daysnapshot,
-                         record_snapshot, save_snapshots, snapshot_videos,
-                         uploads_playlist_id, video_stats)
+    """Stats for every tracked channel via the public Data API.
 
+    ~3 quota units per channel per run. --list / --remove are offline.
+    """
+    import channelstats as cs
+    from youtube import load_snapshots, save_snapshots
+
+    store = cs.store_path(cfg)
+    history = load_snapshots(store)
+    if args.list:
+        channels = cs.tracked(history)
+        if not channels:
+            print("No channels tracked yet — python main.py snap --add @handle")
+            return 0
+        print(f"Tracking {len(channels)} channel(s):")
+        for c in channels:
+            print(f"  {c.get('title') or '?':<40} {c['id']}")
+        return 0
+    if args.remove:
+        removed, problem = cs.remove_channel(history, args.remove)
+        if problem == "none":
+            die(f"no tracked channel matches {args.remove!r} — "
+                f"python main.py snap --list")
+        if problem == "many":
+            names = ", ".join(c.get("title") or c["id"]
+                              for c in cs.match_channels(history, args.remove))
+            die(f"{args.remove!r} matches several channels ({names}) — "
+                f"use more of the name or the UC… id")
+        save_snapshots(store, history)
+        print(f"  [snap] stopped tracking: {removed.get('title')} "
+              f"(its history stays in snapshots.json)")
+        return 0
     if not cfg.youtube_api_keys:
         die("no YouTube API key (youtube.api_keys) — enable YouTube Data API v3\n"
             "at https://console.cloud.google.com/apis/library/youtube.googleapis.com")
-    from datetime import date
-
-    client = YouTubeClient(cfg.youtube_api_keys)
-    store = Path(cfg.work_dir) / "snapshots.json"
-    history = load_snapshots(store)
-    channels = {c["id"]: c["title"] for c in history["channels"]}
-
-    if args.add:
-        kind, ident = extract_id(args.add)
-        if kind != "video":
-            die("--add wants a VIDEO link from your channel (any upload)")
-        info = video_stats(client, ident)
-        if not info["channel_id"]:
-            die("could not resolve that video's channel")
-        channels[info["channel_id"]] = info["channel"]
-        history["channels"] = [{"id": cid, "title": title}
-                               for cid, title in channels.items()]
+    client = cs.make_client(cfg)
+    for ref in args.add or []:
+        try:
+            channel_id, title = cs.resolve_channel(client, ref)
+        except (ValueError, RuntimeError) as exc:
+            die(f"could not add {ref!r}: {exc}")
+        is_new = cs.add_channel(history, channel_id, title)
         save_snapshots(store, history)
-        print(f"  [snap] tracking channel: {info['channel']}")
-
-    if not channels:
-        die("no channels tracked yet — bootstrap once with:\n"
-            "  python main.py snap --add <any video link from your channel>")
-    today = date.today().isoformat()
-    videos: list[dict] = []
-    seen: set[str] = set()
-    for channel_id, title in channels.items():
-        playlist = uploads_playlist_id(client, channel_id)
-        ids = playlist_video_ids(client, playlist)
-        fresh = [i for i in ids if i not in seen]
-        seen.update(fresh)
-        videos.extend(snapshot_videos(client, fresh))
-        print(f"  [snap] {title}: {len(fresh)} video(s)")
-    history = record_snapshot(history, videos, today)
-    prev = previous_daysnapshot(history, today)
-    report, new_flags = build_report(history, today, prev)
-    if new_flags:
-        history["flagged"] = sorted(set(history["flagged"]) | set(new_flags))
-    save_snapshots(store, history)
+        print(f"  [snap] {'tracking' if is_new else 'already tracking'}: "
+              f"{title}")
+    if not cs.tracked(history):
+        die("no channels tracked yet — add each channel once with:\n"
+            "  python main.py snap --add @yourhandle\n"
+            "  (a channel link or any video link from it works too)")
+    try:
+        fetch = max(1, min(500, args.fetch)) if args.fetch else None
+        result = cs.run_snapshot(cfg, client, fetch_limit=fetch)
+    except LookupError:
+        die("no channels tracked yet — python main.py snap --add @yourhandle")
+    history, today, prev = result["history"], result["today"], result["prev"]
     if args.json:
         import json as _json
         print(_json.dumps(next(d for d in history["days"]
                                if d["date"] == today), indent=1))
     else:
+        recent = max(1, min(500, args.recent or cfg.snap_settings["recent"]))
+        report, new_flags = cs.build_channel_report(
+            history, today, prev, recent=recent, sort=args.sort,
+            only=args.channel or "", errors=result["errors"])
         print(report)
         if new_flags:
+            history["flagged"] = sorted(set(history["flagged"]) | set(new_flags))
+            save_snapshots(store, history)
             print("  (retitle candidates flagged once — they will not "
                   "re-appear)")
+    if args.export:
+        paths = cs.export_snapshot(cfg, history, today, prev)
+        print(f"\n  exported {paths['rows']} video row(s):")
+        if paths["xlsx"]:
+            print(f"    {paths['xlsx']}   <- open this one in Excel")
+        else:
+            print("    (no .xlsx: pip install openpyxl — Excel with EU "
+                  "settings opens the CSV as one column)")
+        print(f"    {paths['csv']}")
+        print(f"    {paths['channels_csv']}")
     print(f"  quota: {client.spent} units spent of 10,000/day")
     return 0
 
@@ -1784,8 +1807,25 @@ def main() -> int:
     p.add_argument("id", help="job id (prefix ok)")
     p.add_argument("url", help="the YouTube URL, e.g. https://youtu.be/....")
 
-    p = sub.add_parser("snap", help="channel snapshot: views, day-over-day deltas, retitle alerts")
-    p.add_argument("--add", help="bootstrap: any video link from your channel")
+    p = sub.add_parser("snap", help="stats for all your channels: views, likes, comments, subs, deltas")
+    p.add_argument("--add", action="append", metavar="REF",
+                   help="track a channel: @handle, channel link or any video "
+                        "link from it (repeatable)")
+    p.add_argument("--remove", metavar="NAME",
+                   help="stop tracking a channel (name fragment or UC… id)")
+    p.add_argument("--list", action="store_true",
+                   help="show tracked channels (no API calls)")
+    p.add_argument("--channel", metavar="NAME",
+                   help="show only this channel (name fragment)")
+    p.add_argument("--recent", type=int, default=None, metavar="N",
+                   help="videos per channel (default: config snap.recent, 10)")
+    p.add_argument("--sort", choices=["new", "views", "eng", "pace"],
+                   default="new",
+                   help="order within a channel (default new = newest first)")
+    p.add_argument("--fetch", type=int, default=None, metavar="N",
+                   help="uploads fetched per channel (default snap.fetch_limit, 50)")
+    p.add_argument("--export", action="store_true",
+                   help="also write out/stats/stats-DATE.xlsx + CSVs")
     p.add_argument("--json", action="store_true",
                    help="print the raw snapshot instead of the report")
 

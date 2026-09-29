@@ -51,6 +51,8 @@ Commands:
 /today — today's best pre-gen clip + scorecard
 /clips — clips parked on Telegram (your channel holds them for PC-off pickup)
 /clip <id> — pull one parked clip here
+/stats — views/likes/comments/subs for all your channels
+/stats <name> — just one channel
 
 One video renders at a time; extra topics queue up behind it.
 A video takes roughly 15–25 minutes. I'll send it here as a file
@@ -93,7 +95,8 @@ def parse_incoming(text: str) -> tuple[str, str]:
     Actions: 'topic' (render this), 'queue', 'send', 'help', 'ignore',
     'status', 'keys', 'nogemini', 'jarvis' (channel-manager task),
     'crew' (mission), 'stop', 'log', 'today' (best pre-gen clip),
-    'clips' (parked-clip list), 'clip' (pull one parked clip).
+    'clips' (parked-clip list), 'clip' (pull one parked clip),
+    'stats' (channel stats; arg = optional channel-name filter).
     """
     text = (text or "").strip()
     if not text:
@@ -137,6 +140,9 @@ def parse_incoming(text: str) -> tuple[str, str]:
         return ("clip", text[6:].strip())
     if low == "/today":
         return ("today", "")
+    # Channel stats: /stats (all tracked channels) or /stats <name>.
+    if low == "/stats" or low.startswith("/stats "):
+        return ("stats", text[6:].strip())
     if text.startswith("/"):
         return ("help", "")
     return ("topic", text[:200])
@@ -335,6 +341,31 @@ class PhoneBot:
                                "caption": trim(caption, MAX_CAPTION),
                                "supports_streaming": True})
 
+    def _send_stats(self, chat_id, only: str = "") -> None:
+        """Fresh snapshot of every tracked channel, one message each."""
+        import channelstats as cs
+        from youtube import load_snapshots
+
+        if not self.cfg.youtube_api_keys:
+            self.send_message(chat_id, "🔑 No YouTube API key in config.yaml "
+                                       "(youtube.api_keys) — stats need one.")
+            return
+        if not cs.tracked(load_snapshots(cs.store_path(self.cfg))):
+            self.send_message(chat_id, "📭 No channels tracked yet — on the "
+                                       "PC, once per channel:\n"
+                                       "python main.py snap --add @yourhandle")
+            return
+        try:
+            client = cs.make_client(self.cfg)
+            result = cs.run_snapshot(self.cfg, client, log=lambda *_: None)
+        except Exception as exc:
+            self.send_message(chat_id, f"❌ Stats failed: {str(exc)[:300]}")
+            return
+        for text in cs.build_phone_report(result["history"], result["today"],
+                                          result["prev"], only=only,
+                                          errors=result["errors"]):
+            self.send_message(chat_id, text)
+
     # -- message handling -------------------------------------------------
     def handle_message(self, message: dict) -> None:
         chat = message.get("chat", {})
@@ -408,6 +439,8 @@ class PhoneBot:
                              "here).")
             else:
                 self._send_clip(chat_id, best, header="🏆 Today's pick:")
+        elif action == "stats":
+            self._send_stats(chat_id, arg)
         elif action == "clips":
             from pregen import load_manifest
 

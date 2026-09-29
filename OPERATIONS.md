@@ -133,6 +133,32 @@ list), `/clip <id>` (pull one here). Delivery uses Telegram's own copy
 Files over 48 MB are skipped with a reason (Telegram caps bot files at
 50 MB).
 
+## Channel stats (snap — all your channels, one command)
+
+```bash
+python main.py snap --add @yourhandle     # once per channel (channel link or any video link works too)
+python main.py snap                       # stats for every tracked channel
+python main.py snap --channel facts       # just one channel (name fragment)
+python main.py snap --recent 20 --sort views
+python main.py snap --export              # + out/stats/stats-DATE.xlsx and CSVs
+python main.py snap --list                # tracked channels (offline)
+python main.py snap --remove "old name"   # stop tracking (history stays)
+```
+
+Per channel: subs and total views (with change since the previous
+snapshot), then the newest videos with AGE, LEN, VIEWS, Δ (views gained
+since the last snap), LIKES, COMMENTS, ENG ((likes+comments)/views) and
+PACE (views/hour for the first 48h, then views/day). Videos 2+ days old
+with under 50 views are flagged `RETITLE?` once. On the phone (bot
+running): `/stats` or `/stats <name>`: one message per channel.
+
+Run it once a day, roughly at the same hour, so the Δ numbers read as
+"per day". Cost is ~3 of your 10,000 daily quota units per channel.
+Public data can't show impressions, CTR or retention (that's Studio);
+YouTube rounds public subscriber counts (3 digits), so small sub gains
+can show as no change. Open the `.xlsx`, not the CSV, in Excel: with
+Italian regional settings a comma-CSV opens as one column.
+
 ## Decision rules (what the data says to do)
 
 | Signal | Rule | Where |

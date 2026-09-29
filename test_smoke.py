@@ -3288,6 +3288,570 @@ def t_channel_snap():
         assert _json.loads(store.read_text())["flagged"] == ["ghi33333333"]
 
 
+class _FakeYT:
+    """Offline stand-in for YouTubeClient: same _get contract + pagination.
+
+    channels: {cid: {title, handle, subs, views, hidden, videos: [ids]}}
+    videos:   {vid: {title, channel_id, published_at, duration, views,
+                     likes, comments}}
+    broken:   set of channel ids whose playlist call raises.
+    """
+
+    def __init__(self, channels, videos, broken=()):
+        self.channels, self.videos = channels, videos
+        self.broken = set(broken)
+        self.spent = 0
+        self.calls = []
+
+    def _get(self, method, params, cost=1):
+        self.calls.append((method, dict(params)))
+        self.spent += cost
+        if method == "channels":
+            if "forHandle" in params:
+                hits = [c for c, v in self.channels.items()
+                        if v["handle"].lower() == "@" + params["forHandle"].lower()]
+            else:
+                ids = params["id"].split(",")
+                assert len(ids) <= 50, "API caps id lists at 50"
+                hits = [c for c in ids if c in self.channels]
+            items = []
+            for cid in hits:
+                ch = self.channels[cid]
+                stats = {"viewCount": str(ch["views"]),
+                         "videoCount": str(len(ch["videos"]))}
+                if ch.get("hidden"):
+                    stats["hiddenSubscriberCount"] = True
+                else:
+                    stats["subscriberCount"] = str(ch["subs"])
+                items.append({"id": cid, "snippet": {
+                    "title": ch["title"], "customUrl": ch["handle"],
+                    "publishedAt": "2025-01-01T00:00:00Z"},
+                    "statistics": stats,
+                    "contentDetails": {"relatedPlaylists": {"uploads": "UU" + cid[2:]}}})
+            return {"items": items}
+        if method == "playlistItems":
+            cid = "UC" + params["playlistId"][2:]
+            if cid in self.broken:
+                raise RuntimeError("YouTube HTTP 500: backend error")
+            ids = self.channels[cid]["videos"]
+            start = int(params.get("pageToken") or 0)
+            page = ids[start:start + 50]
+            out = {"items": [{"contentDetails": {"videoId": v}} for v in page]}
+            if start + 50 < len(ids):
+                out["nextPageToken"] = str(start + 50)
+            return out
+        if method == "videos":
+            ids = params["id"].split(",")
+            assert len(ids) <= 50
+            items = []
+            for vid in ids:
+                v = self.videos.get(vid)
+                if not v:
+                    continue  # deleted/private: API just omits it
+                items.append({"id": vid, "snippet": {
+                    "title": v["title"], "channelTitle": self.channels[v["channel_id"]]["title"],
+                    "channelId": v["channel_id"], "publishedAt": v["published_at"]},
+                    "statistics": {"viewCount": str(v["views"]),
+                                   "likeCount": str(v["likes"]),
+                                   "commentCount": str(v["comments"])},
+                    "contentDetails": {"duration": v["duration"]}})
+            return {"items": items}
+        raise AssertionError(f"unexpected method {method}")
+
+
+def _fake_world():
+    """3 channels: a Shorts channel, a long-form one, one hidden-subs."""
+    channels = {
+        "UC" + "a" * 22: {"title": "Facts Daily", "handle": "@factsdaily",
+                          "subs": 1230, "views": 45678, "videos": []},
+        "UC" + "b" * 22: {"title": "Clip Vault", "handle": "@clipvault",
+                          "subs": 88, "views": 9000, "videos": []},
+        "UC" + "c" * 22: {"title": "Quiet One", "handle": "@quietone",
+                          "subs": 0, "views": 10, "hidden": True, "videos": []},
+    }
+    videos = {}
+    a, b, c = list(channels)
+    # Facts Daily: 60 uploads (pagination past 50), newest first.
+    for i in range(60):
+        vid = f"fa{i:09d}"
+        videos[vid] = {"title": f"Fact number {i}", "channel_id": a,
+                       "published_at": f"2026-09-{28 - (i % 20):02d}T10:00:00Z",
+                       "duration": "PT45S", "views": 1000 - i * 10,
+                       "likes": 50 - (i % 50), "comments": 5, }
+        channels[a]["videos"].append(vid)
+    videos["fa000000000"].update(published_at="2026-09-29T08:00:00Z",
+                                 title="Brand new short", views=240)
+    # Clip Vault: 3 videos incl. a 0-view one and a long one.
+    for vid, title, when, dur, views in (
+            ("cb000000001", "Long talk, the full interview with a very long title indeed",
+             "2026-09-20T12:00:00Z", "PT1H2M3S", 3000),
+            ("cb000000002", "Stuck at twelve", "2026-09-25T12:00:00Z", "PT30S", 12),
+            ("cb000000003", "Zero so far", "2026-09-29T11:00:00Z", "PT20S", 0)):
+        videos[vid] = {"title": title, "channel_id": b, "published_at": when,
+                       "duration": dur, "views": views, "likes": views // 20,
+                       "comments": views // 100}
+        channels[b]["videos"].append(vid)
+    videos["cc000000001"] = {"title": "Only video", "channel_id": c,
+                             "published_at": "2026-09-01T00:00:00Z",
+                             "duration": "PT2M", "views": 10, "likes": 1,
+                             "comments": 0}
+    channels[c]["videos"].append("cc000000001")
+    return channels, videos
+
+
+def t_channel_stats():
+    from datetime import datetime, timezone
+
+    import channelstats as cs
+    from youtube import load_snapshots, save_snapshots
+
+    now = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+
+    # -- pure metrics ------------------------------------------------------
+    assert cs.engagement({"views": 200, "likes": 10, "comments": 2}) == 6.0
+    assert cs.engagement({"views": 0, "likes": 3}) is None
+    assert cs.pace({"views": 240}, 4.0) == (60.0, "/h")
+    assert cs.pace({"views": 240}, 0.2) == (240.0, "/h")   # floor at 1h
+    assert cs.pace({"views": 700}, 24 * 7) == (100.0, "/d")
+    assert cs.compact(999) == "999" and cs.compact(1234) == "1.2K"
+    assert cs.compact(1000) == "1K" and cs.compact(2_500_000) == "2.5M"
+    assert cs.fmt_len(45) == "0:45" and cs.fmt_len(3723) == "1:02:03"
+    assert cs.fmt_len(0) == "—"
+    assert cs.age_hours({"published_at": "2026-09-29T08:00:00Z"}, now,
+                        "2026-09-29") == 4.0
+    # legacy rows (date only) fall back to whole days; garbage -> 0
+    assert cs.age_hours({"published": "2026-09-27"}, now, "2026-09-29") == 48.0
+    assert cs.age_hours({"published": "junk"}, now, "2026-09-29") == 0.0
+    assert cs.age_hours({"published_at": "not-a-date",
+                         "published": "2026-09-28"}, now, "2026-09-29") == 24.0
+
+    # -- channel list management (offline) ---------------------------------
+    h = {"channels": [], "days": [], "flagged": []}
+    assert cs.add_channel(h, "UC1", "Facts Daily") is True
+    assert cs.add_channel(h, "UC2", "Facts Weekly") is True
+    assert cs.add_channel(h, "UC1", "Facts Daily (renamed)") is False
+    assert [c["title"] for c in h["channels"]] == ["Facts Daily (renamed)",
+                                                   "Facts Weekly"]
+    assert cs.match_channels(h, "facts") and len(cs.match_channels(h, "facts")) == 2
+    assert cs.match_channels(h, "uc2")[0]["id"] == "UC2"  # id match, case-free
+    assert cs.match_channels(h, "") == []
+    assert cs.remove_channel(h, "facts") == (None, "many")
+    assert cs.remove_channel(h, "nope") == (None, "none")
+    removed, problem = cs.remove_channel(h, "weekly")
+    assert problem == "" and removed["id"] == "UC2" and len(h["channels"]) == 1
+    h["channels"].append("garbage")          # malformed entries tolerated
+    assert [c["id"] for c in cs.tracked(h)] == ["UC1"]
+
+    # -- resolve: video link, @handle, channel URL, UC id, garbage ----------
+    channels, videos = _fake_world()
+    a, b, c = list(channels)
+    client = _FakeYT(channels, videos)
+    assert cs.resolve_channel(client, "https://youtu.be/cb000000002") == (b, "Clip Vault")
+    assert cs.resolve_channel(client, "https://www.youtube.com/shorts/fa000000003")[0] == a
+    assert cs.resolve_channel(client, "@FactsDaily") == (a, "Facts Daily")
+    assert cs.resolve_channel(client, "https://www.youtube.com/@quietone")[0] == c
+    assert cs.resolve_channel(client, f"https://www.youtube.com/channel/{a}")[0] == a
+    assert cs.resolve_channel(client, a)[0] == a
+    for bad in ("", "https://vimeo.com/123", "@nosuchhandle", "https://youtu.be/zzzzzzzzzzz"):
+        try:
+            cs.resolve_channel(client, bad)
+        except (ValueError, RuntimeError):
+            pass
+        else:
+            raise AssertionError(f"{bad!r} should not resolve")
+
+    # -- batching: 120 channels -> 3 channels.list calls, never >50 ids -----
+    from youtube import channels_vitals
+    many = {f"UC{i:022d}": {"title": f"C{i}", "handle": f"@c{i}", "subs": i,
+                            "views": i, "videos": []} for i in range(120)}
+    big = _FakeYT(many, {})
+    vit = channels_vitals(big, list(many) + ["UCmissing0000000000000000"])
+    assert len(vit) == 120 and big.spent == 3
+    assert "UCmissing0000000000000000" not in vit
+
+    # -- end-to-end snapshot over two days --------------------------------
+    cfg = tmp_cfg()
+    store = cs.store_path(cfg)
+    history = load_snapshots(store)
+    for cid, ch in channels.items():
+        cs.add_channel(history, cid, ch["title"])
+    save_snapshots(store, history)
+    client = _FakeYT(channels, videos)
+    logs = []
+    day1 = cs.run_snapshot(cfg, client, today="2026-09-28", log=logs.append)
+    assert day1["prev"] is None and day1["errors"] == []
+    assert day1["fetched"] == {a: 50, b: 3, c: 1}, day1["fetched"]  # limit 50
+    # quota: 1 vitals + per channel (1 page [+1 for page 2? no: limit 50]
+    #        + 1 videos) -> 1 + 3*2 = 7 units
+    assert client.spent == 7, client.spent
+    assert any("Facts Daily: 50 video(s)" in line for line in logs)
+    # contentDetails requested on video batches (duration for LEN column)
+    assert all("contentDetails" in p["part"] for m, p in client.calls if m == "videos")
+
+    # day 2: growth + new upload + subs change + a rename
+    channels[a]["subs"] = 1250
+    channels[a]["views"] = 46000
+    channels[b]["title"] = "Clip Vault HQ"
+    for vid in list(videos)[:5]:
+        videos[vid]["views"] += 25
+    client2 = _FakeYT(channels, videos)
+    day2 = cs.run_snapshot(cfg, client2, today="2026-09-29", log=lambda *_: None)
+    assert day2["prev"]["date"] == "2026-09-28"
+    hist = day2["history"]
+    assert [ch["title"] for ch in cs.tracked(hist)][1] == "Clip Vault HQ"
+    stored = hist["days"][-1]["videos"]["fa000000001"]
+    assert stored["channel_id"] == a and stored["duration_s"] == 45
+    assert stored["published_at"].endswith("Z")
+    assert hist["days"][-1]["channels"][c]["subs_hidden"] is True
+    # same-day rerun replaces (no duplicate day), prev still yesterday
+    again = cs.run_snapshot(cfg, _FakeYT(channels, videos), today="2026-09-29",
+                            log=lambda *_: None)
+    assert [d["date"] for d in again["history"]["days"]] == ["2026-09-28", "2026-09-29"]
+
+    report, flags = cs.build_channel_report(hist, "2026-09-29", day2["prev"],
+                                            recent=10, now=now)
+    # per-channel sections in add order, headers with subs + deltas
+    ia, ib, ic = (report.index("━━ Facts Daily"), report.index("━━ Clip Vault HQ"),
+                  report.index("━━ Quiet One"))
+    assert ia < ib < ic, report
+    assert "1,250 subs (+20)" in report and "46,000 views (+322)" in report
+    assert "hidden subs" in report
+    assert "(Δ vs 2026-09-28)" in report
+    # --recent 10 honoured per channel; summary line counts all tracked
+    fd = report[ia:ib]
+    assert fd.count("\n  Fact number") + fd.count("\n  Brand new") == 10, fd
+    assert "showing 10 of 50 tracked" in fd
+    # newest first: the 4h-old upload tops the list with /h pace
+    first_row = fd.split("\n")[2]
+    assert "Brand new short" in first_row and "4h" in first_row, first_row
+    assert "/h" in first_row and "+25" in first_row and "0:45" in first_row
+    # long video: LEN h:mm:ss, title truncated with ellipsis
+    cv = report[ib:ic]
+    assert "1:02:03" in cv and "…" in cv
+    # columns stay aligned even with an hour-long LEN: the VIEWS column
+    # ends at the same offset on the header and every row
+    table = [l for l in cv.split("\n")[1:]
+             if l.startswith("  ") and not l.startswith("  showing")]
+    views_end = table[0].index("VIEWS") + len("VIEWS")
+    for line in table[1:]:
+        assert line[views_end - 1].isdigit() and line[views_end] == " ", \
+            (line, views_end)
+    assert "1 video" in report and "1 videos" not in report
+    # zero views -> engagement "—", not a crash / division error
+    zero_row = next(l for l in cv.split("\n") if "Zero so far" in l)
+    assert "—" in zero_row
+    # retitle rule: >=2 days, <50 views, flagged once
+    assert "cb000000002" in flags and "RETITLE?" in report
+    assert "cb000000003" not in flags  # only 1h old: too early to judge
+    hist["flagged"] = sorted(set(hist["flagged"]) | set(flags))
+    _, flags2 = cs.build_channel_report(hist, "2026-09-29", day2["prev"], now=now)
+    assert flags2 == []
+    assert "ALL 3 channels:" in report and "+125 on tracked videos" in report
+    # sort modes
+    by_views, _ = cs.build_channel_report(hist, "2026-09-29", day2["prev"],
+                                          recent=1, sort="views", only="clip",
+                                          now=now)
+    assert "Long talk" in by_views and "Stuck at twelve" not in by_views
+    by_eng, _ = cs.build_channel_report(hist, "2026-09-29", day2["prev"],
+                                        recent=3, sort="eng", only="clip", now=now)
+    # eng: Long talk 6.0% > Stuck 0.0% > Zero (None) always last
+    i1, i2, i3 = (by_eng.index("Long talk"), by_eng.index("Stuck at twelve"),
+                  by_eng.index("Zero so far"))
+    assert i1 < i2 < i3, by_eng
+    by_pace, _ = cs.build_channel_report(hist, "2026-09-29", day2["prev"],
+                                         recent=3, sort="pace", only="clip",
+                                         now=now)
+    # pace (views/day): Long 3000/9d=333 > Stuck 12/4d=3 > Zero 0
+    assert by_pace.index("Long talk") < by_pace.index("Stuck at twelve") \
+        < by_pace.index("Zero so far")
+    assert "Facts Daily" not in by_eng and "ALL" not in by_eng  # filter + no total
+    nomatch, _ = cs.build_channel_report(hist, "2026-09-29", None, only="zzz")
+    assert "No tracked channel matches" in nomatch
+    # first snapshot wording
+    first, _ = cs.build_channel_report(hist, "2026-09-28", None, now=now)
+    assert "first snapshot" in first
+
+    # -- resilience: one channel broken, one terminated ---------------------
+    channels2, videos2 = _fake_world()
+    cfg2 = tmp_cfg()
+    h2 = load_snapshots(cs.store_path(cfg2))
+    for cid, ch in channels2.items():
+        cs.add_channel(h2, cid, ch["title"])
+    cs.add_channel(h2, "UC" + "z" * 22, "Gone Channel")
+    save_snapshots(cs.store_path(cfg2), h2)
+    res = cs.run_snapshot(cfg2, _FakeYT(channels2, videos2, broken={b}),
+                          today="2026-09-29", log=lambda *_: None)
+    assert res["fetched"] == {a: 50, c: 1}, res["fetched"]
+    assert any("Clip Vault" in e and "500" in e for e in res["errors"])
+    assert any("Gone Channel" in e and "--remove" in e for e in res["errors"])
+    # reported exactly once, and no wasted per-channel lookup for it
+    assert sum("Gone Channel" in e for e in res["errors"]) == 1, res["errors"]
+    txt, _ = cs.build_channel_report(res["history"], "2026-09-29", None,
+                                     errors=res["errors"], now=now)
+    assert "⚠️ Clip Vault" in txt and "(no videos fetched)" in txt
+    # nothing tracked -> LookupError (caller explains --add)
+    try:
+        cs.run_snapshot(tmp_cfg(), _FakeYT({}, {}), today="2026-09-29")
+    except LookupError:
+        pass
+    else:
+        raise AssertionError("empty tracking must raise LookupError")
+    # vitals call failing -> videos still flow via per-channel playlist call
+    class _NoVitals(_FakeYT):
+        def _get(self, method, params, cost=1):
+            if method == "channels" and "," in params.get("id", ","):
+                raise RuntimeError("quota gone")
+            return super()._get(method, params, cost)
+    res3 = cs.run_snapshot(cfg2, _NoVitals(channels2, videos2),
+                           today="2026-09-30", log=lambda *_: None)
+    assert "channel totals unavailable" in res3["errors"][0]
+    assert res3["fetched"].get(a) == 50
+
+    # -- legacy history (pre-upgrade rows: no channel_id / published_at) ---
+    legacy = {"channels": [{"id": a, "title": "Facts Daily"}], "flagged": [],
+              "days": [{"date": "2026-09-29", "videos": {
+                  "old00000001": {"title": "Old row", "channel": "Facts Daily",
+                                  "views": 100, "likes": 5, "comments": 1,
+                                  "published": "2026-09-20"},
+                  "old00000002": {"title": "Stray", "channel": "Someone Else",
+                                  "views": 7, "likes": 0, "comments": 0,
+                                  "published": "2026-09-20"}}}]}
+    ltxt, _ = cs.build_channel_report(legacy, "2026-09-29", None, now=now)
+    assert "━━ Facts Daily" in ltxt and "Old row" in ltxt
+    assert "other / untracked" in ltxt and "Stray" in ltxt  # never dropped
+    assert "9d" in ltxt  # date-only age
+
+    # -- pruning -------------------------------------------------------------
+    ph = {"days": [{"date": "2026-01-01"}, {"date": "2026-09-01"},
+                   {"date": "2026-09-29"}]}
+    assert cs.prune_days(ph, "2026-09-29", 180) == 1
+    assert [d["date"] for d in ph["days"]] == ["2026-09-01", "2026-09-29"]
+    assert cs.prune_days(ph, "garbage", 180) == 0
+
+    # -- config knobs clamp garbage ------------------------------------------
+    assert tmp_cfg().snap_settings == {"recent": 10, "fetch_limit": 50,
+                                       "keep_days": 180}
+    odd = tmp_cfg(snap={"recent": "lots", "fetch_limit": 99999, "keep_days": 1})
+    assert odd.snap_settings == {"recent": 10, "fetch_limit": 500, "keep_days": 7}
+    assert tmp_cfg(snap="nonsense").snap_settings["recent"] == 10
+
+    # -- phone report ----------------------------------------------------------
+    msgs = cs.build_phone_report(hist, "2026-09-29", day2["prev"], now=now)
+    assert len(msgs) == 3 and all(len(m) <= 4096 for m in msgs)
+    assert msgs[0].startswith("📊 Facts Daily") and "1.2K subs (+20)" in msgs[0]
+    assert msgs[0].count("\n1. ") == 1 and "\n5. " in msgs[0] and "\n6. " not in msgs[0]
+    assert "Brand new short" in msgs[0].split("\n2. ")[0]
+    assert "👥 hidden subs" in msgs[2]
+    one = cs.build_phone_report(hist, "2026-09-29", day2["prev"], only="quiet", now=now)
+    assert len(one) == 1 and "Quiet One" in one[0]
+    assert "No tracked channel" in cs.build_phone_report(hist, "2026-09-29", None, only="zzz")[0]
+    err = cs.build_phone_report(hist, "2026-09-29", None, errors=["X broke"], now=now)
+    assert err[-1] == "⚠️ X broke"
+    # giant titles can't blow the Telegram cap
+    huge = {"channels": [{"id": a, "title": "T" * 5000}], "flagged": [],
+            "days": [{"date": "2026-09-29", "videos": {}}]}
+    assert len(cs.build_phone_report(huge, "2026-09-29", None, now=now)[0]) <= 4096
+
+    # -- export: CSV (BOM, all rows) + xlsx (two sheets) ---------------------
+    out = cs.export_snapshot(cfg, hist, "2026-09-29", day2["prev"], now=now)
+    assert out["rows"] == 54
+    raw = out["csv"].read_bytes()
+    assert raw.startswith(b"\xef\xbb\xbf")  # Excel-friendly BOM
+    import csv as _csv
+    rows = list(_csv.DictReader(out["csv"].read_text(encoding="utf-8-sig").splitlines()))
+    assert list(rows[0]) == cs.EXPORT_FIELDS
+    brand = next(r for r in rows if r["title"] == "Brand new short")
+    assert brand["views_delta"] == "25" and brand["is_short"] == "yes"
+    assert brand["url"] == "https://youtu.be/fa000000000"
+    zero = next(r for r in rows if r["title"] == "Zero so far")
+    assert zero["engagement_pct"] == ""
+    long_row = next(r for r in rows if r["title"].startswith("Long talk"))
+    assert long_row["is_short"] == "no" and long_row["length_s"] == "3723"
+    ch_rows = list(_csv.DictReader(out["channels_csv"].read_text(encoding="utf-8-sig").splitlines()))
+    quiet = next(r for r in ch_rows if r["channel"] == "Quiet One")
+    assert quiet["subs"] == "" and quiet["subs_delta"] == ""
+    facts = next(r for r in ch_rows if r["channel"] == "Facts Daily")
+    assert facts["subs_delta"] == "20" and facts["views_delta"] == "322"
+    try:
+        import openpyxl
+    except ImportError:
+        assert out["xlsx"] is None
+    else:
+        book = openpyxl.load_workbook(out["xlsx"])
+        assert book.sheetnames == ["Videos", "Channels"]
+        assert book["Videos"].max_row == 55 and book["Channels"].max_row == 4
+        assert book["Videos"].freeze_panes == "A2"
+    # openpyxl missing -> None, CSV still written
+    import builtins
+    real_import = builtins.__import__
+
+    def no_openpyxl(name, *args, **kw):
+        if name.startswith("openpyxl"):
+            raise ImportError(name)
+        return real_import(name, *args, **kw)
+
+    builtins.__import__ = no_openpyxl
+    try:
+        assert cs.write_xlsx([], [], cfg.root / "x.xlsx") is None
+    finally:
+        builtins.__import__ = real_import
+
+    # -- old snap contract still intact: legacy build_report on new rows ----
+    from youtube import build_report
+    old_txt, _ = build_report(hist, "2026-09-29", day2["prev"])
+    assert "TOTAL:" in old_txt
+
+
+def t_snap_cli():
+    import argparse
+    import io
+    from contextlib import redirect_stdout
+    from unittest.mock import patch as _patch
+
+    import channelstats as cs
+    import main as main_mod
+    from bot import PhoneBot, parse_incoming
+    from youtube import load_snapshots
+
+    def args(**kw):
+        merged = {"add": None, "remove": None, "list": False, "channel": None,
+                  "recent": None, "sort": "new", "fetch": None,
+                  "export": False, "json": False}
+        merged.update(kw)
+        return argparse.Namespace(**merged)
+
+    def run(cfg, **kw):
+        buf = io.StringIO()
+        code = None
+        with redirect_stdout(buf):
+            try:
+                code = main_mod.cmd_snap(cfg, args(**kw))
+            except SystemExit as exc:
+                code = exc.code
+        return code, buf.getvalue()
+
+    channels, videos = _fake_world()
+    a, b, c = list(channels)
+    fake = _FakeYT(channels, videos)
+    cfg = tmp_cfg(youtube={"api_keys": ["k1"]})
+
+    # --list with nothing tracked: offline, friendly
+    code, out = run(cfg, list=True)
+    assert code == 0 and "No channels tracked" in out
+    # plain run with nothing tracked -> exits with the --add recipe
+    with _patch.object(cs, "make_client", lambda _c: fake):
+        code, out = run(cfg)
+    assert code == 1 and "snap --add @yourhandle" in out
+    # no key -> clear error before any API call (list/remove still work)
+    code, out = run(tmp_cfg(), add=["@factsdaily"])
+    assert code == 1 and "no YouTube API key" in out
+
+    # --add three ways at once (repeatable), then report runs
+    with _patch.object(cs, "make_client", lambda _c: fake):
+        code, out = run(cfg, add=["@factsdaily", "https://youtu.be/cb000000002",
+                                  f"https://www.youtube.com/channel/{c}"])
+    assert code == 0, out
+    assert out.count("tracking: ") == 3
+    assert "━━ Facts Daily" in out and "━━ Clip Vault" in out and "━━ Quiet One" in out
+    assert "quota:" in out and "first snapshot" in out
+    # adding again is idempotent
+    with _patch.object(cs, "make_client", lambda _c: fake):
+        code, out = run(cfg, add=["@factsdaily"])
+    assert "already tracking: Facts Daily" in out
+    assert len(cs.tracked(load_snapshots(cs.store_path(cfg)))) == 3
+    # bad add -> readable error, nothing tracked changes
+    with _patch.object(cs, "make_client", lambda _c: fake):
+        code, out = run(cfg, add=["https://vimeo.com/1"])
+    assert code == 1 and "could not add" in out
+
+    # --list shows all three, no API calls made
+    before = fake.spent
+    code, out = run(cfg, list=True)
+    assert code == 0 and "Tracking 3 channel(s)" in out and a in out
+    assert fake.spent == before
+
+    # --channel / --recent / --sort / --fetch plumb through
+    with _patch.object(cs, "make_client", lambda _c: fake):
+        code, out = run(cfg, channel="facts", recent=3, fetch=5)
+    assert code == 0 and "showing 3 of 5 tracked" in out
+    assert "Clip Vault" not in out.split("quota")[0].split("Channel stats")[1]
+    with _patch.object(cs, "make_client", lambda _c: fake):
+        code, out = run(cfg, recent=-4, fetch=-1)  # garbage clamps, no crash
+    assert code == 0 and "showing 1 of 1 tracked" in out
+
+    # --json prints the raw day
+    with _patch.object(cs, "make_client", lambda _c: fake):
+        code, out = run(cfg, json=True)
+    import json as _json
+    raw = out[out.index("{"):out.rindex("}") + 1]
+    assert _json.loads(raw)["channels"][a]["subs"] == 1230
+
+    # --export writes files + tells you which to open
+    with _patch.object(cs, "make_client", lambda _c: fake):
+        code, out = run(cfg, export=True)
+    assert code == 0 and "exported" in out and "stats-" in out
+    assert list((cfg.out_dir / "stats").glob("stats-*.csv"))
+
+    # --remove: ambiguous / unknown / ok (history kept)
+    code, out = run(cfg, remove="zzz")
+    assert code == 1 and "no tracked channel matches" in out
+    cs.add_channel(h := load_snapshots(cs.store_path(cfg)), "UC" + "d" * 22, "Facts Weekly")
+    from youtube import save_snapshots
+    save_snapshots(cs.store_path(cfg), h)
+    code, out = run(cfg, remove="facts")
+    assert code == 1 and "matches several" in out
+    code, out = run(cfg, remove="weekly")
+    assert code == 0 and "stopped tracking: Facts Weekly" in out
+    left = load_snapshots(cs.store_path(cfg))
+    assert len(cs.tracked(left)) == 3 and left["days"]  # history untouched
+
+    # -- bot: parser + /stats handler ---------------------------------------
+    assert parse_incoming("/stats") == ("stats", "")
+    assert parse_incoming("/STATS Facts") == ("stats", "Facts")
+    assert parse_incoming("/statsxyz") == ("help", "")
+    assert parse_incoming("/stats   ") == ("stats", "")
+
+    cfg.data["telegram"]["bot_token"] = "t"
+    cfg.data["telegram"]["owner_id"] = 42
+    bot = PhoneBot(cfg)
+    sent = []
+    bot.send_message = lambda chat, text: sent.append(text) or {"message_id": 1}
+
+    def say(text):
+        bot.handle_message({"chat": {"id": 42}, "from": {"id": 42}, "text": text})
+
+    with _patch.object(cs, "make_client", lambda _c: fake):
+        say("/stats")
+    assert len(sent) == 3 and sent[0].startswith("📊 Facts Daily"), sent
+    sent.clear()
+    with _patch.object(cs, "make_client", lambda _c: fake):
+        say("/stats vault")
+    assert len(sent) == 1 and "Clip Vault" in sent[0]
+    sent.clear()
+    def boom(_c):
+        raise RuntimeError("YouTube unavailable (all keys exhausted)")
+    with _patch.object(cs, "make_client", boom):
+        say("/stats")
+    assert sent and "Stats failed" in sent[0] and "exhausted" in sent[0]
+    # help lists it
+    sent.clear()
+    say("/help")
+    assert "/stats" in sent[0]
+    # no key / nothing tracked -> guidance, no crash
+    nokey = tmp_cfg()
+    nokey.data["telegram"]["bot_token"] = "t"
+    nokey.data["telegram"]["owner_id"] = 42
+    bot2 = PhoneBot(nokey)
+    got = []
+    bot2.send_message = lambda chat, text: got.append(text) or {"message_id": 1}
+    bot2.handle_message({"chat": {"id": 42}, "from": {"id": 42}, "text": "/stats"})
+    assert "No YouTube API key" in got[0]
+    nokey.data["youtube"]["api_keys"] = ["k"]
+    got.clear()
+    bot2.handle_message({"chat": {"id": 42}, "from": {"id": 42}, "text": "/stats"})
+    assert "No channels tracked" in got[0] and "snap --add" in got[0]
+
+
 def t_topic_scout():
     import json as _json
 
@@ -5393,6 +5957,8 @@ def main() -> int:
         ("clip_snap", t_clip_snap),
         ("clip_smart_crop", t_clip_smart_crop),
         ("channel_snap", t_channel_snap),
+        ("channel_stats", t_channel_stats),
+        ("snap_cli", t_snap_cli),
         ("topic_scout", t_topic_scout),
         ("ab_titles", t_ab_titles),
         ("mux_crash_recovery", t_mux_crash_recovery),
