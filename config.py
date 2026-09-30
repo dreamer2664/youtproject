@@ -374,6 +374,20 @@ DEFAULTS: dict[str, Any] = {
     "whole": {
         "under_seconds": 180,   # 0 = always cut; --whole / --no-whole override
     },
+    # Long-form lane (`python main.py longform`): the clip lane's
+    # landscape sibling — ONE 1920x1080 video, subs at the bottom,
+    # YouTube chapters in the description, attribution kit.
+    "longform": {
+        # Whole sources longer than this print a heads-up (still render;
+        # --minutes N cuts an episode instead). 1-120.
+        "max_minutes": 20,
+        # Chapter marks in DESCRIPTION.txt (0:00 first, 3+ marks or none).
+        "chapters": True,
+        # Ideal minutes between chapter marks (30-600s).
+        "chapter_seconds": 120,
+        # Two marks never closer than this (15-300s).
+        "chapter_min_gap": 60,
+    },
     # `snap` stats tracker (public Data API, ~3 units/channel per run).
     "snap": {
         "recent": 10,        # videos shown per channel
@@ -907,6 +921,41 @@ class Config:
     def parts_shorten_titles(self) -> bool:
         """LLM-shorten over-long header titles (default true)."""
         return bool(self.data.get("parts", {}).get("shorten_titles", True))
+
+    # -- longform ---------------------------------------------------------
+    @property
+    def longform_max_minutes(self) -> float:
+        """Heads-up threshold for whole sources (min; garbage -> 20)."""
+        try:
+            return max(1.0, min(120.0, float(self.data.get("longform", {})
+                                            .get("max_minutes", 20))))
+        except (TypeError, ValueError):
+            return 20.0
+
+    @property
+    def longform_chapters(self) -> bool:
+        """Chapter timestamps in DESCRIPTION.txt (default true)."""
+        return bool(self.data.get("longform", {}).get("chapters", True))
+
+    @property
+    def longform_chapter_seconds(self) -> float:
+        """Ideal seconds between chapter marks (garbage -> 120)."""
+        try:
+            return max(30.0, min(600.0,
+                                 float(self.data.get("longform", {})
+                                       .get("chapter_seconds", 120))))
+        except (TypeError, ValueError):
+            return 120.0
+
+    @property
+    def longform_chapter_min_gap(self) -> float:
+        """Minimum seconds between chapter marks (garbage -> 60)."""
+        try:
+            return max(15.0, min(300.0,
+                                 float(self.data.get("longform", {})
+                                       .get("chapter_min_gap", 60))))
+        except (TypeError, ValueError):
+            return 60.0
 
     @property
     def qc_candidates(self) -> int:

@@ -215,6 +215,27 @@ whole:
   # the middle.
   under_seconds: 180
 
+longform:
+  # Long-form lane (`python main.py longform <link>`): the clip lane's
+  # landscape sibling — the source as ONE 1920x1080 video (or ONE ~N-minute
+  # episode with --minutes N, opened at --start), karaoke subs at the
+  # bottom, YouTube chapter timestamps + attribution in the kit. Transcript
+  # cache is shared with clip/parts: cross-lane re-runs are free. Output
+  # lands in longform/ (never the Telegram phone queue — long files are
+  # over its 50 MB cap).
+  # Whole sources longer than this many minutes print a heads-up but still
+  # render whole (1-120; --minutes N cuts an episode instead).
+  max_minutes: 20
+  # Chapter marks in DESCRIPTION.txt — 0:00 first, snapped to real
+  # sentence ends/pauses, labelled with the words actually spoken there.
+  # YouTube only engages chapters at 3+ marks; fewer is written as none.
+  # --no-chapters skips for one run.
+  chapters: true
+  # Ideal seconds between marks (30-600).
+  chapter_seconds: 120
+  # Two marks never closer than this (15-300).
+  chapter_min_gap: 60
+
 snap:
   # `python main.py snap` — stats for every channel you track (add each
   # once: snap --add @handle). Uses the youtube keys above, ~3 units per
@@ -285,6 +306,15 @@ ai:
     - ""
   openrouter_model: "nvidia/nemotron-3-ultra-550b-a55b:free"
 
+  # DeepSeek (https://platform.deepseek.com) — free-tier LLM lane after
+  # OpenRouter: rate-limited but persistent, no card. Verified live
+  # 2026-09-21: deepseek-flash (fast) and deepseek-v4-pro (smart) both
+  # answer free. Same list form as the other providers; env DEEPSEEK_KEYS
+  # (comma-separated) wins.
+  deepseek_api_keys:
+    - ""
+  deepseek_model: "deepseek-flash"
+
   # Azure OpenAI ($100 student credit): best-quality lane, spend-guarded.
   # Needs a deployment in the Azure portal; the agent only ever holds the
   # endpoint key below (tokens only — it cannot spin up VMs or services).
@@ -301,11 +331,18 @@ ai:
   # then each fallback in order. Providers missing their key are skipped
   # automatically, never fatal. Image dimensions follow video.format
   # automatically (landscape 1280x720, portrait 720x1280).
-  image_provider: "pexels"   # or "pollinations" or "gemini"
-  image_fallbacks: ["pollinations", "gemini"]
+  image_provider: "pexels"   # or "pixabay" or "pollinations" or "gemini"
+  image_fallbacks: ["pixabay", "pollinations", "gemini"]
   # Free key from https://www.pexels.com/api (no card) — real stock
   # photos as the primary image lane; lane skipped when empty.
   pexels_api_key: ""
+  # Pixabay (https://pixabay.com/api/docs/) — second stock-photo lane,
+  # tried when Pexels misses or runs dry (it sits in image_fallbacks by
+  # default). ~100 requests/minute per key, no published monthly cap.
+  # Single key or list: pixabay_api_keys: [k1, k2].
+  pixabay_api_key: ""
+  pixabay_api_keys:
+    - ""
   # Seconds to wait per image before giving up.
   image_timeout: 90
   # Pollinations model. "flux" is free and unlimited (recommended).

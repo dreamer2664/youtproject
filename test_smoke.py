@@ -719,6 +719,277 @@ def t_caption_overlap():
         assert "octopuses" in text and "arm" in text
 
 
+def t_longform():
+    """Long-form lane: geometry, window planning, chapters, kit (pure)."""
+    from longform import (CHAPTER_MIN_COUNT, LONGFORM_TITLE_LIMIT,
+                          build_longform_description, build_longform_srt,
+                          chapter_marks, clean_long_title, fmt_timestamp,
+                          landscape_fit_filter, landscape_pad_filter,
+                          landscape_treatment, longform_stem,
+                          plan_longform_window, write_longform_kit,
+                          _shift_bounds, _chapter_label)
+
+    # geometry ----------------------------------------------------------
+    assert landscape_treatment(1920, 1080) == "pad"
+    assert landscape_treatment(640, 480) == "pad"        # 4:3 still pads
+    assert landscape_treatment(1000, 1000) == "fit"      # square blurs-fill
+    assert landscape_treatment(720, 1280) == "fit"       # portrait blurs-fill
+    assert landscape_treatment(1920, 0) == "pad"         # unknown never fit
+    pad = landscape_pad_filter()
+    assert "scale=1920:1080" in pad and "pad=1920:1080" in pad \
+        and "force_original_aspect_ratio=decrease" in pad
+    fit = landscape_fit_filter()
+    assert "boxblur" in fit and "overlay=(W-w)/2:(H-h)/2" in fit \
+        and "scale=-2:1080" in fit and "crop=1920:1080" in fit
+
+    # window planning ---------------------------------------------------
+    assert plan_longform_window(600, None) == (0.0, 600.0, True)
+    assert plan_longform_window(600, 900) == (0.0, 600.0, True)  # target > source
+    assert plan_longform_window(600, 590) == (0.0, 600.0, True)  # within slack
+    start, end, whole = plan_longform_window(600, 480)
+    assert not whole and start == 0.0 and 360 <= end <= 600
+    # --start snaps to a cutpoint near the request (never past latest_start)
+    bounds = [(605.0, 3)]
+    start, end, whole = plan_longform_window(1200, 480, 600.0, bounds)
+    assert not whole and start == 605.0
+    assert 605 + 360 <= end <= 1200
+    # a late --start clamps so the full target still fits — even when a
+    # cutpoint sits past the clamp (a snap past latest_start starves the
+    # target: 730 + 480 > 1200)
+    start, end, whole = plan_longform_window(
+        1200, 480, 1100.0, [(605.0, 3), (730.0, 3)])
+    assert start <= 720.0 and end == 1200.0 and not whole
+    # a cut landing <15s before the end swallows the tail
+    start, end, whole = plan_longform_window(540, 480, 0.0, [(530.0, 3)])
+    assert (start, end, whole) == (0.0, 540.0, False)
+    # 90s is within the 30s slack of a 60s target: whole
+    assert plan_longform_window(90, 60) == (0.0, 90.0, True)
+    # exact target, no boundaries: cut lands on the ideal second
+    assert plan_longform_window(100, 60) == (0.0, 60.0, False)
+
+    # chapters ----------------------------------------------------------
+    assert fmt_timestamp(0) == "0:00"
+    assert fmt_timestamp(65) == "1:05"
+    assert fmt_timestamp(3725) == "1:02:05"
+    assert fmt_timestamp(-3) == "0:00"
+
+    def words_over(total, step=5.0):
+        out = []
+        t = 0.0
+        i = 0
+        while t < total:
+            out.append({"word": f"w{i}.", "start": t, "end": t + step / 2})
+            t += step
+            i += 1
+        return out
+
+    # too short for 3 marks -> none
+    assert chapter_marks(200, words_over(200), [(115.0, 1)]) == []
+    marks = chapter_marks(480, words_over(480),
+                          [(115.0, 1), (235.0, 1), (355.0, 1)],
+                          title="Ships that vanished")
+    assert len(marks) >= CHAPTER_MIN_COUNT, marks
+    assert marks[0][0] == 0.0 and marks[0][1] == "Ships that vanished"
+    times = [t for t, _ in marks]
+    assert all(b - a >= 60.0 - 1e-6 for a, b in zip(times, times[1:]))
+    assert all(t <= 480 - 60.0 + 1e-6 for t in times)
+    # every label comes from real words and fits the width
+    flat = {w["word"] for w in words_over(480)}
+    for t, label in marks[1:]:
+        assert label and len(label) <= 42
+        assert label.split()[0].rstrip("…") in {w.rstrip(".") for w in flat}
+    # chapters with no words after them are skipped, not guessed —
+    # skip enough of them and YouTube would ignore the list anyway: none
+    short_words = words_over(210)
+    marks2 = chapter_marks(480, short_words,
+                           [(115.0, 1), (235.0, 1), (355.0, 1)])
+    assert marks2 == []
+    assert chapter_marks(480, short_words, [(115.0, 1)]) == []
+    # label truncation uses the ellipsis, never a bare slice
+    long_word = {"word": "extraordinary", "start": 116.0, "end": 117.0}
+    label = _chapter_label([long_word] * 8, 115.0)
+    assert label.endswith("…") and len(label) <= 42
+    assert label.count("extraordinary") >= 3   # width, not a hard chop at 10
+
+    # title / description / stem ----------------------------------------
+    assert clean_long_title("Why ships &amp; sink  today") == \
+        "Why ships & sink today"
+    long_title = "word " * 40
+    assert len(clean_long_title(long_title)) <= LONGFORM_TITLE_LIMIT
+    assert clean_long_title(long_title).endswith("…")
+    assert clean_long_title("") == "Long-form cut"
+    desc = build_longform_description(
+        "Ships that vanished", [(0.0, "Ships that vanished"),
+                                (116.0, "the storm hit hard")],
+        {"title": "Ocean Mysteries", "channel": "DeepBlue",
+         "url": "https://youtu.be/x"}, (0.0, 480.0), cut=False)
+    assert desc.splitlines()[0] == "Ships that vanished"
+    assert "0:00  Ships that vanished" in desc
+    assert "1:56  the storm hit hard" in desc
+    assert "https://youtu.be/x" in desc and "DeepBlue" in desc
+    assert "Window:" not in desc          # whole render carries no window
+    desc_cut = build_longform_description(
+        "T", [], {"title": "s", "channel": "c", "url": "u"}, (300.0, 780.0),
+        cut=True)
+    assert "Window: 5:00 - 13:00" in desc_cut
+    assert longform_stem("abcd1234ef", (0.0, 600.0), 600.0) == "abcd1234_longform"
+    assert longform_stem("abcd1234ef", (300.0, 780.0), 900.0) == \
+        "abcd1234_longform_5m00s"
+    assert _shift_bounds([(100.0, 3), (60.0, 1)], 60.0) == [(40.0, 3)]
+
+    # srt + kit ---------------------------------------------------------
+    import tempfile as _tf
+    from pathlib import Path
+
+    tmp = Path(_tf.mkdtemp(prefix="youttest_"))
+    srt = build_longform_srt(words_over(60), 60.0, tmp / "c.srt")
+    assert srt and srt.exists()
+    for line in srt.read_text(encoding="utf-8").splitlines():
+        if line and not line[0].isdigit() and "-->" not in line:
+            assert len(line) <= 42, line
+    video = tmp / "v.mp4"
+    video.write_bytes(b"x")
+    (tmp / "t1.jpg").write_bytes(b"x")
+    (tmp / "t2.jpg").write_bytes(b"x")
+    kit = write_longform_kit(
+        video, "Ships that vanished",
+        {"title": "Ocean Mysteries", "channel": "DeepBlue", "url": "u"},
+        (0.0, 480.0), [(0.0, "Ships that vanished")], srt, tmp / "c.srt",
+        [tmp / "t1.jpg", tmp / "t2.jpg"], tmp, cut=False)
+    assert kit == tmp / "v"
+    for name in ("v.mp4", "TITLE.txt", "DESCRIPTION.txt", "CREDIT.txt",
+                 "captions.srt", "longform.ass", "THUMB_1.jpg",
+                 "THUMB_2.jpg", "CHECKLIST.md"):
+        assert (kit / name).exists(), name
+    assert not (kit / "tiktok.txt").exists() and not (kit / "reels.txt").exists()
+    check = (kit / "CHECKLIST.md").read_text(encoding="utf-8")
+    assert "NOT a Short" in check and "before publishing" in check
+    assert "captions.srt" in check and "THUMB" in check
+
+
+def t_longform_lane():
+    """run_longform end to end on fakes: cache hit, plan, kit, cfg restore."""
+    import tempfile as _tf
+    from pathlib import Path
+
+    import longform
+    from clipper import (save_transcript_cache, transcript_cache_key,
+                         transcript_cache_path)
+    from config import load_config
+
+    tmp = Path(_tf.mkdtemp(prefix="youttest_"))
+    cfg = load_config(None)  # defaults; paths re-rooted below
+    cfg.data["paths"]["work_dir"] = str(tmp / "work")
+    cfg.data["video"]["format"] = "portrait"
+    # 60s chapter spacing: a 4-min test video yields 3+ marks (YouTube
+    # ignores fewer), the default 120s would correctly yield none
+    cfg.data["longform"]["chapter_seconds"] = 60
+    src = tmp / "source.mp4"
+    src.write_bytes(b"x" * 16)
+
+    # a punctuated transcript covering 0..239s (whole source, 240s)
+    words = []
+    t = 0.0
+    i = 0
+    while t < 236:
+        words.append({"word": f"word{i}" + ("." if i % 8 == 7 else ""),
+                      "start": round(t, 2), "end": round(t + 1.8, 2)})
+        t += 2.0
+        i += 1
+    key = transcript_cache_key("", src)
+    save_transcript_cache(transcript_cache_path(cfg, key), words)
+
+    # fakes: duration, silences, render, frames
+    calls = {}
+
+    import assembler
+    real_dur = assembler.ffprobe_duration
+    assembler.ffprobe_duration = lambda p: 240.0
+    import cutpoints
+    real_sil = cutpoints.detect_silences
+    cutpoints.detect_silences = lambda p, d=0.0, **kw: [
+        (115.0, 117.0), (235.0, 237.0)]
+
+    def fake_render(src_, window_, words_, cfg_, out_path_, work_,
+                    sub_pos="bottom", subs=True):
+        calls["window"] = window_
+        calls["fmt"] = cfg_.format
+        calls["subs"] = subs
+        calls["pos"] = sub_pos
+        out_path_.write_bytes(b"video")
+
+    real_render = longform.render_longform
+    longform.render_longform = fake_render
+    import clipper
+    real_frame = clipper.extract_frame
+    clipper.extract_frame = lambda s, when, dest: (Path(dest).write_bytes(
+        b"jpg"), dest)[1]
+
+    try:
+        rc = longform.run_longform(cfg, file=str(src),
+                                   out_dir=tmp / "longform")
+        assert rc == 0
+        assert calls["window"] == (0.0, 240.0)
+        assert calls["fmt"] == "landscape"      # during the render
+        assert cfg.format == "portrait"          # restored after
+        out = tmp / "longform"
+        video = out / f"{key[:8]}_longform.mp4"
+        assert video.exists() and video.read_bytes() == b"video"
+        kit = out / video.stem
+        desc = (kit / "DESCRIPTION.txt").read_text(encoding="utf-8")
+        assert desc.splitlines()[0] == "source"        # cleaned file title
+        assert "0:00" in desc and "Full credit" in desc
+        assert "Window:" not in desc                    # whole: no window line
+        assert (kit / "captions.srt").exists()
+        assert not (kit / "longform.ass").exists()      # fake render wrote none
+        assert (kit / "THUMB_1.jpg").exists()
+
+        # --minutes cut on a longer source, --start snapping
+        assembler.ffprobe_duration = lambda p: 600.0
+        cutpoints.detect_silences = lambda p, d=0.0, **kw: [(238.0, 240.0)]
+        rc = longform.run_longform(cfg, file=str(src), minutes=4,
+                                   start_at=0.0,
+                                   out_dir=tmp / "longform")
+        assert rc == 0
+        start, end = calls["window"]
+        assert start == 0.0 and 180.0 <= end <= 300.0
+        kit2 = out / f"{key[:8]}_longform_0m00s"
+        assert (kit2 / "DESCRIPTION.txt").read_text(
+            encoding="utf-8").count("Window:") == 1
+
+        # dry run: nothing rendered, nothing written
+        before = sorted(p.name for p in out.iterdir())
+        rc = longform.run_longform(cfg, file=str(src), minutes=4,
+                                   dry_run=True,
+                                   out_dir=tmp / "longform")
+        assert rc == 0
+        assert sorted(p.name for p in out.iterdir()) == before
+
+        # --no-subs reaches the renderer; ass stays out of the kit
+        rc = longform.run_longform(cfg, file=str(src), minutes=4,
+                                   subs=False,
+                                   out_dir=tmp / "longform")
+        assert rc == 0 and calls["subs"] is False
+
+        # garbage guards
+        from clipper import ClipError
+
+        # 300s start on a 600s source is legal; past the end is not
+        for kw in ({"minutes": 0.5}, {"start_at": 700.0}):
+            try:
+                longform.run_longform(cfg, file=str(src),
+                                      out_dir=tmp / "longform", **kw)
+            except ClipError:
+                pass
+            else:
+                raise AssertionError(f"expected ClipError for {kw}")
+    finally:
+        assembler.ffprobe_duration = real_dur
+        cutpoints.detect_silences = real_sil
+        longform.render_longform = real_render
+        clipper.extract_frame = real_frame
+
+
 def t_cutpoints():
     import json as _json
     from unittest.mock import patch as _patch
@@ -6493,6 +6764,8 @@ def main() -> int:
         ("parts_header_shorten", t_parts_header_shorten),
         ("parts_kit", t_parts_kit),
         ("caption_overlap", t_caption_overlap),
+        ("longform", t_longform),
+        ("longform_lane", t_longform_lane),
         ("cutpoints", t_cutpoints),
         ("whole_short", t_whole_short),
         ("sub_caps", t_sub_caps),

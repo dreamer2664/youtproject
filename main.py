@@ -1212,6 +1212,44 @@ def cmd_parts(cfg, args) -> int:
     return 0 if any(status == "ok" for _, status, _ in results) else 1
 
 
+def cmd_longform(cfg, args) -> int:
+    """Long-form lane: one source video -> ONE landscape video + kit."""
+    print(BANNER)
+    from clipper import ClipError, plan_clip_sources
+    from longform import run_longform
+
+    sources = plan_clip_sources(
+        getattr(args, "target", ""), args.url or [], args.file or [])
+    if not sources:
+        die("give me a source: longform <link-or-path>, or --url/--file "
+            "(both repeatable for batch runs)")
+    results: list[tuple[str, str, str]] = []  # (label, status, detail)
+    for index, (url, file) in enumerate(sources, start=1):
+        label = url or file
+        if len(sources) > 1:
+            print(f"\n  [longform] source {index}/{len(sources)}: {label}")
+        try:
+            run_longform(cfg, url=url, file=file,
+                         minutes=args.minutes, start_at=args.start,
+                         sub_pos=getattr(args, "sub_pos", "bottom"),
+                         subs=not args.no_subs,
+                         chapters=False if args.no_chapters else None,
+                         dry_run=args.dry_run, keep_work=args.keep_work,
+                         out_dir=Path(args.out) if args.out else None)
+            results.append((label, "ok", ""))
+        except ClipError as exc:
+            results.append((label, "failed", str(exc)[:120]))
+        except Exception as exc:  # noqa: BLE001 - one bad source kills
+            results.append((label, "failed", f"unexpected: {exc}"[:120]))
+    if len(sources) > 1:
+        print("\n  longform batch summary:")
+        for label, status, detail in results:
+            mark = "ok " if status == "ok" else "FAIL"
+            print(f"    [{mark}] {label}"
+                  + (f" — {detail}" if detail else ""))
+    return 0 if any(status == "ok" for _, status, _ in results) else 1
+
+
 def cmd_pregen(cfg, args) -> int:
     """Phone queue: list parked clips, show the best, or push new ones."""
     from pregen import (baseline_pending, best_of_day, bot_sender,
@@ -1766,6 +1804,37 @@ def main() -> int:
                        help="two near-equal halves, split at the sentence "
                             "end nearest the middle (Part 1 / Part 2)")
 
+    p = sub.add_parser("longform",
+                       help="any video -> ONE landscape 16:9 long-form video "
+                            "(subs + chapters + kit)")
+    p.add_argument("--url", action="append",
+                   help="YouTube link of the source video (repeatable)")
+    p.add_argument("--file", action="append",
+                   help="local video file instead of a link (repeatable)")
+    p.add_argument("target", nargs="?",
+                   help="shortcut: a link or file path (same as --url/--file)")
+    p.add_argument("--minutes", type=float, default=None, metavar="N",
+                   help="cut ONE episode of ~N minutes instead of the whole "
+                        "source (sources within ~30s of N render whole)")
+    p.add_argument("--start", type=float, default=0.0, metavar="SECONDS",
+                   help="open the episode near this second (snapped to a "
+                        "sentence end; default 0:00)")
+    p.add_argument("--sub-pos", choices=["default", "auto", "top", "middle",
+                                         "bottom"], default="bottom",
+                   help="subtitle placement (default bottom: the long-form "
+                        "standard)")
+    p.add_argument("--no-subs", action="store_true",
+                   help="skip the subtitle burn (the kit still ships "
+                        "captions.srt)")
+    p.add_argument("--no-chapters", action="store_true",
+                   help="skip chapter timestamps in the description")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print the window + chapters only: no render, $0")
+    p.add_argument("--keep-work", action="store_true",
+                   help="keep intermediate files (.ass, srt, thumbnails)")
+    p.add_argument("--out", default=None,
+                   help="output folder (default longform/)")
+
     p = sub.add_parser("subpreview",
                        help="preview subtitle position/size/font on a real "
                             "frame, then copy the config block")
@@ -1914,6 +1983,7 @@ def main() -> int:
         "schedule": cmd_schedule,
         "clip": cmd_clip,
         "parts": cmd_parts,
+        "longform": cmd_longform,
         "bot": cmd_bot,
         "pregen": cmd_pregen,
         "jarvis": cmd_jarvis,

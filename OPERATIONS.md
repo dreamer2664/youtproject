@@ -131,6 +131,44 @@ the title once per video (existing keys, validation-gated, never fatal —
 source, then pure FFmpeg. Post parts in order, one per day — the numbering
 only works as a sequence.
 
+## Long-form (landscape videos — the clip lane's 16:9 sibling)
+
+```powershell
+python main.py longform <link>             # the whole source as ONE 1920x1080 video
+python main.py longform <link> --minutes 8 # ONE ~8-min episode of a longer source
+python main.py longform <link> --minutes 8 --start 600   # ...starting near 10:00
+python main.py longform --file C:\path\to.mp4
+python main.py longform <link> --dry-run   # window + chapters only, $0
+```
+
+Same ingest as clips and parts (download once, transcript once — the
+cache is shared across lanes, so running `clip` then `longform` on the
+same source costs one transcript total). What's different:
+
+- **16:9 always.** Landscape sources scale+pad to 1920x1080 — nothing is
+  cropped. Portrait sources get the whole frame over a blurred landscape
+  fill (the mirror of the clip lane's vertical fit).
+- **Karaoke subs at the bottom**, landscape sizing. `--sub-pos` moves
+  them, `--no-subs` skips the burn (the kit still ships `captions.srt`).
+- **Chapters** in DESCRIPTION.txt: marks at real sentence ends/pauses,
+  labelled with the first words actually spoken there — no API call.
+  YouTube engages chapters at 3+ marks starting 0:00; fewer is written
+  as none. `--no-chapters` or `longform.chapters: false` skips.
+- **Episode cuts** (`--minutes`) close on a sentence end in a pause
+  (same tier order as parts); `--start` snaps to a boundary too. A
+  whole source over `longform.max_minutes` (20) warns but renders.
+- **Kit**: TITLE/DESCRIPTION/CREDIT/captions.srt/longform.ass +
+  THUMB_1-3.jpg (subtitle-free frames for the thumbnail). No
+  tiktok/reels captions — it isn't vertical.
+
+Output: `longform/<key8>_longform.mp4` (whole) or
+`..._longform_5m00s.mp4` (an episode cut at 5:00). Costs: **0 LLM
+calls** when the transcript is cached or harvested from captions and
+you render whole; one cached eos pass when cutting an unpunctuated
+transcript; the transcript-fix pass only on a fresh Whisper source.
+Not in the Telegram phone queue by design — long files are past
+Telegram's 50 MB bot cap. See API-REPORT.md for the full accounting.
+
 ## Phone queue (pregen — clips on your phone, PC on or off)
 
 ```powershell
@@ -228,6 +266,7 @@ the tokens FOR", including the agent's own diagnostic probes.
 |---|---|---|
 | `generate` | **5–6 / video** | script 1 · factcheck 1 · punch-up 1 · title polish 1 · decringe 1 · topic top-up 1 (only when the backlog dips). Hook fix, title fix, expand/tighten fire only on violations/word-budget misses — normally 0. |
 | `clip` | **2 + 1/clip / source** | moment pick 1 · transcript fix 1 (`clip.transcript_fix`, on by default) · title polish 1 per clip written. |
+| `longform` | **0–2 / source** | whole render of a captioned/cached source: 0. Cutting an unpunctuated transcript: one cached eos pass (8 calls on a 20-min source). Fresh Whisper source: + transcript fix (4 calls on 20 min). Chapters, thumbnails, kit: 0. |
 | `scout` | **1 / run** | proposals in one call; interest evidence is free keyless Wikimedia pageviews. |
 | `snap` · voice | **0** | YouTube API units only; edge-tts. |
 | image QC | ~1 Gemini **vision** call per candidate photo | cached by photo+query, circuit breaker, fails OPEN on outage (storm-time renders ship un-QC'd images). Live catch 2026-09-24: rejected Tokyo Tower photos posing as Eiffel. |

@@ -31,6 +31,12 @@ OpenRouter daily cap — not script intelligence.
 
 - Everyday 5/day runs almost entirely on **Gemini + Pexels + edge-tts**,
   none of which break a sweat at that volume.
+- **The long-form lane (Sep 2026) is the cheapest per output-minute**:
+  0 LLM calls for a whole render of a captioned/cached source, one
+  cached eos pass (~8 calls / ~11k tokens on 20 min) when cutting, and
+  Groq Whisper minutes only when captions don't exist. It touches no
+  image, vision, voice or YouTube-API quota at all — see API-REPORT.md
+  for the measured table.
 - Groq + OpenRouter are the afternoon-slump insurance: when Gemini 503s,
   they cover the same 5 videos with room to spare.
 - If OpenRouter ever starves (50/day on one account ≈ 4 videos), the fix

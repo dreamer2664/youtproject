@@ -1333,6 +1333,42 @@ def save_transcript_cache(path: Path, words: list[dict]) -> None:
 
 
 # --------------------------------------------------------- work dirs
+def ingest_transcript(cfg: Config, src: Path, source: dict, url: str,
+                      work: Path, lane: str = "clip",
+                      log=print) -> list[dict]:
+    """Transcript for a source: cache -> YouTube captions -> Whisper.
+
+    The exact pipeline run_clip/run_parts run, factored out for the
+    longform lane (they keep their own copies — working code isn't
+    refactored for style). Prints with the calling lane's tag, masks
+    nothing (the caller masks after, clip-lane rule), returns [] only
+    when the source has no speech at all.
+    """
+    from scriptgen import get_provider
+
+    provider = get_provider(cfg)
+    source_key = transcript_cache_key(url, src)
+    cache = transcript_cache_path(cfg, source_key)
+    words = load_transcript_cache(cache)
+    if words is not None:
+        log(f"  [{lane}] transcript: cached ({len(words)} words)")
+        return words
+    audio = extract_audio(src, work)
+    words = transcribe_words(audio, cfg, title=source["title"],
+                             video_id=video_id_for_captions(source["url"]))
+    if cfg.clip_transcript_fix:
+        fixed = fix_transcript_words(words, source["title"], provider)
+        changed = sum(1 for a, b in zip(words, fixed)
+                      if a.get("word") != b.get("word"))
+        if changed:
+            log(f"  [{lane}] transcript fix: {changed} misheard "
+                f"word(s) corrected")
+            words = fixed
+    save_transcript_cache(cache, words)
+    log(f"  [{lane}] transcript: {len(words)} words (cached for re-runs)")
+    return words
+
+
 _RUN_SEQ = itertools.count(1)
 
 def new_clip_work_dir(work_root: Path) -> Path:
