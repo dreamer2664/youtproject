@@ -123,8 +123,8 @@ parts:
   # Series splitter: mechanical ~60s episodes ("Title — Part X").
   part_len: 60
   max_parts: 50
-  # Opening top header ("<title> / Part X", fades after 4 s). Solo
-  # videos skip it even when true. --no-header disables it for one run.
+  # Opening top header ("<title> / Part X", fades after 4 s). Whole /
+  # single-part videos show just the title. --no-header disables it.
   header: true
   header_seconds: 4.0
   # Header title wraps to this many lines before the lane asks the LLM
@@ -204,6 +204,15 @@ youtube:
   # Enable at https://console.cloud.google.com/apis/library/youtube.googleapis.com
   api_keys:
     - ""
+
+whole:
+  # Short source? No cutting: `clip` and `parts` both turn any video up to
+  # this long into ONE vertical short — subtitles + the title on top
+  # (fades after parts.header_seconds), no "Part 1". 0 = always cut.
+  # Heads-up: YouTube Shorts cap at 3:00 — longer ones post as regular
+  # videos there (TikTok/Reels are fine); the lane warns you.
+  # Per run: --whole forces one piece, --no-whole forces cutting.
+  under_seconds: 240
 
 snap:
   # `python main.py snap` — stats for every channel you track (add each

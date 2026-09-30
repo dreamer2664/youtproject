@@ -1356,8 +1356,14 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
              use_vision: bool = True, keep_work: bool = False,
              out_dir: Path | None = None,
              sub_pos: str = "default",
-             top_count: int = 0) -> int:
-    """The whole lane. Returns process exit code."""
+             top_count: int = 0,
+             whole: bool | None = None) -> int:
+    """The whole lane. Returns process exit code.
+
+    whole: None = auto (source <= whole.under_seconds becomes ONE clip of
+    the whole video — subs + fading title header, no moment picking),
+    True/False = --whole / --no-whole.
+    """
     if not url and not file:
         raise ClipError("give me --url <youtube link> or --file <local mp4>")
     sub_pos = resolve_clip_sub_pos(cfg, sub_pos)
@@ -1402,8 +1408,6 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
                 words = fixed
         save_transcript_cache(cache, words)
         print(f"  [clip] transcript: {len(words)} words (cached for re-runs)")
-    if len(words) < 40:
-        raise ClipError("transcript too thin to mine for moments")
     # Mask AFTER the cache: caches keep true words (the fix pass stays
     # effective on re-runs), every consumer below sees masked words.
     if cfg.subtitles_mask_profanity:
@@ -1411,6 +1415,28 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
 
         words = [dict(w, word=mask_profanity(str(w.get("word") or "")))
                  for w in words]
+    from parts import render_whole_clip, shorts_cap_warning, use_whole
+
+    if duration > 0 and use_whole(duration, cfg.whole_under_seconds, whole):
+        # Short source: nothing to mine — the whole thing is the clip.
+        # Checked before the thin-transcript guard: a 40-second video
+        # with 30 words is a fine short, not a failure.
+        print(f"  [clip] {duration:.0f}s source — kept whole: one short, "
+              f"title header, no cutting (--no-whole to mine moments)")
+        warning = shorts_cap_warning(duration)
+        if warning:
+            print(f"  [clip] ⚠️ {warning}")
+        kit = render_whole_clip(cfg, src, source, words or [], duration,
+                                source_key, out_root, work, sub_pos,
+                                provider)
+        print(f"  [clip] {kit.name}.mp4: "
+              f"{(kit / 'TITLE.txt').read_text(encoding='utf-8')!r}")
+        print(f"\n  1 clip + kit -> {out_root}")
+        if not keep_work:
+            shutil.rmtree(work, ignore_errors=True)
+        return 0
+    if len(words) < 40:
+        raise ClipError("transcript too thin to mine for moments")
     windows = split_windows(words)
     candidates = []
     for index, win in enumerate(windows, start=1):

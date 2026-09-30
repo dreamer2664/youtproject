@@ -479,8 +479,10 @@ def t_parts_plan():
 def t_parts_header():
     from parts import esc_header, part_kit_title, parts_header_line
 
-    # Solo videos get no header; blank titles neither.
-    assert parts_header_line("Hello", 1, 1, 60.0) == ""
+    # Solo/whole videos: title-only header (2026-09-30 decision, was
+    # "no header"); blank titles still get none.
+    solo = parts_header_line("Hello", 1, 1, 60.0)
+    assert "Hello" in solo and "Part" not in solo
     assert parts_header_line("", 2, 5, 60.0) == ""
     assert parts_header_line("  ", 2, 5, 60.0) == ""
     line = parts_header_line("Testing 100 phones", 2, 5, 63.2)
@@ -632,6 +634,213 @@ def t_parts_kit():
     assert not (kit / "part.ass").exists()  # None in -> no file out
     assert (kit / "CHECKLIST.md").exists()
     assert (kit / "tiktok.txt").exists() and (kit / "reels.txt").exists()
+
+
+def t_whole_short():
+    import io
+    import sys
+    from contextlib import redirect_stdout
+    from unittest.mock import patch as _patch
+
+    import assembler
+    import clipper
+    import main as main_mod
+    import parts
+    import scriptgen
+    from clipper import ClipError
+    from parts import (parts_header_line, shorts_cap_warning, use_whole)
+
+    # -- decision table ------------------------------------------------------
+    assert use_whole(120, 240) is True
+    assert use_whole(240, 240) is True          # "under ~4 min" inclusive
+    assert use_whole(240.5, 240) is False
+    assert use_whole(600, 240) is False
+    assert use_whole(120, 0) is False           # 0 = auto rule off
+    assert use_whole(0, 240) is False and use_whole(-5, 240) is False
+    assert use_whole("junk", 240) is False      # garbage never renders whole
+    assert use_whole(120, "junk") is True       # garbage knob -> default 240
+    assert use_whole(600, 240, force=True) is True    # --whole
+    assert use_whole(60, 240, force=False) is False   # --no-whole
+
+    # -- 3:00 Shorts cap heads-up --------------------------------------------
+    assert shorts_cap_warning(179) == "" and shorts_cap_warning(180) == ""
+    warn = shorts_cap_warning(215)
+    assert "3:35" in warn and "3:00" in warn and "--no-whole" in warn
+    assert shorts_cap_warning("junk") == ""
+
+    # -- config knob ---------------------------------------------------------
+    assert tmp_cfg().whole_under_seconds == 240.0
+    assert tmp_cfg(whole={"under_seconds": 0}).whole_under_seconds == 0.0
+    assert tmp_cfg(whole={"under_seconds": "x"}).whole_under_seconds == 240.0
+    assert tmp_cfg(whole={"under_seconds": 99999}).whole_under_seconds == 900.0
+    assert tmp_cfg(whole={"under_seconds": -3}).whole_under_seconds == 0.0
+    assert tmp_cfg(whole="nonsense").whole_under_seconds == 240.0
+
+    # -- solo header: title only, timed, fading, never "Part" ---------------
+    solo = parts_header_line("How Octopuses Think", 1, 1, 90.0)
+    assert solo.startswith("Dialogue: 0,0:00:00.00,0:00:04.00,"), solo
+    assert "\\fad(200,400)" in solo and "\\an8" in solo
+    assert "How Octopuses Think" in solo and "Part" not in solo
+    assert solo.rstrip().endswith("How Octopuses Think")  # no trailing \N
+    assert parts_header_line("T", 1, 1, 90.0, show_seconds=0).startswith(
+        "Dialogue: 0,0:00:00.00,0:01:30.00,")        # 0 = whole video
+    assert parts_header_line("T", 1, 1, 2.5).startswith(
+        "Dialogue: 0,0:00:00.00,0:00:02.50,")        # never past the end
+    two = parts_header_line("Line one\nLine two", 1, 1, 30.0)
+    assert "Line one\\NLine two" in two and "Part" not in two
+    assert parts_header_line("", 1, 1, 30.0) == ""
+    assert parts_header_line("   ", 1, 1, 30.0) == ""
+    # multi-part header unchanged
+    multi = parts_header_line("How Octopuses Think", 2, 3, 60.0)
+    assert "Part 2" in multi and "\\N{" in multi
+
+    # -- orchestration fakes ------------------------------------------------
+    def words_n(n, step=0.5):
+        return [{"word": f"w{i}" + ("." if i % 8 == 7 else ""),
+                 "start": i * step, "end": i * step + 0.4} for i in range(n)]
+
+    renders = []
+
+    def fake_render(src, cand, words, cfg, out_path, work, sub_pos="default",
+                    extra_ass=None, caps=False):
+        renders.append({"start": cand.start, "end": cand.end,
+                        "extra": extra_ass or "", "out": out_path,
+                        "sub_pos": sub_pos})
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"fake-mp4")
+        return out_path
+
+    class Provider:
+        calls = 0
+
+        def generate_text(self, *a, **k):
+            Provider.calls += 1
+            return "not json"
+
+    def run(fn, duration, words, **kw):
+        renders.clear()
+        Provider.calls = 0
+        cfg = tmp_cfg(clip={"transcript_fix": False, "polish_titles": False,
+                            "smart_crop": False})
+        src = cfg.root / "Octopus Opens A Jar.mp4"
+        src.write_bytes(b"x")
+        buf = io.StringIO()
+        with _patch.object(assembler, "ffprobe_duration", lambda p: duration), \
+             _patch.object(clipper, "ffprobe_duration", lambda p: duration), \
+             _patch.object(clipper, "load_transcript_cache", lambda p: list(words)), \
+             _patch.object(clipper, "render_clip", fake_render), \
+             _patch.object(scriptgen, "get_provider", lambda c: Provider()), \
+             redirect_stdout(buf):
+            code = fn(cfg, file=str(src), out_dir=cfg.root / "out", **kw)
+        return code, buf.getvalue(), cfg
+
+    # parts, auto whole: 100s source -> 1 render of the full length,
+    # title-only header, plain kit title, no Part anywhere
+    code, out, cfg = run(parts.run_parts, 100.0, words_n(150))
+    assert code == 0 and len(renders) == 1, (out, renders)
+    assert (renders[0]["start"], renders[0]["end"]) == (0.0, 100.0)
+    assert "Octopus Opens A Jar" in renders[0]["extra"]
+    assert "Part" not in renders[0]["extra"]
+    kit_title = (cfg.root / "out" / renders[0]["out"].stem / "TITLE.txt"
+                 ).read_text(encoding="utf-8")
+    assert kit_title == "Octopus Opens A Jar", kit_title
+    assert "kept whole" in out and "⚠️" not in out
+    assert renders[0]["sub_pos"] == "bottom"
+    # parts --no-whole on the same source -> really cut into episodes
+    code, out, _ = run(parts.run_parts, 100.0, words_n(150), whole=False,
+                       part_len=30)
+    assert code == 0 and len(renders) >= 3, renders
+    assert all("Part" in r["extra"] for r in renders)
+    # parts auto on a long source -> normal parts
+    code, out, _ = run(parts.run_parts, 300.0, words_n(500))
+    assert len(renders) >= 4 and "kept whole" not in out
+    # parts --whole on 3:35 -> one piece + the Shorts-cap warning
+    code, out, _ = run(parts.run_parts, 215.0, words_n(300), whole=True)
+    assert len(renders) == 1 and renders[0]["end"] == 215.0
+    assert "3:00 Shorts cap" in out
+    # parts dry-run whole: plan printed, nothing rendered
+    code, out, _ = run(parts.run_parts, 100.0, words_n(150), dry_run=True)
+    assert code == 0 and renders == [] and "Part 1: 0.0s - 100.0s" in out
+    # --no-header still honoured in whole mode
+    code, out, _ = run(parts.run_parts, 100.0, words_n(150), header=False)
+    assert len(renders) == 1 and renders[0]["extra"] == ""
+
+    # clip, auto whole: THIN transcript (30 words) is fine for a short
+    # source — one clip, no moment picking (zero LLM calls), clip naming
+    code, out, cfg = run(clipper.run_clip, 45.0, words_n(30),
+                         use_vision=False)
+    assert code == 0 and len(renders) == 1, out
+    assert (renders[0]["start"], renders[0]["end"]) == (0.0, 45.0)
+    assert renders[0]["out"].name.endswith("_clip_01.mp4")
+    assert "Octopus Opens A Jar" in renders[0]["extra"]
+    assert "Part" not in renders[0]["extra"]
+    assert Provider.calls == 0, "whole mode must not ask the LLM for moments"
+    kit = cfg.root / "out" / renders[0]["out"].stem
+    assert (kit / "TITLE.txt").read_text(encoding="utf-8") == "Octopus Opens A Jar"
+    assert "window: 0.0s - 45.0s" in (kit / "CREDIT.txt").read_text(encoding="utf-8")
+    assert "1 clip + kit" in out
+    # clip --no-whole on the same thin source -> the mining path (and its
+    # thin-transcript guard) is really taken
+    try:
+        run(clipper.run_clip, 45.0, words_n(30), use_vision=False, whole=False)
+    except ClipError as exc:
+        assert "too thin" in str(exc)
+    else:
+        raise AssertionError("--no-whole must go through moment mining")
+    # clip auto on a long source -> mining (fake LLM returns junk -> no moments)
+    try:
+        run(clipper.run_clip, 600.0, words_n(900), use_vision=False)
+    except ClipError as exc:
+        assert "no usable moments" in str(exc)
+        assert Provider.calls >= 1
+    else:
+        raise AssertionError("long sources must be mined, not kept whole")
+    # clip --whole on 3:20 -> one clip + warning
+    code, out, _ = run(clipper.run_clip, 200.0, words_n(300),
+                       use_vision=False, whole=True)
+    assert len(renders) == 1 and "3:00 Shorts cap" in out and "3:20" in out
+    # zero-length probe never "renders whole" (falls to the normal path)
+    try:
+        run(clipper.run_clip, 0.0, words_n(30), use_vision=False)
+    except ClipError:
+        pass
+    assert renders == []
+
+    # -- CLI flags reach the lanes -------------------------------------------
+    seen = {}
+
+    def grab(name):
+        def handler(cfg, args):
+            seen[name] = args.whole
+            return 0
+        return handler
+
+    cfg_path = tmp_cfg().root / "config.yaml"
+    cfg_path.write_text("{}", encoding="utf-8")
+    for argv, lane, want in (
+            (["clip", "x.mp4"], "clip", None),
+            (["clip", "x.mp4", "--whole"], "clip", True),
+            (["clip", "x.mp4", "--no-whole"], "clip", False),
+            (["parts", "x.mp4"], "parts", None),
+            (["parts", "x.mp4", "--whole"], "parts", True),
+            (["parts", "x.mp4", "--no-whole"], "parts", False)):
+        seen.clear()
+        with _patch.object(sys, "argv", ["main.py", "--config", str(cfg_path)] + argv), \
+             _patch.object(main_mod, "cmd_clip", grab("clip")), \
+             _patch.object(main_mod, "cmd_parts", grab("parts")):
+            assert main_mod.main() == 0
+        assert seen == {lane: want}, (argv, seen)
+    # both flags at once is a usage error, not a silent pick
+    import contextlib
+    with _patch.object(sys, "argv", ["main.py", "--config", str(cfg_path),
+                                     "clip", "x.mp4", "--whole", "--no-whole"]), \
+         contextlib.redirect_stderr(io.StringIO()):
+        try:
+            main_mod.main()
+        except SystemExit as exc:
+            assert exc.code == 2
+        else:
+            raise AssertionError("--whole + --no-whole must be rejected")
 
 
 def t_sub_caps():
@@ -5922,6 +6131,7 @@ def main() -> int:
         ("parts_header_wrap", t_parts_header_wrap),
         ("parts_header_shorten", t_parts_header_shorten),
         ("parts_kit", t_parts_kit),
+        ("whole_short", t_whole_short),
         ("sub_caps", t_sub_caps),
         ("sub_highlight", t_sub_highlight),
         ("clip_default_bottom", t_clip_default_bottom),

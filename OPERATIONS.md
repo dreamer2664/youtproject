@@ -78,6 +78,25 @@ More from one source: `--max-clips 12` (default 10), and
 run's best clips — numbered cards, best moment revealed last, no
 extra API calls. Its kit lands next to the clip kits.
 
+### Short sources: kept whole (clip and parts)
+
+Anything up to 4 minutes (`whole.under_seconds: 240`) isn't cut: both
+`clip` and `parts` turn it into ONE vertical short: subtitles at the
+bottom, the video's title on top for 4 seconds, then it fades
+(`parts.header_seconds`). No "Part 1", plain kit title. The clip lane also
+skips moment-picking (fewer API calls) and a thin transcript is fine; the
+output is a normal `clips/…_clip_01.mp4`, so `pregen` parks it like any clip.
+
+```bash
+python main.py clip <link>              # auto: whole if <= 4:00
+python main.py clip <link> --no-whole   # mine moments anyway
+python main.py parts <link> --whole     # one piece even if longer
+```
+
+YouTube Shorts cap at **3:00**. A 3:30 whole short posts as a regular
+video on YouTube (TikTok/Reels are fine); the lane prints a warning. Set
+`under_seconds: 180` if every output must be a YouTube Short.
+
 ## Parts (series splitter — mechanical, not editorial)
 
 ```powershell

@@ -33,6 +33,8 @@ HEADER_TITLE_CHARS = 44   # chars per header title line at 1080px wide
 HEADER_MAX_LINES_DEFAULT = 3  # wrap budget before shorten/truncate kicks in
 HEADER_MARGIN_V = 110     # true pixels from the top (shorts-safe)
 HEADER_SECONDS_DEFAULT = 4.0  # header visibility; 0 = the whole part
+WHOLE_UNDER_DEFAULT = 240.0   # sources this short render whole, uncut
+SHORTS_CAP_S = 180.0          # YouTube Shorts ceiling (3:00)
 
 
 # ------------------------------------------------------------------ planning
@@ -110,6 +112,32 @@ def _snap(ideal: float, duration: float, window: float,
         if near:
             return min(near, key=lambda s: abs(s - ideal))
     return ideal
+
+
+# --------------------------------------------------------------------- whole
+def use_whole(duration, under_seconds, force: bool | None = None) -> bool:
+    """Render the source uncut? (pure, tested)
+
+    force True/False (--whole / --no-whole) wins; otherwise any source
+    with 0 < duration <= under_seconds goes whole. under_seconds <= 0
+    turns the auto rule off.
+    """
+    if force is not None:
+        return bool(force)
+    duration = _float(duration, 0.0)
+    under = _float(under_seconds, WHOLE_UNDER_DEFAULT)
+    return under > 0 and 0 < duration <= under
+
+
+def shorts_cap_warning(duration) -> str:
+    """Heads-up when a whole short runs past YouTube's 3:00 cap (pure)."""
+    duration = _float(duration, 0.0)
+    if duration <= SHORTS_CAP_S:
+        return ""
+    mins, secs = divmod(int(round(duration)), 60)
+    return (f"{mins}:{secs:02d} is over YouTube's 3:00 Shorts cap — on "
+            f"YouTube it posts as a regular video (TikTok/Reels are fine). "
+            f"Want Shorts? Re-run with --no-whole to cut it.")
 
 
 # -------------------------------------------------------------------- header
@@ -241,8 +269,9 @@ def parts_header_line(title: str, index: int, total: int,
                       show_seconds: float = HEADER_SECONDS_DEFAULT) -> str:
     """Timed Dialogue for the opening top header (pure, tested).
 
-    "" when the video is a single part (no header on solo episodes) or the
-    title is blank. The header shows for show_seconds (then fades via
+    Multi-part: title lines stacked above a gold "Part X". Single part /
+    whole video: the title alone, a touch larger — never "Part 1". ""
+    when the title is blank. The header shows for show_seconds (then fades via
     \\fad — ignored by players without fade support, where it just cuts);
     0 or negative keeps it up the whole part. Mirrors
     subtitles.progress_ass_line: rides the same .ass burn as the karaoke,
@@ -251,8 +280,6 @@ def parts_header_line(title: str, index: int, total: int,
     """
     from subtitles import ass_timestamp, mask_profanity
 
-    if total <= 1:
-        return ""
     try:
         show = float(show_seconds)
     except (TypeError, ValueError):
@@ -264,10 +291,15 @@ def parts_header_line(title: str, index: int, total: int,
     if not lines:
         return ""
     head = "\\N".join(lines)
+    prefix = (f"Dialogue: 0,0:00:00.00,{ass_timestamp(end)},"
+              f"Karaoke,,0,0,{int(margin_v)},,")
+    if total <= 1:
+        # Whole video: the title IS the header — no Part line under it.
+        return (prefix + f"{{\\an8\\fad(200,400)\\bord3\\shad0\\fs60"
+                         f"\\c&H00FFFFFF&}}{head}")
     return (
-        f"Dialogue: 0,0:00:00.00,{ass_timestamp(end)},"
-        f"Karaoke,,0,0,{int(margin_v)},,"
-        f"{{\\an8\\fad(200,400)\\bord2\\shad0\\fs52\\c&H00FFFFFF&}}{head}\\N"
+        prefix
+        + f"{{\\an8\\fad(200,400)\\bord2\\shad0\\fs52\\c&H00FFFFFF&}}{head}\\N"
         f"{{\\fs78\\c&H0000D7FF&}}Part {int(index)}"
     )
 
@@ -382,8 +414,13 @@ def run_parts(cfg, url: str = "", file: str = "",
               header: bool | None = None,
               out_dir: Path | None = None,
               keep_work: bool = False,
-              dry_run: bool = False) -> int:
-    """The whole lane. Returns process exit code."""
+              dry_run: bool = False,
+              whole: bool | None = None) -> int:
+    """The whole lane. Returns process exit code.
+
+    whole: None = auto (source <= whole.under_seconds renders uncut as one
+    short), True/False = --whole / --no-whole.
+    """
     from assembler import ffprobe_duration
     from clipper import (Candidate, ClipError, clip_words, download_source,
                          extract_audio, fix_transcript_words,
@@ -454,13 +491,24 @@ def run_parts(cfg, url: str = "", file: str = "",
     # just means time-based cuts and a header-only part, never a failure.
     spans = sentence_spans(words or [])
     word_starts = [float(w.get("start") or 0.0) for w in (words or [])]
-    plan = plan_parts(duration, spans, target_len=target,
-                      tail_merge=cfg.parts_tail_merge,
-                      snap_window=cfg.parts_snap_window,
-                      max_parts=cap, word_starts=word_starts)
+    is_whole = use_whole(duration, cfg.whole_under_seconds, whole)
+    if is_whole and duration > 0:
+        plan = [(0.0, float(duration))]
+        print(f"  [parts] {duration:.0f}s source — kept whole: one short, "
+              f"title header, no Part X (--no-whole to cut)")
+        warning = shorts_cap_warning(duration)
+        if warning:
+            print(f"  [parts] ⚠️ {warning}")
+    else:
+        plan = plan_parts(duration, spans, target_len=target,
+                          tail_merge=cfg.parts_tail_merge,
+                          snap_window=cfg.parts_snap_window,
+                          max_parts=cap, word_starts=word_starts)
     total = len(plan)
-    print(f"  [parts] {total} part(s), ~{target:.0f}s each"
-          + (" (single part — no header)" if total == 1 else ""))
+    if not is_whole:
+        print(f"  [parts] {total} part(s), ~{target:.0f}s each"
+              + (" (single part — title header, no Part X)"
+                 if total == 1 else ""))
     if dry_run:
         for num, (start, end) in enumerate(plan, start=1):
             print(f"    Part {num}: {start:.1f}s - {end:.1f}s ({end - start:.0f}s)")
@@ -474,7 +522,7 @@ def run_parts(cfg, url: str = "", file: str = "",
     # fits, else a single LLM shorten attempt over the existing chain —
     # after the dry-run return, so dry runs stay $0.
     header_title = ""
-    if want_header and total > 1:
+    if want_header and total >= 1:
         header_title = prepare_header_title(
             str(source.get("title") or ""),
             max_lines=cfg.parts_header_max_lines,
@@ -508,3 +556,35 @@ def run_parts(cfg, url: str = "", file: str = "",
     if not keep_work:
         shutil.rmtree(work, ignore_errors=True)
     return 0
+
+
+def render_whole_clip(cfg, src: Path, source: dict, words: list[dict],
+                      duration: float, source_key: str, out_root: Path,
+                      work: Path, sub_pos: str, provider,
+                      header: bool | None = None) -> Path:
+    """Clip lane, short source: the whole video as ONE clip + kit.
+
+    Same render as a part (vertical treatment, karaoke subs, fading title
+    header, no "Part 1") but written as clips/<key8>_clip_01.mp4 with a
+    normal clip kit, so pregen / the phone queue treat it like any clip.
+    No moment picking, no vision QC: nothing to choose between.
+    """
+    from clipper import Candidate, render_clip, write_kit
+
+    title = part_kit_title(str(source.get("title") or ""), 1, 1)
+    want_header = cfg.parts_header if header is None else header
+    header_line = ""
+    if want_header:
+        header_title = prepare_header_title(
+            str(source.get("title") or ""),
+            max_lines=cfg.parts_header_max_lines,
+            shorten_enabled=cfg.parts_shorten_titles,
+            provider=provider)
+        header_line = parts_header_line(header_title, 1, 1, duration,
+                                        show_seconds=cfg.parts_header_seconds)
+    out_root.mkdir(parents=True, exist_ok=True)
+    clip_path = out_root / f"{source_key[:8]}_clip_01.mp4"
+    cand = Candidate(start=0.0, end=float(duration), hook=title)
+    render_clip(src, cand, words or [], cfg, clip_path, work, sub_pos,
+                extra_ass=header_line or None, caps=cfg.subtitles_caps)
+    return write_kit(clip_path, title, cand, source, out_root)

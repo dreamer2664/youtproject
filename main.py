@@ -1156,7 +1156,8 @@ def cmd_clip(cfg, args) -> int:
                      keep_work=args.keep_work,
                      out_dir=Path(args.out) if args.out else None,
                      sub_pos=getattr(args, "sub_pos", "default"),
-                     top_count=getattr(args, "top", 0))
+                     top_count=getattr(args, "top", 0),
+                     whole=getattr(args, "whole", None))
             results.append((label, "ok", ""))
         except ClipError as exc:
             results.append((label, "failed", str(exc)[:120]))
@@ -1193,7 +1194,8 @@ def cmd_parts(cfg, args) -> int:
                       sub_pos=getattr(args, "sub_pos", "bottom"),
                       header=False if args.no_header else None,
                       out_dir=Path(args.out) if args.out else None,
-                      keep_work=args.keep_work, dry_run=args.dry_run)
+                      keep_work=args.keep_work, dry_run=args.dry_run,
+                      whole=getattr(args, "whole", None))
             results.append((label, "ok", ""))
         except ClipError as exc:
             results.append((label, "failed", str(exc)[:120]))
@@ -1716,6 +1718,14 @@ def main() -> int:
                    help="also build ONE 'Top N moments' countdown video "
                         "from this run's best clips (cards + concat, no "
                         "extra API calls)")
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--whole", dest="whole", action="store_const",
+                       const=True, default=None,
+                       help="never cut: the whole video becomes ONE short "
+                            "(auto for sources under whole.under_seconds, 240)")
+    group.add_argument("--no-whole", dest="whole", action="store_const",
+                       const=False,
+                       help="always cut, even a short source")
 
     p = sub.add_parser("parts", help="split a video into a 'Title - Part X' Shorts series")
     p.add_argument("--url", action="append",
@@ -1731,7 +1741,7 @@ def main() -> int:
     p.add_argument("--keep-work", action="store_true",
                    help="keep intermediate files (audio, .ass, frames)")
     p.add_argument("--no-header", action="store_true",
-                   help="skip the persistent top header for this run")
+                   help="skip the fading top title header for this run")
     p.add_argument("--out", default=None, help="output folder (default parts/)")
     p.add_argument("--sub-pos", choices=["default", "auto", "top", "middle",
                                          "bottom"], default="bottom",
@@ -1739,6 +1749,14 @@ def main() -> int:
                         "shorts-safe, never collides with the top header)")
     p.add_argument("--dry-run", action="store_true",
                    help="print the part windows only: no renders, $0")
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--whole", dest="whole", action="store_const",
+                       const=True, default=None,
+                       help="never cut: the whole video becomes ONE short "
+                            "(auto for sources under whole.under_seconds, 240)")
+    group.add_argument("--no-whole", dest="whole", action="store_const",
+                       const=False,
+                       help="always cut, even a short source")
 
     p = sub.add_parser("subpreview",
                        help="preview subtitle position/size/font on a real "

@@ -352,8 +352,9 @@ DEFAULTS: dict[str, Any] = {
         "part_len": 60,
         # Past this many episodes the target widens so nothing is dropped.
         "max_parts": 50,
-        # Opening top header ("<title> / Part X", then it fades). Solo
-        # videos skip it even when true. --no-header disables it for one run.
+        # Opening top header ("<title> / Part X", then it fades). Whole /
+        # single-part videos show the title alone (no "Part X").
+        # --no-header disables it for one run.
         "header": True,
         # Header visibility in seconds (0 = stays up the whole part).
         "header_seconds": 4.0,
@@ -367,6 +368,11 @@ DEFAULTS: dict[str, Any] = {
         "header_max_lines": 3,
         # False = never call the LLM for titles, always truncate.
         "shorten_titles": True,
+    },
+    # Short sources skip cutting in BOTH clip and parts: one vertical
+    # short of the whole video, subs + fading title header, no "Part 1".
+    "whole": {
+        "under_seconds": 240,   # 0 = always cut; --whole / --no-whole override
     },
     # `snap` stats tracker (public Data API, ~3 units/channel per run).
     "snap": {
@@ -845,6 +851,16 @@ class Config:
                                           .get("max_parts", 50))))
         except (ValueError, TypeError):
             return 50
+
+    @property
+    def whole_under_seconds(self) -> float:
+        """Sources at/under this length render whole (0 = off; 0-900)."""
+        raw = (self.data.get("whole") or {}) if isinstance(
+            self.data.get("whole"), dict) else {}
+        try:
+            return max(0.0, min(900.0, float(raw.get("under_seconds", 240))))
+        except (TypeError, ValueError):
+            return 240.0
 
     @property
     def parts_header(self) -> bool:
