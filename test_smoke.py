@@ -636,6 +636,89 @@ def t_parts_kit():
     assert (kit / "tiktok.txt").exists() and (kit / "reels.txt").exists()
 
 
+def t_caption_overlap():
+    import json as _json
+    import re
+    import tempfile as _tf
+
+    from clipper import (TRANSCRIPT_CACHE_VERSION, build_clip_ass,
+                         captions_to_words, load_transcript_cache,
+                         normalize_word_timings)
+
+    def monotonic(words):
+        return all(b["start"] >= a["end"] - 1e-9 for a, b in zip(words, words[1:]))
+
+    segs = [{"text": "so the thing about octopuses", "start": 0.0, "duration": 4.2},
+            {"text": "is that they have nine brains", "start": 2.1, "duration": 4.0},
+            {"text": "one in the head and one", "start": 4.3, "duration": 3.9},
+            {"text": "in every single arm", "start": 6.2, "duration": 3.5}]
+    spoken = ("so the thing about octopuses is that they have nine brains "
+              "one in the head and one in every single arm").split()
+    words = captions_to_words(segs)
+    assert [w["word"] for w in words] == spoken
+    assert monotonic(words)
+    # each line ends where the next begins; the last keeps its duration
+    assert words[4]["end"] == 2.1 and words[5]["start"] == 2.1
+    assert abs(words[-1]["end"] - 9.7) < 1e-6
+    # out-of-order segments are sorted by start (stable for ties)
+    shuffled = captions_to_words([segs[1], segs[0], segs[3], segs[2]])
+    assert [w["word"] for w in shuffled] == spoken
+    # non-overlapping captions: unchanged math
+    plain = captions_to_words([{"text": "a b", "start": 0, "duration": 2},
+                               {"text": "c", "start": 3, "duration": 1}])
+    assert [(w["start"], w["end"]) for w in plain] == [(0, 1), (1, 2), (3, 4)]
+
+    # normalize: well-formed (Whisper-like) input passes through unchanged
+    whisper = [{"word": "hi", "start": 0.1, "end": 0.4},
+               {"word": "there.", "start": 0.5, "end": 0.9, "eos": True}]
+    assert normalize_word_timings(whisper) == whisper
+    assert normalize_word_timings(whisper) is not whisper      # copies
+    # old-style overlapping words (what caches hold): repaired, order kept
+    old = []
+    for sg in segs:
+        tw = sg["text"].split()
+        step = sg["duration"] / len(tw)
+        old += [{"word": w, "start": sg["start"] + i * step,
+                 "end": sg["start"] + (i + 1) * step} for i, w in enumerate(tw)]
+    assert not monotonic(old)
+    fixed = normalize_word_timings(old)
+    assert [w["word"] for w in fixed] == spoken and monotonic(fixed)
+    assert fixed[0]["start"] == 0.0 and fixed[5]["start"] == 2.1  # anchors kept
+    # garbage tolerated, extra keys survive, never negative lengths
+    messy = normalize_word_timings([{"word": "a", "start": 1, "end": 0.5},
+                                    "junk", {"word": "b", "start": "x"},
+                                    {"word": "c", "start": 0.2, "end": 0.3, "eos": 1}])
+    assert [w["word"] for w in messy] == ["a", "c"] and monotonic(messy)
+    assert messy[1]["eos"] == 1 and all(w["end"] > w["start"] for w in messy)
+    assert normalize_word_timings([]) == [] and normalize_word_timings(None) == []
+
+    # cached transcripts from before the fix are repaired on load
+    tmp = Path(_tf.mkdtemp(prefix="youttest_"))
+    cache = tmp / "c.json"
+    cache.write_text(_json.dumps({"version": TRANSCRIPT_CACHE_VERSION,
+                                  "words": old}), encoding="utf-8")
+    loaded = load_transcript_cache(cache)
+    assert [w["word"] for w in loaded] == spoken and monotonic(loaded)
+
+    # the actual symptom: no two karaoke events on screen at once, even
+    # when overlapping words reach the renderer directly
+    def sec(ts):
+        h, m, s = ts.split(":")
+        return int(h) * 3600 + int(m) * 60 + float(s)
+
+    for sample in (old, words, loaded):
+        ass = build_clip_ass(sample, 10.0, tmp_cfg(), Path(_tf.mkdtemp()),
+                             None).read_text(encoding="utf-8")
+        events = [l.split(",", 9) for l in ass.splitlines()
+                  if l.startswith("Dialogue")]
+        spans = sorted((sec(e[1]), sec(e[2])) for e in events)
+        assert len(spans) >= 15
+        for (s1, e1), (s2, e2) in zip(spans, spans[1:]):
+            assert s2 >= e1 - 1e-6, ("overlapping subtitle events", s1, e1, s2, e2)
+        text = " ".join(re.sub(r"\{[^}]*\}", "", e[9]) for e in events)
+        assert "octopuses" in text and "arm" in text
+
+
 def t_cutpoints():
     import json as _json
     from unittest.mock import patch as _patch
@@ -6409,6 +6492,7 @@ def main() -> int:
         ("parts_header_wrap", t_parts_header_wrap),
         ("parts_header_shorten", t_parts_header_shorten),
         ("parts_kit", t_parts_kit),
+        ("caption_overlap", t_caption_overlap),
         ("cutpoints", t_cutpoints),
         ("whole_short", t_whole_short),
         ("sub_caps", t_sub_caps),

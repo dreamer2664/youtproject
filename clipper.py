@@ -517,8 +517,15 @@ def captions_to_words(segments: list[dict]) -> list[dict]:
 
     Captions are line-timed, not word-timed: each segment's words spread
     evenly (same math as the Whisper segment fallback in transcribe_words).
+
+    YouTube auto-captions OVERLAP: each line's duration runs until the
+    line after next starts (the rolling two-line display). Spreading words
+    over that raw duration interleaves neighbouring lines in time, the
+    karaoke builder then shows the same subtitle line twice at once —
+    live bug 2026-09-30 ("two simultaneous subtitles, same exact text").
+    So each segment ends where the next one begins.
     """
-    words: list[dict] = []
+    parsed: list[tuple[float, float, list[str]]] = []
     for seg in segments or []:
         try:
             text_words = str(seg.get("text") or "").split()
@@ -528,11 +535,72 @@ def captions_to_words(segments: list[dict]) -> list[dict]:
             continue
         if not text_words or dur <= 0:
             continue
-        step = max(0.05, dur / len(text_words))
+        parsed.append((s0, dur, text_words))
+    parsed.sort(key=lambda item: item[0])  # stable: equal starts keep order
+    words: list[dict] = []
+    for index, (s0, dur, text_words) in enumerate(parsed):
+        end = s0 + dur
+        if index + 1 < len(parsed):
+            next_start = parsed[index + 1][0]
+            if s0 < next_start < end:
+                end = next_start
+        step = max(0.05, (end - s0) / len(text_words))
         for i, word in enumerate(text_words):
             words.append({"word": word, "start": s0 + i * step,
                           "end": s0 + (i + 1) * step})
-    return words
+    return normalize_word_timings(words)
+
+
+def normalize_word_timings(words: list[dict],
+                           eps: float = 0.01) -> list[dict]:
+    """Monotonic, non-overlapping word timings; order kept (pure, tested).
+
+    Repairs transcripts cached before the caption fix (and any other
+    overlapping source): the list is split into runs wherever a word
+    starts before the previous one ended; a run that spills into the
+    next is compressed to end where the next begins (so word ORDER — the
+    spoken order — never changes, only times). A final pass guarantees
+    each word starts at/after the previous one's end. Well-formed input
+    (Whisper) passes through unchanged. Extra keys (eos, …) survive.
+    """
+    clean: list[dict] = []
+    for word in words or []:
+        if not isinstance(word, dict):
+            continue
+        try:
+            start = float(word.get("start") or 0.0)
+            end = float(word.get("end") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        clean.append(dict(word, start=start, end=max(end, start)))
+    if not clean:
+        return clean
+    runs, cur = [], [clean[0]]
+    for word in clean[1:]:
+        if word["start"] < cur[-1]["end"] - eps:
+            runs.append(cur)
+            cur = [word]
+        else:
+            cur.append(word)
+    runs.append(cur)
+    for run, nxt in zip(runs, runs[1:]):
+        r0 = run[0]["start"]
+        r_end = max(w["end"] for w in run)
+        limit = nxt[0]["start"]
+        if r_end > limit and limit - r0 >= 0.02 * len(run):
+            scale = (limit - r0) / (r_end - r0)
+            for w in run:
+                w["start"] = r0 + (w["start"] - r0) * scale
+                w["end"] = r0 + (w["end"] - r0) * scale
+    prev_end = float("-inf")
+    for w in clean:
+        if w["start"] < prev_end:
+            w["start"] = prev_end
+        if w["end"] < w["start"] + 0.02:
+            w["end"] = w["start"] + 0.02
+        w["start"], w["end"] = round(w["start"], 3), round(w["end"], 3)
+        prev_end = w["end"]
+    return clean
 
 
 def transcribe_words(audio: Path, cfg: Config,
@@ -596,7 +664,7 @@ def transcribe_words(audio: Path, cfg: Config,
                                   "start": s0 + i * step,
                                   "end": s0 + (i + 1) * step})
         offset += length
-    return [w for w in words if w["word"]]
+    return normalize_word_timings([w for w in words if w["word"]])
 
 
 def _whisper_request(path: Path, keys: list[str],
@@ -1021,6 +1089,9 @@ def build_clip_ass(words_in_clip: list[dict], clip_len: float,
     extra: one full Dialogue line appended to the file (the progress-bar
     mechanism reused — the parts lane's header rides here).
     """
+    # Last line of defence: overlapping word timings make the karaoke
+    # builder show one subtitle line twice at once, whatever their source.
+    words_in_clip = normalize_word_timings(words_in_clip)
     narration = " ".join(w["word"] for w in words_in_clip)
     timings = [(w["start"], w["end"]) for w in words_in_clip]
     events = build_karaoke_events(
@@ -1245,7 +1316,9 @@ def load_transcript_cache(path: Path) -> list[dict] | None:
             data.get("version") != TRANSCRIPT_CACHE_VERSION:
         return None
     words = data.get("words")
-    return words if isinstance(words, list) else None
+    # Transcripts cached before the 2026-09-30 caption fix still hold
+    # overlapping timings (duplicate subtitle lines) — repaired on load.
+    return normalize_word_timings(words) if isinstance(words, list) else None
 
 
 def save_transcript_cache(path: Path, words: list[dict]) -> None:
