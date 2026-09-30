@@ -209,10 +209,11 @@ whole:
   # Short source? No cutting: `clip` and `parts` both turn any video up to
   # this long into ONE vertical short — subtitles + the title on top
   # (fades after parts.header_seconds), no "Part 1". 0 = always cut.
-  # Heads-up: YouTube Shorts cap at 3:00 — longer ones post as regular
-  # videos there (TikTok/Reels are fine); the lane warns you.
-  # Per run: --whole forces one piece, --no-whole forces cutting.
-  under_seconds: 240
+  # 180 = YouTube's 3:00 Shorts cap, so every auto-whole short is a Short.
+  # Per run: --whole forces one piece (warns past 3:00), --no-whole forces
+  # cutting, --half splits into two halves at the sentence end nearest
+  # the middle.
+  under_seconds: 180
 
 snap:
   # `python main.py snap` — stats for every channel you track (add each

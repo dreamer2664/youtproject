@@ -80,22 +80,25 @@ extra API calls. Its kit lands next to the clip kits.
 
 ### Short sources: kept whole (clip and parts)
 
-Anything up to 4 minutes (`whole.under_seconds: 240`) isn't cut: both
-`clip` and `parts` turn it into ONE vertical short: subtitles at the
-bottom, the video's title on top for 4 seconds, then it fades
-(`parts.header_seconds`). No "Part 1", plain kit title. The clip lane also
-skips moment-picking (fewer API calls) and a thin transcript is fine; the
-output is a normal `clips/…_clip_01.mp4`, so `pregen` parks it like any clip.
+Anything up to 3 minutes (`whole.under_seconds: 180`, YouTube's Shorts
+cap) isn't cut: both `clip` and `parts` turn it into ONE vertical short:
+subtitles at the bottom, the video's title on top for 4 seconds, then it
+fades (`parts.header_seconds`). No "Part 1", plain kit title. The clip
+lane also skips moment-picking (fewer API calls) and a thin transcript is
+fine; the output is a normal `clips/…_clip_01.mp4`, so `pregen` parks it
+like any clip.
 
 ```bash
-python main.py clip <link>              # auto: whole if <= 4:00
+python main.py clip <link>              # auto: whole if <= 3:00
 python main.py clip <link> --no-whole   # mine moments anyway
-python main.py parts <link> --whole     # one piece even if longer
+python main.py clip <link> --whole      # one piece even if longer (warns past 3:00)
+python main.py clip <link> --half       # two halves, split at a sentence end
 ```
 
-YouTube Shorts cap at **3:00**. A 3:30 whole short posts as a regular
-video on YouTube (TikTok/Reels are fine); the lane prints a warning. Set
-`under_seconds: 180` if every output must be a YouTube Short.
+`--half` (clip and parts) splits at the best sentence end near the
+middle (within 5–15 s, more if needed), so the halves are near-equal and
+nobody is cut off mid-word. The halves get "Title / Part 1" and "Part 2"
+headers and "Title — Part X" kit titles. It warns when a half runs past 3:00.
 
 ## Parts (series splitter — mechanical, not editorial)
 
@@ -108,12 +111,20 @@ python main.py parts <link> --dry-run          # windows only, $0
 
 Same ingest as clips (download once, transcript once — cached and shared
 with the clip lane), but the cuts are mechanical: every `--part-len`
-seconds snapped to the nearest sentence end (±10 s), never mid-word.
+seconds, moved to a sentence end. How the lane finds sentence ends:
+YouTube auto-captions have no punctuation, so one small LLM pass marks
+where sentences end (numbered words in, positions out, cached; Whisper
+transcripts skip it), and FFmpeg `silencedetect` finds the real pauses
+in the audio. Preference order: a sentence end inside a pause (cut in
+the middle of the silence), then any sentence end (±10 s, then ±20 s),
+then a plain pause, then a word boundary. Each run prints what it got,
+e.g. `4 cut(s): 3 sentence end in a pause, 1 sentence end`; "fallback"
+there means that stretch had no sentence end nearby.
 Each part opens with a top header ("<title> / Part X", 4 s, then it
 fades — free, it rides the subtitle burn; `parts.header_seconds: 0`
 keeps it up the whole part), karaoke subs at the bottom, and its own kit
-with `captions.srt` + `part.ass` included. Solo videos (< 1 part) render
-with no header. Long titles word-wrap to 3 lines (`parts.header_max_lines`)
+with `captions.srt` + `part.ass` included. Single-part videos show just
+the title (no "Part 1"). Long titles word-wrap to 3 lines (`parts.header_max_lines`)
 instead of truncating; past that the lane asks the LLM chain to shorten
 the title once per video (existing keys, validation-gated, never fatal —
 `parts.shorten_titles: false` keeps pure truncation). ~2 API calls per

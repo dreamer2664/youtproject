@@ -372,7 +372,7 @@ DEFAULTS: dict[str, Any] = {
     # Short sources skip cutting in BOTH clip and parts: one vertical
     # short of the whole video, subs + fading title header, no "Part 1".
     "whole": {
-        "under_seconds": 240,   # 0 = always cut; --whole / --no-whole override
+        "under_seconds": 180,   # 0 = always cut; --whole / --no-whole override
     },
     # `snap` stats tracker (public Data API, ~3 units/channel per run).
     "snap": {
@@ -858,9 +858,9 @@ class Config:
         raw = (self.data.get("whole") or {}) if isinstance(
             self.data.get("whole"), dict) else {}
         try:
-            return max(0.0, min(900.0, float(raw.get("under_seconds", 240))))
+            return max(0.0, min(900.0, float(raw.get("under_seconds", 180))))
         except (TypeError, ValueError):
-            return 240.0
+            return 180.0
 
     @property
     def parts_header(self) -> bool:

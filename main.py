@@ -1157,7 +1157,8 @@ def cmd_clip(cfg, args) -> int:
                      out_dir=Path(args.out) if args.out else None,
                      sub_pos=getattr(args, "sub_pos", "default"),
                      top_count=getattr(args, "top", 0),
-                     whole=getattr(args, "whole", None))
+                     whole=getattr(args, "whole", None),
+                     half=bool(getattr(args, "half", False)))
             results.append((label, "ok", ""))
         except ClipError as exc:
             results.append((label, "failed", str(exc)[:120]))
@@ -1195,7 +1196,8 @@ def cmd_parts(cfg, args) -> int:
                       header=False if args.no_header else None,
                       out_dir=Path(args.out) if args.out else None,
                       keep_work=args.keep_work, dry_run=args.dry_run,
-                      whole=getattr(args, "whole", None))
+                      whole=getattr(args, "whole", None),
+                      half=bool(getattr(args, "half", False)))
             results.append((label, "ok", ""))
         except ClipError as exc:
             results.append((label, "failed", str(exc)[:120]))
@@ -1722,10 +1724,13 @@ def main() -> int:
     group.add_argument("--whole", dest="whole", action="store_const",
                        const=True, default=None,
                        help="never cut: the whole video becomes ONE short "
-                            "(auto for sources under whole.under_seconds, 240)")
+                            "(auto for sources under whole.under_seconds, 180)")
     group.add_argument("--no-whole", dest="whole", action="store_const",
                        const=False,
                        help="always cut, even a short source")
+    group.add_argument("--half", action="store_true",
+                       help="two near-equal halves, split at the sentence "
+                            "end nearest the middle (Part 1 / Part 2)")
 
     p = sub.add_parser("parts", help="split a video into a 'Title - Part X' Shorts series")
     p.add_argument("--url", action="append",
@@ -1753,10 +1758,13 @@ def main() -> int:
     group.add_argument("--whole", dest="whole", action="store_const",
                        const=True, default=None,
                        help="never cut: the whole video becomes ONE short "
-                            "(auto for sources under whole.under_seconds, 240)")
+                            "(auto for sources under whole.under_seconds, 180)")
     group.add_argument("--no-whole", dest="whole", action="store_const",
                        const=False,
                        help="always cut, even a short source")
+    group.add_argument("--half", action="store_true",
+                       help="two near-equal halves, split at the sentence "
+                            "end nearest the middle (Part 1 / Part 2)")
 
     p = sub.add_parser("subpreview",
                        help="preview subtitle position/size/font on a real "

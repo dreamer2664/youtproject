@@ -33,7 +33,7 @@ HEADER_TITLE_CHARS = 44   # chars per header title line at 1080px wide
 HEADER_MAX_LINES_DEFAULT = 3  # wrap budget before shorten/truncate kicks in
 HEADER_MARGIN_V = 110     # true pixels from the top (shorts-safe)
 HEADER_SECONDS_DEFAULT = 4.0  # header visibility; 0 = the whole part
-WHOLE_UNDER_DEFAULT = 240.0   # sources this short render whole, uncut
+WHOLE_UNDER_DEFAULT = 180.0   # sources this short render whole, uncut
 SHORTS_CAP_S = 180.0          # YouTube Shorts ceiling (3:00)
 
 
@@ -59,6 +59,7 @@ def plan_parts(duration: float,
                snap_window: float = PART_SNAP_WINDOW,
                max_parts: int = PARTS_MAX_DEFAULT,
                word_starts: list[float] | None = None,
+               boundaries: list[tuple[float, int]] | None = None,
                ) -> list[tuple[float, float]]:
     """Episode (start, end) windows for a source (pure, tested).
 
@@ -70,6 +71,12 @@ def plan_parts(duration: float,
     than tail_merge merges into the previous part instead of standing
     alone. Past max_parts the target widens so nothing is silently
     dropped. Garbage in -> sane plan out, never a crash.
+
+    boundaries: scored cut points from cutpoints.build_boundaries
+    (sentence ends confirmed by audio pauses). When given, they replace
+    the spans-only snap: sentence ends first (window, then 2x window),
+    then pauses, then words — never closer than half a part to the
+    previous cut, never inside the final tail.
     """
     duration = _float(duration, 0.0)
     if duration <= 0:
@@ -81,20 +88,32 @@ def plan_parts(duration: float,
     cap = max(1, _int(max_parts, PARTS_MAX_DEFAULT))
     ends = sorted({float(e) for _, e in (spans or []) if e})
     starts = sorted({float(s) for s in (word_starts or []) if s})
-    plan = _walk(duration, target, tail, window, ends, starts)
+    plan = _walk(duration, target, tail, window, ends, starts, boundaries)
     if len(plan) > cap:
-        plan = _walk(duration, duration / cap, tail, window, ends, starts)
+        plan = _walk(duration, duration / cap, tail, window, ends, starts,
+                     boundaries)
     return plan
 
 
 def _walk(duration: float, target: float, tail: float, window: float,
-          ends: list[float], starts: list[float]) -> list[tuple[float, float]]:
+          ends: list[float], starts: list[float],
+          bounds: list[tuple[float, int]] | None = None
+          ) -> list[tuple[float, float]]:
+    from cutpoints import pick_cut
+
     cuts = [0.0]
     while True:
         ideal = cuts[-1] + target
         if ideal >= duration - tail:
             break
-        cuts.append(_snap(ideal, duration, window, ends, starts, cuts[-1]))
+        if bounds is None:
+            cuts.append(_snap(ideal, duration, window, ends, starts, cuts[-1]))
+            continue
+        lo = cuts[-1] + max(1.0, target * 0.5)
+        hi = duration - max(0.5, tail)
+        cut, _ = pick_cut(ideal, lo, hi, window, bounds, starts,
+                          PART_WORD_SNAP)
+        cuts.append(cut)
     cuts.append(duration)
     return [(a, b) for a, b in zip(cuts, cuts[1:]) if b - a > 0.5]
 
@@ -415,11 +434,13 @@ def run_parts(cfg, url: str = "", file: str = "",
               out_dir: Path | None = None,
               keep_work: bool = False,
               dry_run: bool = False,
-              whole: bool | None = None) -> int:
+              whole: bool | None = None,
+              half: bool = False) -> int:
     """The whole lane. Returns process exit code.
 
     whole: None = auto (source <= whole.under_seconds renders uncut as one
-    short), True/False = --whole / --no-whole.
+    short), True/False = --whole / --no-whole. half: two near-equal parts
+    split at the best sentence end near the middle.
     """
     from assembler import ffprobe_duration
     from clipper import (Candidate, ClipError, clip_words, download_source,
@@ -491,8 +512,30 @@ def run_parts(cfg, url: str = "", file: str = "",
     # just means time-based cuts and a header-only part, never a failure.
     spans = sentence_spans(words or [])
     word_starts = [float(w.get("start") or 0.0) for w in (words or [])]
-    is_whole = use_whole(duration, cfg.whole_under_seconds, whole)
-    if is_whole and duration > 0:
+    is_whole = not half and use_whole(duration, cfg.whole_under_seconds,
+                                      whole)
+    bounds: list = []
+    if not is_whole:
+        # Cut points: sentence ends (restored when captions carry no
+        # punctuation), moved into the real pause after them.
+        from cutpoints import (build_boundaries, detect_silences,
+                               ensure_sentence_ends)
+
+        words = ensure_sentence_ends(words or [], str(source.get("title")
+                                                      or ""), provider,
+                                     cache=cache)
+        bounds = build_boundaries(words, detect_silences(src, duration),
+                                  duration)
+    if half:
+        from cutpoints import plan_halves
+
+        if duration < 2 * PART_LEN_MIN:
+            raise ClipError(f"{duration:.0f}s is too short to halve "
+                            f"(need {2 * PART_LEN_MIN:.0f}s+)")
+        plan = plan_halves(duration, bounds, word_starts)
+        print(f"  [parts] halves: {plan[0][1]:.1f}s + "
+              f"{duration - plan[0][1]:.1f}s")
+    elif is_whole and duration > 0:
         plan = [(0.0, float(duration))]
         print(f"  [parts] {duration:.0f}s source — kept whole: one short, "
               f"title header, no Part X (--no-whole to cut)")
@@ -503,12 +546,23 @@ def run_parts(cfg, url: str = "", file: str = "",
         plan = plan_parts(duration, spans, target_len=target,
                           tail_merge=cfg.parts_tail_merge,
                           snap_window=cfg.parts_snap_window,
-                          max_parts=cap, word_starts=word_starts)
+                          max_parts=cap, word_starts=word_starts,
+                          boundaries=bounds)
     total = len(plan)
-    if not is_whole:
+    if not is_whole and not half:
         print(f"  [parts] {total} part(s), ~{target:.0f}s each"
               + (" (single part — title header, no Part X)"
                  if total == 1 else ""))
+    if not is_whole:
+        from cutpoints import cut_summary
+
+        summary = cut_summary(plan, bounds)
+        if summary:
+            print(f"  [parts] {summary}")
+        for start, end in plan:
+            warning = shorts_cap_warning(end - start) if half else ""
+            if warning:
+                print(f"  [parts] ⚠️ half {start:.0f}-{end:.0f}s: {warning}")
     if dry_run:
         for num, (start, end) in enumerate(plan, start=1):
             print(f"    Part {num}: {start:.1f}s - {end:.1f}s ({end - start:.0f}s)")
@@ -558,33 +612,51 @@ def run_parts(cfg, url: str = "", file: str = "",
     return 0
 
 
-def render_whole_clip(cfg, src: Path, source: dict, words: list[dict],
-                      duration: float, source_key: str, out_root: Path,
-                      work: Path, sub_pos: str, provider,
-                      header: bool | None = None) -> Path:
-    """Clip lane, short source: the whole video as ONE clip + kit.
+def render_window_clips(cfg, src: Path, source: dict, words: list[dict],
+                        windows: list[tuple[float, float]], source_key: str,
+                        out_root: Path, work: Path, sub_pos: str, provider,
+                        header: bool | None = None) -> list[Path]:
+    """Clip lane without mining: fixed windows -> clips + kits.
 
-    Same render as a part (vertical treatment, karaoke subs, fading title
-    header, no "Part 1") but written as clips/<key8>_clip_01.mp4 with a
-    normal clip kit, so pregen / the phone queue treat it like any clip.
-    No moment picking, no vision QC: nothing to choose between.
+    One window = the whole video (title-only header, plain title). Two or
+    more (--half) = "Title / Part X" headers and "Title — Part X" kit
+    titles. Written as clips/<key8>_clip_NN.mp4 with normal clip kits, so
+    pregen / the phone queue treat them like any clip. No moment picking,
+    no vision QC: nothing to choose between.
     """
     from clipper import Candidate, render_clip, write_kit
 
-    title = part_kit_title(str(source.get("title") or ""), 1, 1)
+    total = len(windows)
     want_header = cfg.parts_header if header is None else header
-    header_line = ""
+    header_title = ""
     if want_header:
         header_title = prepare_header_title(
             str(source.get("title") or ""),
             max_lines=cfg.parts_header_max_lines,
             shorten_enabled=cfg.parts_shorten_titles,
             provider=provider)
-        header_line = parts_header_line(header_title, 1, 1, duration,
-                                        show_seconds=cfg.parts_header_seconds)
     out_root.mkdir(parents=True, exist_ok=True)
-    clip_path = out_root / f"{source_key[:8]}_clip_01.mp4"
-    cand = Candidate(start=0.0, end=float(duration), hook=title)
-    render_clip(src, cand, words or [], cfg, clip_path, work, sub_pos,
-                extra_ass=header_line or None, caps=cfg.subtitles_caps)
-    return write_kit(clip_path, title, cand, source, out_root)
+    kits = []
+    for num, (start, end) in enumerate(windows, start=1):
+        title = part_kit_title(str(source.get("title") or ""), num, total)
+        header_line = parts_header_line(
+            header_title, num, total, end - start,
+            show_seconds=cfg.parts_header_seconds) if want_header else ""
+        clip_path = out_root / f"{source_key[:8]}_clip_{num:02d}.mp4"
+        hook = title if total == 1 else f"Part {num} of {total}."
+        cand = Candidate(start=float(start), end=float(end), hook=hook)
+        render_clip(src, cand, words or [], cfg, clip_path, work, sub_pos,
+                    extra_ass=header_line or None, caps=cfg.subtitles_caps)
+        kits.append(write_kit(clip_path, title, cand, source, out_root))
+    return kits
+
+
+def render_whole_clip(cfg, src: Path, source: dict, words: list[dict],
+                      duration: float, source_key: str, out_root: Path,
+                      work: Path, sub_pos: str, provider,
+                      header: bool | None = None) -> Path:
+    """Clip lane, short source: the whole video as ONE clip + kit."""
+    return render_window_clips(cfg, src, source, words,
+                               [(0.0, float(duration))], source_key,
+                               out_root, work, sub_pos, provider,
+                               header=header)[0]

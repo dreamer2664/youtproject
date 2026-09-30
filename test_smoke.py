@@ -636,6 +636,219 @@ def t_parts_kit():
     assert (kit / "tiktok.txt").exists() and (kit / "reels.txt").exists()
 
 
+def t_cutpoints():
+    import json as _json
+    from unittest.mock import patch as _patch
+
+    import cutpoints as cp
+    from clipper import sentence_spans
+    from parts import plan_parts
+
+    def caption_words(n, step=0.5):
+        # auto-caption style: lowercase, NO punctuation, evenly spread
+        return [{"word": f"w{i}", "start": round(i * step, 3),
+                 "end": round(i * step + step, 3)} for i in range(n)]
+
+    # -- punctuation detection ---------------------------------------------
+    whisper = [{"word": w, "start": i, "end": i + 0.5} for i, w in
+               enumerate(("One two three. " * 20).split())]
+    assert cp.has_punctuation(whisper) is True
+    assert cp.has_punctuation(caption_words(300)) is False
+    sparse = caption_words(300)
+    sparse[150]["word"] = "end."          # 1 per 300 < 2 per 100
+    assert cp.has_punctuation(sparse) is False
+    assert cp.has_punctuation([{"word": "hi."}]) is True   # tiny lists
+    assert cp.has_punctuation([]) is False
+    assert cp.is_eos({"word": "x", "eos": True}) and cp.is_eos({"word": "ok?"})
+    assert not cp.is_eos({"word": "ok,"})
+
+    # -- LLM restoration: guards + batching ----------------------------------
+    class Fake:
+        def __init__(self, replies):
+            self.replies, self.prompts = list(replies), []
+
+        def generate_text(self, prompt, **kw):
+            self.prompts.append(prompt)
+            reply = self.replies.pop(0) if self.replies else '{"ends": []}'
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+
+    fake = Fake(['{"ends": [7, 15, 999, -1, "3", "x", 2.5, true, 15]}'])
+    assert cp.restore_sentence_ends(caption_words(40), "T", fake) == {3, 7, 15}
+    assert "numbered word by word" in fake.prompts[0] and "0: w0" in fake.prompts[0]
+    # 900 words -> 3 batches, indices offset per batch
+    fake = Fake(['{"ends": [10]}', '{"ends": [10]}', '{"ends": [10]}'])
+    assert cp.restore_sentence_ends(caption_words(900), "", fake) == {10, 410, 810}
+    assert len(fake.prompts) == 3
+    # a batch marking nearly every word is garbage -> dropped
+    fake = Fake(['{"ends": ' + _json.dumps(list(range(0, 40, 2))) + '}'])
+    assert cp.restore_sentence_ends(caption_words(40), "", fake) == set()
+    # provider errors / junk never raise
+    assert cp.restore_sentence_ends(caption_words(40), "", Fake([RuntimeError("503")])) == set()
+    assert cp.restore_sentence_ends(caption_words(40), "", Fake(["no json"])) == set()
+    assert cp.restore_sentence_ends(caption_words(40), "", Fake(['{"ends": 5}'])) == set()
+
+    # -- ensure_sentence_ends: passthrough, cache, invalidation --------------
+    cfg = tmp_cfg()
+    cache = cfg.work_dir / "clip_cache" / "abc.json"
+    logs = []
+    fake = Fake(["x"])
+    assert cp.ensure_sentence_ends(whisper, "", fake, cache, logs.append) is whisper
+    assert fake.prompts == []  # punctuated: zero LLM calls
+    words = caption_words(60)
+    fake = Fake(['{"ends": [9, 29, 49]}'])
+    flagged = cp.ensure_sentence_ends(words, "Title", fake, cache, logs.append)
+    assert [i for i, w in enumerate(flagged) if w.get("eos")] == [9, 29, 49]
+    assert all("eos" not in w for w in words)          # inputs untouched
+    assert flagged[9]["word"] == "w9"                   # subtitles unchanged
+    side = cp.eos_cache_path(cache)
+    assert side.name == "abc.eos.json" and side.exists()
+    fake2 = Fake([RuntimeError("must not be called")])
+    again = cp.ensure_sentence_ends(words, "Title", fake2, cache, logs.append)
+    assert fake2.prompts == [] and [i for i, w in enumerate(again) if w.get("eos")] == [9, 29, 49]
+    assert any("cached" in line for line in logs)
+    # different words (re-transcribed) -> cache ignored, recomputed
+    changed = [dict(w) for w in words]
+    changed[0]["word"] = "different"
+    fake3 = Fake(['{"ends": [19]}'])
+    redo = cp.ensure_sentence_ends(changed, "", fake3, cache, logs.append)
+    assert len(fake3.prompts) == 1 and [i for i, w in enumerate(redo) if w.get("eos")] == [19]
+    # corrupt cache -> recompute, no crash
+    side.write_text("{broken", encoding="utf-8")
+    fake4 = Fake(['{"ends": [19]}'])
+    cp.ensure_sentence_ends(changed, "", fake4, cache, logs.append)
+    assert len(fake4.prompts) == 1
+    # nothing found -> no cache written (a later run may do better)
+    other = tmp_cfg().work_dir / "clip_cache" / "zzz.json"
+    cp.ensure_sentence_ends(words, "", Fake(['{"ends": []}']), other, logs.append)
+    assert not cp.eos_cache_path(other).exists()
+    assert any("falling back to pauses" in line for line in logs)
+    # sentence_spans (used by the clip lane too) honours the flag
+    assert len(sentence_spans(flagged)) == 4  # 3 flagged + trailing fragment
+
+    # -- silencedetect parsing + failure --------------------------------------
+    log = ("[silencedetect @ 0x1] silence_start: 3.21\n"
+           "[silencedetect @ 0x1] silence_end: 3.9 | silence_duration: 0.69\n"
+           "junk line\n"
+           "[silencedetect @ 0x1] silence_start: -0.01\n"
+           "[silencedetect @ 0x1] silence_end: 0.4 | silence_duration: 0.41\n"
+           "[silencedetect @ 0x1] silence_start: 58.5\n")
+    assert cp.parse_silences(log, 60.0) == [(3.21, 3.9), (0.0, 0.4), (58.5, 60.0)]
+    assert cp.parse_silences("", 10) == [] and cp.parse_silences(None, 0) == []
+    assert cp.parse_silences("silence_end: 4.0\n", 10) == []  # orphan end
+
+    def no_ffmpeg(*a, **k):
+        raise FileNotFoundError("ffmpeg")
+    with _patch.object(cp.subprocess, "run", no_ffmpeg):
+        assert cp.detect_silences("x.mp4", 10.0) == []
+
+    class Proc:
+        stderr = log
+    with _patch.object(cp.subprocess, "run", lambda *a, **k: Proc()):
+        assert len(cp.detect_silences("x.mp4", 60.0)) == 3
+
+    # -- boundaries ------------------------------------------------------------
+    w = [{"word": "a", "start": 0.0, "end": 0.4},
+         {"word": "b.", "start": 0.5, "end": 0.9},     # eos, pause right after
+         {"word": "c", "start": 1.6, "end": 2.0},
+         {"word": "d", "start": 2.0, "end": 2.4, "eos": True},  # eos, no pause
+         {"word": "e", "start": 2.6, "end": 3.0},
+         {"word": "f", "start": 6.0, "end": 6.4},      # long pause before f
+         {"word": "g.", "start": 6.4, "end": 6.8}]     # final word: never a cut
+    sil = [(0.95, 1.55), (3.1, 5.9), (2.45, 2.55)]
+    b = dict(cp.build_boundaries(w, sil, 7.0))
+    assert b[round((0.95 + 1.55) / 2, 3)] == cp.TIER_BOTH
+    # d: the 0.1s blip at 2.45-2.55 IS a real pause right after it
+    assert b[2.5] == cp.TIER_BOTH
+    assert b[round((3.1 + 5.9) / 2, 3)] == cp.TIER_PAUSE
+    assert not any(t > 6.4 for t in b)                  # final word no cut
+    # without the blip, d falls back to "sentence end" just after the word
+    b2 = dict(cp.build_boundaries(w, [(0.95, 1.55), (3.1, 5.9)], 7.0))
+    assert b2[2.5] == cp.TIER_SENTENCE                   # 2.4 + min(.25, .2/2)
+    # a pause too far after the sentence end (> SNAP_TO_SILENCE) is not
+    # borrowed: the end stays a plain sentence cut, the pause stands alone
+    far = [{"word": "s.", "start": 0.5, "end": 1.0},
+           {"word": "t", "start": 5.0, "end": 5.4},
+           {"word": "u", "start": 5.4, "end": 5.8}]
+    fb = dict(cp.build_boundaries(far, [(3.0, 4.9)], 6.0))
+    assert fb == {1.25: cp.TIER_SENTENCE, 3.95: cp.TIER_PAUSE}, fb
+    # a pause shorter than PAUSE_ONLY_MIN with no sentence end is ignored
+    assert cp.build_boundaries([{"word": "x", "start": 0, "end": 1},
+                                {"word": "y", "start": 1.3, "end": 2}],
+                               [(1.0, 1.3)], 3.0) == []
+    # a pause BEFORE the sentence's last word is not borrowed
+    early = [{"word": "p", "start": 0, "end": 1},
+             {"word": "q.", "start": 2.0, "end": 2.5},
+             {"word": "r", "start": 2.5, "end": 3.0}]
+    assert dict(cp.build_boundaries(early, [(1.0, 1.9)], 4.0)).get(1.45) == cp.TIER_PAUSE
+
+    # -- pick_cut order ----------------------------------------------------------
+    bounds = [(20.0, cp.TIER_SENTENCE), (27.0, cp.TIER_BOTH), (31.0, cp.TIER_PAUSE),
+              (45.0, cp.TIER_SENTENCE)]
+    assert cp.pick_cut(29.0, 0, 100, 10, bounds) == (27.0, cp.TIER_BOTH)
+    # pause-backed wins over a slightly closer plain sentence end
+    assert cp.pick_cut(22.0, 0, 100, 10, bounds) == (20.0, cp.TIER_SENTENCE)  # 2 vs 5-2=3
+    assert cp.pick_cut(24.5, 0, 100, 10, bounds) == (27.0, cp.TIER_BOTH)     # 4.5 vs 2.5-2
+    # the bonus decides: plain end 3s away vs pause-backed 4s away -> pause
+    assert cp.pick_cut(23.0, 0, 100, 10, bounds) == (27.0, cp.TIER_BOTH)
+    # ...but never beyond 2s of extra distance
+    assert cp.pick_cut(21.0, 0, 100, 10, bounds) == (20.0, cp.TIER_SENTENCE)
+    # no sliver parts: a sentence end 2s after the previous cut is illegal
+    sliver = plan_parts(60.0, None, target_len=20, word_starts=[],
+                        boundaries=[(2.0, cp.TIER_SENTENCE)], tail_merge=0)
+    assert min(e - s for s, e in sliver) >= 10, sliver
+    # nothing in window -> sentence end in 2x window beats a closer pause
+    assert cp.pick_cut(36.0, 0, 100, 8, [(31.0, cp.TIER_PAUSE), (50.0, cp.TIER_SENTENCE)]) \
+        == (50.0, cp.TIER_SENTENCE)
+    assert cp.pick_cut(36.0, 0, 100, 5, [(31.0, cp.TIER_PAUSE)]) == (31.0, cp.TIER_PAUSE)
+    assert cp.pick_cut(36.0, 0, 100, 5, [], [35.2, 38.9]) == (35.2, 0)
+    assert cp.pick_cut(36.0, 0, 100, 5, [], []) == (36.0, 0)
+    # lo/hi: never a sliver
+    # (sentence end in 2x window still beats a nearer plain pause)
+    assert cp.pick_cut(29.0, 28.0, 100, 10, bounds) == (45.0, cp.TIER_SENTENCE)
+    assert cp.pick_cut(29.0, 28.0, 40.0, 10, bounds) == (31.0, cp.TIER_PAUSE)
+    assert cp.pick_cut(29.0, 30.0, 40.0, 1, [], []) == (30.0, 0)  # clamped
+
+    # -- property: 10-min unpunctuated source, LLM + pauses -> clean cuts ----
+    step = 0.4
+    words = caption_words(1500, step)
+    ends = set(range(13, 1500, 17))                    # a sentence every ~7s
+    flagged = [dict(x, eos=True) if i in ends else x for i, x in enumerate(words)]
+    # speech timings from captions are estimates; the audio pause after each
+    # sentence sits ~0.1s off the caption boundary
+    sil = [(flagged[i]["end"] - 0.05, flagged[i]["end"] + 0.3)
+           for i in sorted(ends) if i + 1 < 1500]
+    bounds = cp.build_boundaries(flagged, sil, 600.0)
+    plan = plan_parts(600.0, None, target_len=60, word_starts=[x["start"] for x in flagged],
+                      boundaries=bounds, tail_merge=15, snap_window=10)
+    tiers = dict(bounds)
+    cuts = [e for _, e in plan[:-1]]
+    assert len(plan) >= 8
+    assert all(tiers.get(round(c, 3)) == cp.TIER_BOTH for c in cuts), cuts
+    for c in cuts:  # never inside a sentence-final word's speech
+        assert not any(x["start"] < c < x["end"] - 0.06 for i, x in enumerate(flagged)
+                       if i in ends), c
+    lengths = [e - s for s, e in plan]
+    assert min(lengths[:-1]) >= 30 and max(lengths) <= 80, lengths
+    assert cp.cut_summary(plan, bounds).startswith(f"{len(cuts)} cut(s): {len(cuts)} sentence end in a pause")
+    # same source with NO sentence info at all: still a plan (fallbacks)
+    bare = plan_parts(600.0, None, target_len=60, word_starts=[x["start"] for x in words],
+                      boundaries=cp.build_boundaries(words, [], 600.0))
+    assert len(bare) >= 9 and "fallback" in cp.cut_summary(bare, [])
+
+    # -- halves -------------------------------------------------------------------
+    halves = cp.plan_halves(600.0, bounds, [x["start"] for x in flagged])
+    assert len(halves) == 2 and halves[0][0] == 0 and halves[1][1] == 600.0
+    assert halves[0][1] == halves[1][0] and abs(halves[0][1] - 300) <= 15
+    assert tiers.get(round(halves[0][1], 3)) == cp.TIER_BOTH
+    assert cp.plan_halves(100.0, [], []) == [(0.0, 50.0), (50.0, 100.0)]
+    # a boundary far from the middle is NOT taken (halves stay near-equal)
+    assert cp.plan_halves(100.0, [(30.0, cp.TIER_BOTH)], [])[0][1] == 50.0
+    assert cp.plan_halves(0, [], []) == []
+    assert cp.cut_summary([(0, 10)], []) == ""
+
+
 def t_whole_short():
     import io
     import sys
@@ -644,6 +857,7 @@ def t_whole_short():
 
     import assembler
     import clipper
+    import cutpoints
     import main as main_mod
     import parts
     import scriptgen
@@ -658,7 +872,8 @@ def t_whole_short():
     assert use_whole(120, 0) is False           # 0 = auto rule off
     assert use_whole(0, 240) is False and use_whole(-5, 240) is False
     assert use_whole("junk", 240) is False      # garbage never renders whole
-    assert use_whole(120, "junk") is True       # garbage knob -> default 240
+    assert use_whole(120, "junk") is True       # garbage knob -> default 180
+    assert use_whole(200, "junk") is False
     assert use_whole(600, 240, force=True) is True    # --whole
     assert use_whole(60, 240, force=False) is False   # --no-whole
 
@@ -669,12 +884,12 @@ def t_whole_short():
     assert shorts_cap_warning("junk") == ""
 
     # -- config knob ---------------------------------------------------------
-    assert tmp_cfg().whole_under_seconds == 240.0
+    assert tmp_cfg().whole_under_seconds == 180.0   # = YouTube Shorts cap
     assert tmp_cfg(whole={"under_seconds": 0}).whole_under_seconds == 0.0
-    assert tmp_cfg(whole={"under_seconds": "x"}).whole_under_seconds == 240.0
+    assert tmp_cfg(whole={"under_seconds": "x"}).whole_under_seconds == 180.0
     assert tmp_cfg(whole={"under_seconds": 99999}).whole_under_seconds == 900.0
     assert tmp_cfg(whole={"under_seconds": -3}).whole_under_seconds == 0.0
-    assert tmp_cfg(whole="nonsense").whole_under_seconds == 240.0
+    assert tmp_cfg(whole="nonsense").whole_under_seconds == 180.0
 
     # -- solo header: title only, timed, fading, never "Part" ---------------
     solo = parts_header_line("How Octopuses Think", 1, 1, 90.0)
@@ -730,6 +945,7 @@ def t_whole_short():
              _patch.object(clipper, "load_transcript_cache", lambda p: list(words)), \
              _patch.object(clipper, "render_clip", fake_render), \
              _patch.object(scriptgen, "get_provider", lambda c: Provider()), \
+             _patch.object(cutpoints, "detect_silences", lambda *a, **k: []), \
              redirect_stdout(buf):
             code = fn(cfg, file=str(src), out_dir=cfg.root / "out", **kw)
         return code, buf.getvalue(), cfg
@@ -806,12 +1022,70 @@ def t_whole_short():
         pass
     assert renders == []
 
+    # clip auto at 3:20 -> no longer whole (limit is 3:00 now) -> mined
+    try:
+        run(clipper.run_clip, 200.0, words_n(400), use_vision=False)
+    except ClipError as exc:
+        assert "no usable moments" in str(exc)
+    else:
+        raise AssertionError("200s must be cut now that the limit is 180s")
+    assert renders == []
+    code, out, _ = run(clipper.run_clip, 180.0, words_n(300), use_vision=False)
+    assert len(renders) == 1 and "kept whole" in out and "⚠️" not in out
+
+    # -- --half ------------------------------------------------------------------
+    # words_n: a "." every 8th word -> sentence ends every 4s (0.5s step)
+    sentence_cuts = {round(i * 0.5 + 0.4 + 0.05, 3) for i in range(7, 800, 8)}
+    code, out, cfg = run(clipper.run_clip, 200.0, words_n(400),
+                         use_vision=False, half=True)
+    assert code == 0 and len(renders) == 2, out
+    cut = renders[0]["end"]
+    assert renders[0]["start"] == 0.0 and renders[1]["start"] == cut
+    assert renders[1]["end"] == 200.0 and abs(cut - 100) <= 5
+    assert round(cut, 3) in sentence_cuts, cut        # at a sentence end
+    assert "Part 1" in renders[0]["extra"] and "Part 2" in renders[1]["extra"]
+    assert [r["out"].name[-11:] for r in renders] == ["clip_01.mp4", "clip_02.mp4"]
+    titles = [(cfg.root / "out" / r["out"].stem / "TITLE.txt").read_text(encoding="utf-8")
+              for r in renders]
+    assert titles == ["Octopus Opens A Jar — Part 1", "Octopus Opens A Jar — Part 2"]
+    assert Provider.calls == 0     # punctuated + no picking: zero LLM calls
+    assert "halves:" in out and "1 cut(s): 1 sentence end" in out and "⚠️" not in out
+    # halves over 3:00 each -> warned
+    code, out, _ = run(clipper.run_clip, 400.0, words_n(800), use_vision=False, half=True)
+    assert len(renders) == 2 and out.count("3:00 Shorts cap") == 2
+    # --half beats the auto-whole rule (a 2-minute video still halves)
+    code, out, _ = run(clipper.run_clip, 120.0, words_n(240), use_vision=False, half=True)
+    assert len(renders) == 2 and "kept whole" not in out
+    code, out, _ = run(parts.run_parts, 120.0, words_n(240), half=True)
+    assert len(renders) == 2 and "kept whole" not in out
+    assert round(renders[0]["end"], 3) in sentence_cuts  # not the raw middle
+    # too short to halve -> clear error, nothing rendered
+    try:
+        run(clipper.run_clip, 20.0, words_n(40), use_vision=False, half=True)
+    except ClipError as exc:
+        assert "too short to halve" in str(exc)
+    else:
+        raise AssertionError("20s must be refused by --half")
+    assert renders == []
+    # parts --half: same split, Part 1/2 headers, part naming
+    code, out, _ = run(parts.run_parts, 200.0, words_n(400), half=True)
+    assert len(renders) == 2 and abs(renders[0]["end"] - 100) <= 5
+    assert round(renders[0]["end"], 3) in sentence_cuts
+    assert renders[0]["out"].name.endswith("_part_01.mp4")
+    assert "Part 2" in renders[1]["extra"]
+    # parts regular cutting now lands on sentence ends too
+    code, out, _ = run(parts.run_parts, 300.0, words_n(600), part_len=60)
+    assert len(renders) >= 4
+    assert all(round(r["end"], 3) in sentence_cuts for r in renders[:-1]), \
+        [r["end"] for r in renders]
+    assert "sentence end" in out and "fallback" not in out
+
     # -- CLI flags reach the lanes -------------------------------------------
     seen = {}
 
     def grab(name):
         def handler(cfg, args):
-            seen[name] = args.whole
+            seen[name] = "half" if args.half else args.whole
             return 0
         return handler
 
@@ -823,7 +1097,9 @@ def t_whole_short():
             (["clip", "x.mp4", "--no-whole"], "clip", False),
             (["parts", "x.mp4"], "parts", None),
             (["parts", "x.mp4", "--whole"], "parts", True),
-            (["parts", "x.mp4", "--no-whole"], "parts", False)):
+            (["parts", "x.mp4", "--no-whole"], "parts", False),
+            (["clip", "x.mp4", "--half"], "clip", "half"),
+            (["parts", "x.mp4", "--half"], "parts", "half")):
         seen.clear()
         with _patch.object(sys, "argv", ["main.py", "--config", str(cfg_path)] + argv), \
              _patch.object(main_mod, "cmd_clip", grab("clip")), \
@@ -832,15 +1108,17 @@ def t_whole_short():
         assert seen == {lane: want}, (argv, seen)
     # both flags at once is a usage error, not a silent pick
     import contextlib
-    with _patch.object(sys, "argv", ["main.py", "--config", str(cfg_path),
-                                     "clip", "x.mp4", "--whole", "--no-whole"]), \
-         contextlib.redirect_stderr(io.StringIO()):
-        try:
-            main_mod.main()
-        except SystemExit as exc:
-            assert exc.code == 2
-        else:
-            raise AssertionError("--whole + --no-whole must be rejected")
+    for combo in (["--whole", "--no-whole"], ["--half", "--whole"],
+                  ["--half", "--no-whole"]):
+        with _patch.object(sys, "argv", ["main.py", "--config", str(cfg_path),
+                                         "clip", "x.mp4", *combo]), \
+             contextlib.redirect_stderr(io.StringIO()):
+            try:
+                main_mod.main()
+            except SystemExit as exc:
+                assert exc.code == 2
+            else:
+                raise AssertionError(f"{combo} must be rejected")
 
 
 def t_sub_caps():
@@ -6131,6 +6409,7 @@ def main() -> int:
         ("parts_header_wrap", t_parts_header_wrap),
         ("parts_header_shorten", t_parts_header_shorten),
         ("parts_kit", t_parts_kit),
+        ("cutpoints", t_cutpoints),
         ("whole_short", t_whole_short),
         ("sub_caps", t_sub_caps),
         ("sub_highlight", t_sub_highlight),

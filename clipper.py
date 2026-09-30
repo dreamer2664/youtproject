@@ -692,7 +692,8 @@ def sentence_spans(words: list[dict]) -> list[tuple[float, float]]:
     """(start, end) of every sentence in a word list (pure, tested).
 
     Boundary = word whose text ends in . ! or ? (same rule the transcript
-    formatter uses). A trailing unpunctuated fragment becomes one span.
+    formatter uses), or one flagged eos by cutpoints.ensure_sentence_ends.
+    A trailing unpunctuated fragment becomes one span.
     """
     spans: list[tuple[float, float]] = []
     cur_start: float | None = None
@@ -700,7 +701,7 @@ def sentence_spans(words: list[dict]) -> list[tuple[float, float]]:
         text = str(word.get("word") or "")
         if cur_start is None:
             cur_start = float(word.get("start") or 0.0)
-        if text and text[-1:] in ".!?":
+        if (text and text[-1:] in ".!?") or word.get("eos"):
             spans.append((cur_start, float(word.get("end") or 0.0)))
             cur_start = None
     if cur_start is not None and words:
@@ -1357,12 +1358,14 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
              out_dir: Path | None = None,
              sub_pos: str = "default",
              top_count: int = 0,
-             whole: bool | None = None) -> int:
+             whole: bool | None = None,
+             half: bool = False) -> int:
     """The whole lane. Returns process exit code.
 
     whole: None = auto (source <= whole.under_seconds becomes ONE clip of
     the whole video — subs + fading title header, no moment picking),
-    True/False = --whole / --no-whole.
+    True/False = --whole / --no-whole. half: two near-equal clips split
+    at the best sentence end near the middle ("Part 1/2" headers).
     """
     if not url and not file:
         raise ClipError("give me --url <youtube link> or --file <local mp4>")
@@ -1415,8 +1418,38 @@ def run_clip(cfg: Config, url: str = "", file: str = "",
 
         words = [dict(w, word=mask_profanity(str(w.get("word") or "")))
                  for w in words]
-    from parts import render_whole_clip, shorts_cap_warning, use_whole
+    from parts import (PART_LEN_MIN, render_window_clips, render_whole_clip,
+                       shorts_cap_warning, use_whole)
 
+    if half:
+        from cutpoints import (build_boundaries, cut_summary, detect_silences,
+                               ensure_sentence_ends, plan_halves)
+
+        if duration < 2 * PART_LEN_MIN:
+            raise ClipError(f"{duration:.0f}s is too short to halve "
+                            f"(need {2 * PART_LEN_MIN:.0f}s+)")
+        words = ensure_sentence_ends(words or [], str(source.get("title")
+                                                      or ""), provider,
+                                     cache=cache)
+        bounds = build_boundaries(words, detect_silences(src, duration),
+                                  duration)
+        plan = plan_halves(duration, bounds,
+                           [float(w.get("start") or 0.0) for w in words])
+        print(f"  [clip] halves: {plan[0][1]:.1f}s + "
+              f"{duration - plan[0][1]:.1f}s — {cut_summary(plan, bounds)}")
+        for start, end in plan:
+            warning = shorts_cap_warning(end - start)
+            if warning:
+                print(f"  [clip] ⚠️ half {start:.0f}-{end:.0f}s: {warning}")
+        kits = render_window_clips(cfg, src, source, words, plan, source_key,
+                                   out_root, work, sub_pos, provider)
+        for kit in kits:
+            print(f"  [clip] {kit.name}.mp4: "
+                  f"{(kit / 'TITLE.txt').read_text(encoding='utf-8')!r}")
+        print(f"\n  2 clips + kits -> {out_root}")
+        if not keep_work:
+            shutil.rmtree(work, ignore_errors=True)
+        return 0
     if duration > 0 and use_whole(duration, cfg.whole_under_seconds, whole):
         # Short source: nothing to mine — the whole thing is the clip.
         # Checked before the thin-transcript guard: a 40-second video
