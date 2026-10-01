@@ -7348,7 +7348,9 @@ def t_pregen_bot():
     assert "unpushed" not in out
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else (argv or []))
+    only = argv[0] if argv else None
     tests = [
         ("config_defaults", t_config_defaults),
         ("config_example_parses", t_config_example_parses),
@@ -7486,7 +7488,14 @@ def main() -> int:
         ("pregen_bot", t_pregen_bot),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
-    for name, fn in tests:
+    if only:
+        print(f"filter: {only!r} (python test_smoke.py <name-fragment> to "
+              "narrow; no argument = everything)\n")
+    matched = [t for t in tests if not only or only in t[0]]
+    if not matched:
+        print(f"No test group matches {only!r}.")
+        return 1
+    for name, fn in matched:
         check(name, fn)
     print(f"\n{PASS} passed, {FAIL} failed.")
     if FAILURES:

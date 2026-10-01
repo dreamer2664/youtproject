@@ -14,6 +14,9 @@ Gemini script -> edge-tts voice -> Pollinations images -> FFmpeg -> YOU upload
 Each video gets an upload kit with the file, thumbnail, title, description,
 tags, captions file, and a step-by-step `CHECKLIST.md` for that exact video.
 
+> **Just want the commands?** `CHEATSHEET.md` is every command, copy-paste
+> ready — setup, connecting your channels, the daily loop, every lane.
+
 ---
 
 ## Why this project exists (the audit problem, in plain words)
