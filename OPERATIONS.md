@@ -5,19 +5,25 @@ Everything the pipeline can do, in the order you actually use it.
 
 ---
 
-## The loop (one video a day per channel)
+## The loop (three clips a day — one per channel)
 
-The cadence that beat the floods: **one generation per channel per day**,
-always around the same hour. More volume never fixed a bad day — it just
-piles up more duds while the algorithm reads the channel as a content
-farm.
+The cadence that beat the floods: **one clip per channel per day** (three
+channels = three `clip` runs), always around the same hour. More volume
+never fixed a bad day — it just piles up more duds while the algorithm
+reads the channel as a content farm.
 
 ```powershell
 python main.py snap                  # numbers + day-over-day deltas + retitle flags
 python main.py meeting stats         # optional: the boardroom reads them with you
-python main.py clip <today's source> # one clip generation (any lane)
-python main.py pregen --push         # park it on your phone
+python main.py clip --sheet          # per channel: clip the next source from the sheet
+python main.py pregen --push         # park the day's clips on your phone
 ```
+
+Sources come from the **source sheet** (below) — paste links once a week
+and the lanes never search YouTube again. `meeting pick` is the
+deliberate alternative: the boardroom argues over which queued source
+deserves today's slot. The long-form lane is NOT part of the daily loop
+yet — it's new and untried; see its section below.
 
 Then upload by hand (CHECKLIST.md inside each kit walks you through it,
 ~3 min per video). `snap` flags any video ≥2 days old under 50 views with
@@ -50,6 +56,41 @@ A topic only enters the backlog if its Wikipedia article got ≥500 views in
 the last week (bar: `topics.scout_min_weekly_views`). The old
 `python main.py topics --topup` still works (no interest check, LLM only).
 
+## The source sheet (paste links, skip the searching)
+
+The sheet is a tiny CSV — `sources/sheet.csv` — that opens in Excel and
+stays hand-editable in notepad. You paste YouTube links; the lanes eat
+them. One row per source, and you only fill the first column(s):
+
+    url,note,added,status,result
+    https://youtube.com/watch?v=...,deep dive on aqueducts
+    https://youtu.be/...
+
+(a bare link on its own line is fine — `added`/`status`/`result` are the
+tool's columns).
+
+```powershell
+python main.py sheet                          # where things stand
+python main.py sheet --add <link> "| my note" # queue from the terminal
+python main.py clip --sheet                   # clip the next queued source
+python main.py clip --sheet 3                 # ...or the next three
+python main.py meeting pick                   # let the boardroom choose instead
+```
+
+Statuses, managed entirely by the tool: **queued** (new) → **picked**
+(the boardroom chose it — its reason lands in `result`) → **clipped**
+(the row remembers which channel did it) or **failed** (why it refused:
+no captions and no Whisper key, dead link...). Rows are never deleted —
+the sheet is also the history. `clip --sheet` takes the boardroom's
+`picked` row first, then the oldest queued one, and marks the row after
+the run — so channels run one after another never clip the same source.
+The sheet is shared across all your channel configs; the boardroom sees
+every queued row and argues about fit for the channel it's running on.
+
+The old watchlist (`topics/sources.txt`, `URL | note` lines) still counts
+as candidates — nothing you had there is lost; it just doesn't grow
+anymore (`--add` writes to the sheet now).
+
 ## Clips (from any long video)
 
 ```powershell
@@ -57,6 +98,7 @@ python main.py clip <youtube link>          # a VOD (shortcut form)
 python main.py clip --url <youtube link>     # same thing, explicit
 python main.py clip --file C:\path\to.mp4    # a local file
 python main.py clip --url A --url B --file C # a batch: any mix, any count
+python main.py clip --sheet                   # the next queued source from the sheet
 ```
 
 Downloads → transcript (YouTube captions first when they exist — 0 Groq
@@ -111,8 +153,8 @@ headers and "Title — Part X" kit titles. It warns when a half runs past 3:00.
 ```powershell
 python main.py meeting stats              # agents review the channel numbers
 python main.py meeting pick               # agents argue over today's source
-python main.py meeting pick --add <link>  # seed the watchlist (no meeting)
 python main.py meeting pick --render      # ...and clip the winner after
+python main.py meeting last               # re-read the whole debate
 python main.py meeting pick --dry-run     # room + agenda, nothing spent
 ```
 
@@ -121,12 +163,18 @@ Four seats — Strategist 🎯 (Gemini), Analyst 🔎 (DeepSeek), Producer 🎬
 machine-checked decisions: a pick MUST name one of the candidates, a
 stats review yields at most 5 concrete actions. Different providers per
 seat means the room really disagrees; a seat without keys rides the
-fallback chain (you lose personality, never the meeting). Minutes land
-in `out/meetings/YYYY-MM-DD-<kind>.md`, a short summary in your Telegram
-DM, and `--render` turns a pick into a clip run and pops the winner from
-`topics/sources.txt` (the watchlist: one `URL | note` per line). A
-meeting is ~10 short LLM calls — run it before the day's generation, not
-all day.
+fallback chain (you lose personality, never the meeting).
+
+**You see everything the room says.** Every turn is printed live while
+the meeting runs, the Telegram summary carries each seat's last word
+("The room:"), and the minutes file keeps the **full transcript** —
+`meeting last` reprints the most recent one in the terminal. Nothing the
+AIs tell each other is hidden.
+
+Candidates come from the source sheet (every queued row) plus any `--url`
+flags. `--render` turns a pick into a clip run: the winner's sheet row
+moves to `clipped` (or `failed` if the render refuses). A meeting is ~10
+short LLM calls — run it before the day's generation, not all day.
 
 ## Parts (series splitter — mechanical, not editorial)
 
@@ -159,7 +207,12 @@ the title once per video (existing keys, validation-gated, never fatal —
 source, then pure FFmpeg. Post parts in order, one per day — the numbering
 only works as a sequence.
 
-## Long-form (landscape videos — the clip lane's 16:9 sibling)
+## Long-form (landscape videos — optional, not in the daily loop yet)
+
+New and not part of the 3-clips-a-day cadence — try it on a source you
+already clipped (the transcript is cached, so a whole re-render costs
+**0 LLM calls**) and judge the retention yourself before it earns a
+daily slot.
 
 ```powershell
 python main.py longform <link>             # the whole source as ONE 1920x1080 video

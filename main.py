@@ -13,8 +13,10 @@
     python main.py published     record a manual upload's URL
     python main.py voices        list available voiceover voices
     python main.py clip --url L  turn a long video into subtitled vertical clips
+    python main.py sheet             paste/list source links (the clip queue)
     python main.py meeting stats the AI boardroom reviews your channel numbers
     python main.py meeting pick  ...or argues over today's source video
+    python main.py meeting last  re-read what the room said (transcript)
     python main.py snap          daily channel stats + retitle alerts
     python main.py scout         validated topic ideas for the backlog
     python main.py keys          API key usage vs free-tier limits
@@ -1140,12 +1142,26 @@ def cmd_clip(cfg, args) -> int:
     """Clip lane: one or many source videos -> N subtitled vertical clips."""
     print(BANNER)
     from clipper import ClipError, plan_clip_sources, run_clip
+    from sheet import mark_sheet, take_pending
+
+    # --sheet N: pull queued sources from the sheet (board picks first)
+    sheet_urls: dict[str, str] = {}
+    if getattr(args, "sheet", None):
+        explicit = {str(u).strip().rstrip("/") for u in (args.url or [])}
+        for url, note in take_pending(cfg.sources_sheet, args.sheet):
+            if url.rstrip("/") not in explicit:
+                sheet_urls[url] = note
+        for url in sheet_urls:
+            print(f"  [sheet] taking {url} from the sheet"
+                  + (f" ({sheet_urls[url]})" if sheet_urls[url] else ""))
 
     sources = plan_clip_sources(
-        getattr(args, "target", ""), args.url or [], args.file or [])
+        getattr(args, "target", ""), (args.url or []) + list(sheet_urls),
+        args.file or [])
     if not sources:
         die("give me a source: clip <link-or-path>, or --url/--file "
-            "(both repeatable for batch runs)")
+            "(both repeatable for batch runs), or --sheet to take the "
+            "next queued source")
     results: list[tuple[str, str, str]] = []  # (label, status, detail)
     for index, (url, file) in enumerate(sources, start=1):
         label = url or file
@@ -1176,6 +1192,16 @@ def cmd_clip(cfg, args) -> int:
         # single source: the failure message must still reach the user
         label, _, detail = results[0]
         print(f"\n  ❌ {label}" + (f" — {detail}" if detail else ""))
+    for url in sheet_urls:
+        by_label = {label: (status, detail)
+                    for label, status, detail in results}
+        status, detail = by_label.get(url, ("failed", "not reached"))
+        if status == "ok":
+            mark_sheet(cfg.sources_sheet, url, "clipped",
+                       f"clips/ — {cfg.topic}")
+        else:
+            mark_sheet(cfg.sources_sheet, url, "failed",
+                       f"clip failed: {detail}"[:200])
     return 0 if any(status == "ok" for _, status, _ in results) else 1
 
 
@@ -1266,34 +1292,61 @@ def cmd_longform(cfg, args) -> int:
     return 0 if any(status == "ok" for _, status, _ in results) else 1
 
 
+def cmd_sheet(cfg, args) -> int:
+    """The source sheet: paste links, watch the lanes eat them."""
+    from sheet import (SheetError, append_sheet, ensure_sheet,
+                       load_sheet, sheet_table)
+
+    if getattr(args, "add", None):
+        added = 0
+        for entry in args.add:
+            url, _, note = entry.partition("|")
+            try:
+                if append_sheet(cfg.sources_sheet, url.strip(),
+                                note.strip()):
+                    added += 1
+            except SheetError as exc:
+                print(f"  [sheet] skipped: {exc}")
+        print(f"  [sheet] +{added} source(s) -> {cfg.sources_sheet}")
+    else:
+        ensure_sheet(cfg.sources_sheet)
+        print(f"  [sheet] {cfg.sources_sheet} — paste links as "
+              "'url,note' rows (a bare link per line is fine too)")
+    print()
+    print(sheet_table(load_sheet(cfg.sources_sheet),
+                      cfg.sources_sheet))
+    return 0
+
+
 def cmd_meeting(cfg, args) -> int:
     """The AI boardroom: agents meet on demand, decide, report."""
     from pathlib import Path as _P
 
-    if getattr(args, "add", None):
+    if args.kind == "last":
         import meeting as _m
 
-        wl = cfg.meeting_watchlist
+        latest = _m.latest_minutes(cfg)
+        if latest is None:
+            die("no minutes yet — hold one first: "
+                "python main.py meeting pick (or stats)")
+        print(f"  [meeting] {latest}\n")
+        print(latest.read_text(encoding="utf-8"), end="")
+        return 0
+
+    if getattr(args, "add", None):
+        from sheet import SheetError, append_sheet
+
         added = 0
-        existing = {u.rstrip("/") for u, _ in
-                    _m.load_watchlist(wl)}
-        lines = []
-        if wl.exists():
-            lines = [l for l in wl.read_text(encoding="utf-8").splitlines()
-                     if l.strip()]
         for entry in args.add:
             url, _, note = entry.partition("|")
-            url = url.strip()
-            if not url or url.rstrip("/") in existing:
-                continue
-            lines.append(url + (f" | {note.strip()}" if note.strip() else ""))
-            existing.add(url.rstrip("/"))
-            added += 1
-        wl.parent.mkdir(parents=True, exist_ok=True)
-        wl.write_text("\n".join(lines) + ("\n" if lines else ""),
-                      encoding="utf-8")
-        print(f"  [meeting] watchlist: +{added} candidate(s) -> {wl} "
-              f"({len(existing)} total)")
+            try:
+                if append_sheet(cfg.sources_sheet, url.strip(),
+                                note.strip()):
+                    added += 1
+            except SheetError as exc:
+                print(f"  [sheet] skipped: {exc}")
+        print(f"  [meeting] sheet: +{added} source(s) -> "
+              f"{cfg.sources_sheet}")
         if args.kind == "pick" and not args.url:
             return 0
     if getattr(args, "dry_run", False):
@@ -1803,6 +1856,10 @@ def main() -> int:
     p.add_argument("--dry-run", action="store_true",
                    help="report what would render, then stop")
     p = sub.add_parser("clip", help="turn a long video into subtitled vertical clips")
+    p.add_argument("--sheet", type=int, nargs="?", const=1, metavar="N",
+                   help="take the next N queued source(s) from the sheet "
+                        "(default 1; the boardroom's pick goes first) — "
+                        "the row is marked clipped/failed afterwards")
     p.add_argument("--url", action="append",
                    help="YouTube link of the source video (repeatable)")
     p.add_argument("--file", action="append",
@@ -1911,17 +1968,26 @@ def main() -> int:
     p.add_argument("--out", default=None,
                    help="output folder (default longform/)")
 
+    p = sub.add_parser("sheet",
+                       help="the source sheet: paste links, the lanes "
+                            "clip them (boardroom pick, clip --sheet)")
+    p.add_argument("--add", action="append", metavar="LINK[|note]",
+                   help="queue a source (repeatable); without it the "
+                        "sheet is just listed")
+
     p = sub.add_parser("meeting",
                        help="the AI boardroom: stats review or source pick")
-    p.add_argument("kind", choices=["stats", "pick"],
+    p.add_argument("kind", choices=["stats", "pick", "last"],
                    help="stats = review channel numbers | pick = choose "
-                        "today's source video")
+                        "today's source video | last = re-read what the "
+                        "room said (the full transcript)")
     p.add_argument("--url", action="append", metavar="LINK",
                    help="candidate for a pick meeting (repeatable; the "
-                        "watchlist topics/sources.txt is always included)")
+                        "source sheet sources/sheet.csv is always "
+                        "included)")
     p.add_argument("--add", action="append", metavar="LINK[|note]",
-                   help="add a candidate to the watchlist, then stop "
-                        "(no meeting)")
+                   help="add a source to the sheet, then stop (no "
+                        "meeting)")
     p.add_argument("--rounds", type=int, default=None, metavar="N",
                    help="speaking rounds (default: config meeting.rounds, 2)")
     p.add_argument("--render", action="store_true",
@@ -2082,6 +2148,7 @@ def main() -> int:
         "parts": cmd_parts,
         "longform": cmd_longform,
         "meeting": cmd_meeting,
+        "sheet": cmd_sheet,
         "bot": cmd_bot,
         "pregen": cmd_pregen,
         "jarvis": cmd_jarvis,

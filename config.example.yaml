@@ -249,12 +249,23 @@ meeting:
   # Strategist (Gemini), Analyst (DeepSeek), Producer (Groq), Skeptic
   # (OpenRouter) — plus a chair that writes minutes and machine-checked
   # decisions. Seats without keys ride the fallback chain: you lose
-  # personality, never the meeting. Minutes land in out/meetings/, a
-  # short summary in your Telegram DM. `meeting pick --render` clips the
-  # winner and pops it from the watchlist.
+  # personality, never the meeting. Minutes land in out/meetings/ with
+  # the FULL transcript (`meeting last` reprints it), a summary + each
+  # seat's last word in your Telegram DM. `meeting pick --render` clips
+  # the winner and marks its sheet row clipped.
   rounds: 2               # speaking rounds (each seat talks once per round)
   max_words: 70           # per turn — the room stays sharp
-  watchlist: "topics/sources.txt"  # pick candidates, "URL | note" per line
+  # legacy candidates file ("URL | note" per line) — still read, but new
+  # sources go to the sheet below
+  watchlist: "topics/sources.txt"
+
+sources:
+  # The source sheet: paste YouTube links (url,note per CSV row — a bare
+  # link on a line is fine), the lanes eat them. `clip --sheet` takes the
+  # next queued row (the boardroom's pick first), marks it clipped/failed
+  # after the run; rows are never deleted, the statuses are the history:
+  # new -> picked -> clipped/failed. Shared across all channel configs.
+  sheet: "sources/sheet.csv"
 
 snap:
   # `python main.py snap` — stats for every channel you track (add each

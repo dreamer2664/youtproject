@@ -1397,6 +1397,210 @@ def t_meeting():
         summary = mt.run_meeting(tmp_cfg(), "stats", send=False)
     assert "No LLM lane" in summary
 
+    # -- the room digest: last word per seat, for the Telegram DM ----------
+    digest = mt.room_digest([
+        {"name": "Strategist", "emoji": "🎯", "text": "first take"},
+        {"name": "Skeptic", "emoji": "🤨", "text": "doubt one"},
+        {"name": "Strategist", "emoji": "🎯", "text": "final take"},
+    ])
+    assert "final take" in digest and "first take" not in digest
+    assert "doubt one" in digest and digest.index("Strategist") < \
+        digest.index("Skeptic")    # seats in the order they first spoke
+    long_turn = "word " * 80
+    trimmed = mt.room_digest([{"name": "Analyst", "emoji": "🔎",
+                               "text": long_turn}], per_turn_chars=40)
+    assert trimmed.endswith("…") and len(trimmed) < 80
+    # the summary carries the digest
+    with _patch.object(mt, "_role_provider",
+                       lambda c, lane: Scripted()), \
+         _patch.object(mt, "_stats_agenda", lambda c: "R"), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(tmp_cfg(), "stats", rounds=1,
+                                 send=False)
+    assert "The room:" in summary
+
+    # -- a pick meeting fed by the SHEET: row marked picked -----------------
+    import sheet as sh
+    cfg = tmp_cfg()
+    sh.append_sheet(cfg.sources_sheet, "https://youtu.be/s1",
+                    "roman aqueducts")
+    sh.append_sheet(cfg.sources_sheet, "https://youtu.be/s2")
+    sh.mark_sheet(cfg.sources_sheet, "https://youtu.be/s2", "clipped",
+                  "clips/ — yesterday")
+    cands = mt._pick_candidates(cfg, [])
+    assert [u for u, _ in cands] == ["https://youtu.be/s1"], cands
+    class SheetChair:
+        def generate_text(self, prompt, temperature=0.7, tag="",
+                          json_mode=False):
+            if json_mode:
+                return _json.dumps({"choice": "https://youtu.be/s1",
+                                    "reason": "stronger hook"})
+            return "I say s1."
+    with _patch.object(mt, "_role_provider",
+                       lambda c, lane: SheetChair()), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(cfg, "pick", rounds=1, send=False)
+    assert "https://youtu.be/s1" in summary
+    rows = sh.load_sheet(cfg.sources_sheet)
+    row = next(r for r in rows if "s1" in r["url"])
+    assert row["status"] == "picked" and "stronger hook" in row["result"]
+    # picked rows stay in the queue (still to render) and go first
+    assert sh.take_pending(cfg.sources_sheet, 3) == \
+        [("https://youtu.be/s1", "roman aqueducts")]
+
+    # -- latest_minutes + `meeting last` ------------------------------------
+    import os
+    import meeting as mt2
+    from datetime import datetime, timedelta
+    meetings = cfg.out_dir / "meetings"
+    meetings.mkdir(parents=True, exist_ok=True)
+    old = meetings / "2026-09-30-stats.md"
+    new = meetings / "2026-10-01-pick.md"
+    old.write_text("OLD MINUTES", encoding="utf-8")
+    new.write_text("NEW MINUTES", encoding="utf-8")
+    stamp = datetime.now().timestamp()
+    os.utime(old, (stamp - 86400, stamp - 86400))
+    assert mt2.latest_minutes(cfg) == new
+
+    import main as cli
+    from argparse import Namespace
+    args = Namespace(kind="last", add=None, url=[], rounds=None,
+                     render=False, no_send=True, dry_run=False)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = cli.cmd_meeting(cfg, args)
+    assert code == 0 and "NEW MINUTES" in buf.getvalue()
+    empty = tmp_cfg()
+    try:
+        cli.cmd_meeting(empty, args)
+        raise AssertionError("meeting last without minutes must die")
+    except SystemExit:
+        pass
+
+    # -- `sheet` command: add + list ----------------------------------------
+    args = Namespace(add=["https://youtu.be/s9 | best video",
+                          "not-a-link"])
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        code = cli.cmd_sheet(empty, args)
+    assert code == 0 and "+1" in buf.getvalue()
+    assert "best video" in buf.getvalue() and "queued: 1" in buf.getvalue()
+    assert "skipped" in buf.getvalue()      # the non-link was refused
+    # empty-sheet message path
+    fresh = tmp_cfg()
+    buf3 = io.StringIO()
+    with redirect_stdout(buf3):
+        cli.cmd_sheet(fresh, Namespace(add=None))
+    assert "empty" in buf3.getvalue()
+
+    # -- `clip --sheet`: rows marked clipped / failed ------------------------
+    import clipper
+    cfg = tmp_cfg()
+    sh.append_sheet(cfg.sources_sheet, "https://youtu.be/ok1", "good one")
+    sh.append_sheet(cfg.sources_sheet, "https://youtu.be/bad1")
+    sh.mark_sheet(cfg.sources_sheet, "https://youtu.be/bad1", "picked",
+                  "boardroom: chosen yesterday")
+
+    def fake_run_clip(cfg, url="", file="", **kwargs):
+        if "ok1" not in (url or ""):
+            from clipper import ClipError
+            raise ClipError("no captions and no Groq key")
+        return None
+
+    args = Namespace(target="", url=[], file=[], sheet=2,
+                     max_clips=6, min_len=20, max_len=45,
+                     no_vision=True, keep_work=False, out=None,
+                     sub_pos="default", top=0, whole=None, half=False)
+    buf = io.StringIO()
+    with _patch.object(clipper, "run_clip", fake_run_clip), \
+         redirect_stdout(buf):
+        code = cli.cmd_clip(cfg, args)
+    assert code == 0, buf.getvalue()       # one source survived
+    rows = {r["url"]: r for r in sh.load_sheet(cfg.sources_sheet)}
+    assert rows["https://youtu.be/ok1"]["status"] == "clipped"
+    assert cfg.topic in rows["https://youtu.be/ok1"]["result"]
+    assert rows["https://youtu.be/bad1"]["status"] == "failed"
+    assert "no captions" in rows["https://youtu.be/bad1"]["result"]
+    # the board's pick was taken FIRST
+    assert "bad1" in buf.getvalue().split("taking")[1]
+
+    # all-failing sheet run -> exit 1 and the row still marked
+    cfg = tmp_cfg()
+    sh.append_sheet(cfg.sources_sheet, "https://youtu.be/nope")
+    buf = io.StringIO()
+    with _patch.object(clipper, "run_clip", fake_run_clip), \
+         redirect_stdout(buf):
+        code = cli.cmd_clip(cfg, args)
+    assert code == 1
+    rows = {r["url"]: r for r in sh.load_sheet(cfg.sources_sheet)}
+    assert rows["https://youtu.be/nope"]["status"] == "failed"
+
+
+def t_sheet():
+    from sheet import (SheetError, append_sheet, ensure_sheet,
+                       load_sheet, mark_sheet, parse_sheet,
+                       pending_rows, sheet_table, take_pending)
+
+    # -- parsing: header skipped, bare links, commas, junk dropped ----------
+    text = ("url,note,added,status,result\n"
+            'https://youtu.be/a1,"roman aqueducts, best part",'
+            "2026-10-01,new,\n"
+            "https://youtu.be/a2\n"
+            "https://youtu.be/a3,picked by the board,2026-10-02,picked,"
+            "boardroom: strong hook\n"
+            "https://youtu.be/a4,done thing,2026-10-01,clipped,clips/ — rome\n"
+            "just a note line\n"
+            "https://youtu.be/a5,failed one,2026-10-03,failed,"
+            "\"no captions, no key\"\n")
+    rows = parse_sheet(text)
+    assert [r["url"] for r in rows] == [f"https://youtu.be/a{i}"
+                                        for i in (1, 2, 3, 4, 5)]
+    assert rows[0]["note"] == "roman aqueducts, best part"  # comma quoted
+    assert rows[1]["note"] == "" and rows[1]["status"] == ""
+    assert rows[2]["status"] == "picked"
+    assert rows[4]["result"] == "no captions, no key"
+
+    # -- queue semantics: picked first, new next, done never ---------------
+    queue = pending_rows(rows)
+    assert [r["url"] for r in queue] == ["https://youtu.be/a3",
+                                         "https://youtu.be/a1",
+                                         "https://youtu.be/a2"]
+
+    # -- file round-trip: append (dedupe) -> take -> mark -------------------
+    cfg = tmp_cfg()
+    path = cfg.sources_sheet
+    ensure_sheet(path)
+    assert load_sheet(path) == []
+    assert path.read_text(encoding="utf-8").startswith("url,note")
+    assert append_sheet(path, "https://youtu.be/x1", "first")
+    assert not append_sheet(path, "https://youtu.be/x1/", "dupe")
+    assert append_sheet(path, "https://youtu.be/x2")
+    assert take_pending(path, 1) == [("https://youtu.be/x1", "first")]
+    assert take_pending(path, 0) == []
+    assert mark_sheet(path, "https://youtu.be/x1/", "clipped",
+                      "clips/ — rome") is True
+    rows = load_sheet(path)
+    assert rows[0]["status"] == "clipped" and \
+        rows[0]["note"] == "first"          # note survives marking
+    assert take_pending(path, 5) == [("https://youtu.be/x2", "")]
+    # bad link refused; unknown status refused; missing url no-op
+    try:
+        append_sheet(path, "not a link")
+        raise AssertionError("non-link accepted")
+    except SheetError:
+        pass
+    assert mark_sheet(path, "https://youtu.be/x1", "deleted", "") is False
+    assert mark_sheet(path, "https://youtu.be/gone", "clipped") is False
+    # a marked-clipped row is out of the queue for good
+    assert take_pending(path, 5) == [("https://youtu.be/x2", "")]
+
+    # -- the listing ---------------------------------------------------------
+    rows = load_sheet(path)
+    table = sheet_table(rows, path)
+    assert "clipped: 1" in table and "queued: 1" in table
+    assert "x1" in table and "clips/ — rome" in table
+    assert "empty" in sheet_table([], path)
+
 def t_cutpoints():
     import json as _json
     from unittest.mock import patch as _patch
@@ -7174,6 +7378,7 @@ def main() -> int:
         ("longform", t_longform),
         ("longform_top", t_longform_top),
         ("meeting", t_meeting),
+        ("sheet", t_sheet),
         ("longform_lane", t_longform_lane),
         ("cutpoints", t_cutpoints),
         ("whole_short", t_whole_short),

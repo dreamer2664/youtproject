@@ -272,19 +272,35 @@ def _stats_agenda(cfg: Config) -> str:
 
 
 def _pick_candidates(cfg: Config, urls: list[str]) -> list[tuple[str, str]]:
-    """CLI --url flags first, then the watchlist, de-duplicated."""
+    """CLI --url flags, then the source sheet, then the legacy watchlist."""
+    from sheet import load_sheet, pending_rows
+
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for url in [u for u in (urls or []) if u and u.strip()]:
-        key = url.strip().rstrip("/")
-        if key not in seen:
+
+    def add(url: str, note: str = "") -> None:
+        key = (url or "").strip().rstrip("/")
+        if key and key not in seen:
             seen.add(key)
-            out.append((url.strip(), ""))
+            out.append((url.strip(), note))
+
+    for url in [u for u in (urls or []) if u and u.strip()]:
+        add(url)
+    for row in pending_rows(load_sheet(cfg.sources_sheet)):
+        add(row["url"], row["note"])
     for url, note in load_watchlist(cfg.meeting_watchlist):
-        if url.rstrip("/") not in seen:
-            seen.add(url.rstrip("/"))
-            out.append((url, note))
+        add(url, note)
     return out
+
+
+def _mark_sheet(cfg: Config, url: str, status: str, result: str) -> None:
+    """Best-effort sheet bookkeeping — never risks the meeting."""
+    try:
+        from sheet import mark_sheet
+
+        mark_sheet(cfg.sources_sheet, url, status, result)
+    except Exception:  # noqa: BLE001 - bookkeeping only
+        pass
 
 
 def _pick_agenda(candidates: list[tuple[str, str]], cfg: Config) -> str:
@@ -300,6 +316,35 @@ def _pick_agenda(candidates: list[tuple[str, str]], cfg: Config) -> str:
 
 def _transcript_text(turns: list[dict]) -> str:
     return "\n".join(f"{t['name']}: {t['text']}" for t in turns) or ""
+
+
+def room_digest(turns: list[dict], per_turn_chars: int = 200) -> str:
+    """Each seat's LAST word, for the Telegram summary (pure, tested).
+
+    The full transcript lives in the minutes file; this is the taste of
+    the argument you get on your phone.
+    """
+    last: dict[str, dict] = {}
+    for turn in turns:
+        last[turn["name"]] = turn
+    out: list[str] = []
+    for turn in last.values():          # speaking order
+        text = " ".join((turn["text"] or "").split())
+        if len(text) > per_turn_chars:
+            text = text[:per_turn_chars - 1].rstrip() + "…"
+        out.append(f"{turn['name']} {turn['emoji']}: {text}")
+    return "\n".join(out)
+
+
+def latest_minutes(cfg: Config) -> Path | None:
+    """The most recent minutes file (for `meeting last`)."""
+    try:
+        files = list((cfg.out_dir / "meetings").glob("*.md"))
+    except OSError:
+        return None
+    if not files:
+        return None
+    return max(files, key=lambda p: p.stat().st_mtime)
 
 
 def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
@@ -322,10 +367,11 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
             candidates = _pick_candidates(cfg, urls or [])
             if not candidates:
                 return ("No candidates for a pick meeting. Add some:\n"
-                        "  python main.py meeting pick --add <youtube link> "
+                        "  python main.py sheet --add <youtube link> "
                         "--add <another>\n"
-                        "or put them in topics/sources.txt "
-                        "('URL | optional note' per line).")
+                        "or paste links into sources/sheet.csv "
+                        "('url,note' per row; a bare link on a line is "
+                        "fine too).")
             agenda = _pick_agenda(candidates, cfg)
             question = ("Which ONE candidate should we clip today, and "
                         "why? Argue from the channel's data and niche.")
@@ -407,6 +453,9 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
                                in enumerate(decision["decisions"], 1)))
     else:
         summary = f"{header}\n\n(The chair produced no valid decision.)"
+    digest = room_digest(turns)
+    if digest:
+        summary += f"\n\nThe room:\n{digest}"
     if path is not None:
         summary += f"\n\nFull minutes: {path}"
     summary += f"\n\nCost: {calls} LLM calls, ~{est_tokens:,} tokens."
@@ -425,9 +474,15 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
         try:
             run_clip(cfg, url=decision["choice"])
             summary += "\n\nRendered: clips/ (pregen --push parks it)."
+            _mark_sheet(cfg, decision["choice"], "clipped",
+                        f"clips/ — boardroom pick --render ({cfg.topic})")
         except Exception as exc:  # noqa: BLE001 - render failure is reported
             summary += f"\n\nRender failed: {str(exc)[:200]}"
+            _mark_sheet(cfg, decision["choice"], "failed",
+                        f"render failed: {str(exc)[:120]}")
     if kind == "pick" and decision:
+        _mark_sheet(cfg, decision["choice"], "picked",
+                    f"boardroom: {decision['reason']}")
         try:
             wl = cfg.meeting_watchlist
             if wl.exists():

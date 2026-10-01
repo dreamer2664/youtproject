@@ -109,8 +109,11 @@ python main.py generate --format portrait --seconds 45   # vertical Short
 python main.py generate --images-per-scene 3             # denser cuts
 python main.py generate --style stickman  # whiteboard stickman explainer look
 python main.py longform <link>     # ONE 16:9 video: whole source, episode cut, or --top N countdown
+python main.py sheet --add <link>  # queue a source (or paste rows in sources/sheet.csv)
+python main.py clip --sheet        # clip the next queued source from the sheet
 python main.py meeting stats       # the AI boardroom reviews your numbers
 python main.py meeting pick --render   # ...or picks + clips today's source
+python main.py meeting last        # re-read the full boardroom transcript
 python main.py generate --style cartoon   # flat 2D vector toon look
 python main.py generate --no-subs       # skip subtitles for one run
 python main.py batch --topics topics.txt  # render a whole list overnight
@@ -230,6 +233,7 @@ Shorts, long-form and art styles without touching the config.
 | `crew.py` | Autonomous team: Manager/Scout/Maker/Herald missions (`crew`, `/crew`) |
 | `longform.py` | Long-form lane: whole source / episode cut / `--top N` countdown, all 16:9 |
 | `meeting.py` | The boardroom: 4 AI seats + chair, machine-checked decisions |
+| `sheet.py` | The source sheet: paste links, lanes clip them, rows keep history |
 | `test_smoke.py` | Offline self-tests: `python test_smoke.py` (no keys/network needed) |
 | `UPLOAD-GUIDE.md` | The manual-upload walkthrough |
 | `hooks/pre-commit` | Blocks credentials from being committed |

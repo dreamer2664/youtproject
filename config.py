@@ -400,7 +400,13 @@ DEFAULTS: dict[str, Any] = {
     "meeting": {
         "rounds": 2,            # speaking rounds per meeting (1-4)
         "max_words": 70,        # per speaking turn, chair trims harder
-        "watchlist": "topics/sources.txt",  # pick candidates ("URL | note")
+        "watchlist": "topics/sources.txt",  # legacy candidates (read-only)
+    },
+    # The source sheet: paste YouTube links (url,note per CSV row), the
+    # lanes eat them — boardroom pick -> clip --sheet. Rows keep their
+    # history (new -> picked -> clipped/failed).
+    "sources": {
+        "sheet": "sources/sheet.csv",
     },
     # `snap` stats tracker (public Data API, ~3 units/channel per run).
     "snap": {
@@ -1025,6 +1031,13 @@ class Config:
                                         .get("max_words", 70))))
         except (TypeError, ValueError):
             return 70
+
+    @property
+    def sources_sheet(self) -> Path:
+        """The source sheet path (default sources/sheet.csv)."""
+        raw = str(self.data.get("sources", {}).get("sheet")
+                  or "sources/sheet.csv").strip() or "sources/sheet.csv"
+        return self.root / raw
 
     @property
     def meeting_watchlist(self) -> Path:
