@@ -196,3 +196,50 @@ missing from requirements.txt (snap --export needs it) — fixed.
 - `test_smoke.py` — 131 tests (2 new: `longform`, `longform_lane`;
   9/9 mutation checks caught; 4 real end-to-end renders verified:
   landscape cut, whole, chapters, portrait-fit).
+
+
+## 8. Update — one lane, two modes (2026-10-01, the merge)
+
+A second long-form implementation of the same brief landed on main a day
+after this report. Instead of picking a winner, the two were merged into
+one lane; this section is the delta to everything above.
+
+**The merged shape.** The whole/episode mode from this report stays the
+default (0 LLM calls on a cached transcript). The second design became
+`--top N`: the picker mines **chapters** (40-90 s complete stories, not
+highlight flashes) from the cached transcript, an optional vision pass
+(reuses the clip lane's frame QC, `--no-vision` skips it) drops dead
+frames, and the survivors render into ONE countdown video — numbered
+cards, best moment revealed last. Output `longform/<key8>_topN.mp4`,
+kit with 0:00-first chapter timestamps and the source credit.
+
+**What `--top N` costs** (measured on the merged code):
+
+| situation | LLM calls | tokens in | notes |
+|---|---|---|---|
+| cached transcript, `--top N` | 1 per picker window | ~2.3k per window | window = 1400 words ≈ 9 min of speech, 120-word overlap |
+| + vision QC on | ~1 per candidate chapter | small | same API the clip lane's frame check uses |
+| fresh uncaptioned source | + Whisper audio-min + transcript fix | ~11k | identical to every other lane — the transcript is the cost |
+
+A 20-minute source is 2-3 picker windows: **2-3 calls, ~5-7k tokens in**
+— about one clip run. The boardroom lane shipped in the same merge
+(`meeting stats|pick`): a full meeting measured **9 calls, ~2.3k tokens**
+total. Neither moves the binding constraint (Groq Whisper audio-minutes);
+transcripts stay cached across lanes.
+
+**Stack changes worth knowing:** `ingest_transcript` (cache → captions →
+Whisper → fix) is now shared by clip/parts/longform; the single-source
+silent-failure fix (❌ line instead of a quiet exit 1) covers all three
+batch lanes; the compilation assembly encodes each card to a tiny mp4
+first and then walks one concat-demuxer playlist instead of a single
+mega-filtergraph — the mega-encode OOMs a 2 GB machine at three
+chapters, the playlist shape does not; compilation geometry is pinned to
+the lane's landscape constants (the channel's portrait/landscape setting
+is restored before assembly runs). Tests: **133/133** green; `--top 3`
+verified end-to-end with real FFmpeg (1920x1080, stereo, card-first
+countdown, chapters at 0:00/1:01/2:08).
+
+The bottom line survives the merge unchanged: whole long-form is a
+0-LLM lane on cached sources, the compilation is a clip-run-priced
+editorial lane, and the daily quota question is still "how many fresh
+audio-minutes did we transcribe today".

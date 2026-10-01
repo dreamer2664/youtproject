@@ -990,6 +990,413 @@ def t_longform_lane():
         clipper.extract_frame = real_frame
 
 
+def t_longform_top():
+    import io
+    import json as _json
+    from contextlib import redirect_stdout
+    from types import SimpleNamespace
+    from unittest.mock import patch as _patch
+
+    import clipper
+    import longform as lf
+    from clipper import Candidate, ClipError
+    from longform import plan_chapters
+
+    # -- chapter planning: strength order kept, target + cap respected --
+    def cand(i, length):
+        return Candidate(start=i * 100.0, end=i * 100.0 + length)
+
+    cands = [cand(0, 60), cand(1, 60), cand(2, 60), cand(3, 60)]
+    plan = plan_chapters(cands, 120, 6)         # target met after 2
+    assert plan == cands[:2], plan
+    assert plan_chapters(cands, 0, 6) == cands  # no target = best N
+    assert plan_chapters(cands, 999, 2) == cands[:2]
+    assert plan_chapters(cands, 999, 0) == []
+    # too short for the target: min_total backfills within the cap
+    plan = plan_chapters(cands, 999, 3, min_total=200)
+    assert len(plan) == 3 and sum(c.end - c.start for c in plan) == 180
+    assert plan_chapters([], 360, 6) == []
+
+    # -- the picker prompt asks for chapters, not flash-cuts --
+    from longform import build_chapter_picker_prompt
+    prompt = build_chapter_picker_prompt(["[0:00] hello world"], tmp_cfg(),
+                                         3, 40, 90)
+    assert "40-90 seconds" in prompt and "6 strongest CHAPTERS" in prompt
+    assert "completion" not in prompt.split("CHAPTERS")[0]
+
+    # -- config knobs: clamps and garbage tolerance --
+    assert tmp_cfg().longform_moments == 6
+    assert tmp_cfg().longform_min_len == 40
+    assert tmp_cfg().longform_max_len == 90
+    assert tmp_cfg().longform_target_seconds == 360.0
+    assert tmp_cfg(longform={"moments": 99}).longform_moments == 12
+    assert tmp_cfg(longform={"moments": "x"}).longform_moments == 6
+    assert tmp_cfg(longform={"min_len": 5}).longform_min_len == 15
+    assert tmp_cfg(longform={"max_len": 9999}).longform_max_len == 600
+    assert tmp_cfg(longform={"target_seconds": -1}
+                   ).longform_target_seconds == 0.0
+    assert tmp_cfg(meeting={"rounds": 9}).meeting_rounds == 4
+    assert tmp_cfg(meeting={"max_words": 5}).meeting_max_words == 30
+    assert tmp_cfg(meeting={"watchlist": "topics/mine.txt"}
+                   ).meeting_watchlist.name == "mine.txt"
+
+    # -- orchestration (mocked render, real kit files) ------------------
+    def words_n(n, step=2.1):
+        return [{"word": f"w{i}" + ("." if i % 9 == 8 else ""),
+                 "start": i * step, "end": i * step + 0.4}
+                for i in range(n)]
+
+    picker_json = _json.dumps({"clips": [
+        {"start": 10.0, "end": 70.0, "hook": "the best story",
+         "title": "The Best Story"},
+        {"start": 100.0, "end": 160.0, "hook": "second best",
+         "title": "Second Best"},
+        {"start": 200.0, "end": 260.0, "hook": "third", "title": "Third"},
+    ]})
+
+    class Provider:
+        calls = 0
+        def generate_text(self, *a, **k):
+            Provider.calls += 1
+            return picker_json
+
+    renders, concats = [], []
+
+    def fake_render(src, window, words, cfg, out_path, work,
+                    sub_pos="bottom", subs=True):
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"seg")
+        renders.append((window[0], window[1], out_path, cfg.width,
+                        cfg.height))
+        return out_path
+
+    def fake_concat(plan, out_path, cfg, work_dir):
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(b"longform")
+        concats.append([(s["rank"], s["start"]) for s in plan])
+        return out_path
+
+    cfg = tmp_cfg(clip={"transcript_fix": False, "polish_titles": False})
+    src = cfg.root / "Source Talk.mp4"
+    src.write_bytes(b"x")
+    buf = io.StringIO()
+    import assembler
+    with _patch.object(clipper, "ffprobe_duration", lambda p: 300.0), \
+         _patch.object(assembler, "ffprobe_duration", lambda p: 300.0), \
+         _patch.object(clipper, "load_transcript_cache",
+                       lambda p: words_n(140)), \
+         _patch.object(lf, "render_longform", fake_render), \
+         _patch.object(lf, "build_compilation_video", fake_concat), \
+         _patch("scriptgen.get_provider", lambda c: Provider()), \
+         redirect_stdout(buf):
+        code = lf.run_longform(cfg, file=str(src), use_vision=False,
+                               top=3, out_dir=cfg.root / "lf")
+    out = buf.getvalue()
+    assert code == 0, out
+    assert "1920x1080" not in out  # no debug noise requirement, smoke only
+    assert len(renders) == 3, renders
+    # every segment rendered landscape
+    assert all(r[3] == 1920 and r[4] == 1080 for r in renders), renders
+    # countdown: the picker's FIRST (best) chapter plays LAST as #1
+    assert concats and [c[0] for c in concats[0]] == [3, 2, 1], concats
+    assert concats[0][-1][1] < 100.0          # best chapter is rank #1
+    # kit (output name = the source cache key, like every clip lane)
+    videos = list((cfg.root / "lf").glob("*_top3.mp4"))
+    assert len(videos) == 1, videos
+    video = videos[0]
+    kit = cfg.root / "lf" / video.stem
+    title = (kit / "TITLE.txt").read_text(encoding="utf-8")
+    assert title.startswith("Top 3 Moments - ")
+    desc = (kit / "DESCRIPTION.txt").read_text(encoding="utf-8")
+    assert "Source:" in desc and "#1" in desc and "#3" in desc
+    assert "0:00" in desc                     # chapter timestamps
+    credit = (kit / "CREDIT.txt").read_text(encoding="utf-8")
+    assert "#1 " in credit and "#3 " in credit and "source:" in credit
+    check = (kit / "CHECKLIST.md").read_text(encoding="utf-8")
+    assert "NOT a Short" in check and "Mid-rolls" not in check
+    assert "UNticked" in check                # real footage: no AI box
+
+    # mid-roll reminder fires past 8:00 of chapter time
+    from longform import _compilation_checklist
+    assert "Mid-rolls" in _compilation_checklist(500)
+    assert "Mid-rolls" not in _compilation_checklist(300)
+
+    # one candidate chapter -> refuse (a compilation needs >= 2)
+    one_json = _json.dumps({"clips": [
+        {"start": 10.0, "end": 70.0, "hook": "only", "title": "Only"}]})
+    class OneProvider:
+        def generate_text(self, *a, **k):
+            return one_json
+    import assembler
+    renders.clear()
+    with _patch.object(clipper, "ffprobe_duration", lambda p: 300.0), \
+         _patch.object(assembler, "ffprobe_duration", lambda p: 300.0), \
+         _patch.object(clipper, "load_transcript_cache",
+                       lambda p: words_n(140)), \
+         _patch("scriptgen.get_provider", lambda c: OneProvider()), \
+         _patch.object(lf, "render_longform", fake_render), \
+         _patch.object(lf, "build_compilation_video", fake_concat), \
+         redirect_stdout(io.StringIO()):
+        try:
+            lf.run_longform(tmp_cfg(clip={"transcript_fix": False,
+                                          "polish_titles": False}),
+                            file=str(src), use_vision=False, top=3)
+            raise AssertionError("one-chapter compilation accepted")
+        except ClipError as exc:
+            assert "fewer than 2" in str(exc)
+
+    # -- guards ----------------------------------------------------------
+    thin = tmp_cfg(clip={"transcript_fix": False, "polish_titles": False})
+    with _patch.object(clipper, "ffprobe_duration", lambda p: 300.0), \
+         _patch.object(assembler, "ffprobe_duration", lambda p: 300.0), \
+         _patch.object(clipper, "load_transcript_cache",
+                       lambda p: words_n(20)):
+        try:
+            lf.run_longform(thin, file=str(src), use_vision=False, top=3)
+            raise AssertionError("thin transcript accepted")
+        except ClipError as exc:
+            assert "thin" in str(exc)
+    # dry run: the cached transcript is read (their lane's design), but
+    # no picking, no render, no LLM call
+    renders.clear(); Provider.calls = 0
+    buf = io.StringIO()
+    with _patch.object(clipper, "ffprobe_duration", lambda p: 300.0), \
+         _patch.object(assembler, "ffprobe_duration", lambda p: 300.0), \
+         _patch.object(clipper, "load_transcript_cache",
+                       lambda p: words_n(140)), \
+         _patch("scriptgen.get_provider", lambda c: Provider()), \
+         redirect_stdout(buf):
+        code = lf.run_longform(tmp_cfg(), file=str(src), top=3,
+                               dry_run=True)
+    assert code == 0 and "dry run" in buf.getvalue()
+    assert not renders and Provider.calls == 0
+
+
+
+
+def t_meeting():
+    import json as _json
+    from unittest.mock import patch as _patch
+
+    import meeting as mt
+    from meeting import (ROLES, clamp_words, format_minutes,
+                         parse_decisions, parse_watchlist,
+                         remove_watchlist_url)
+
+    # -- watchlist parsing -------------------------------------------------
+    text = ("# candidates\n\n"
+            "https://youtu.be/aaa | the octopus documentary\n"
+            "https://youtu.be/bbb\n"
+            "   https://youtu.be/ccc | 12:34 mark, shipwreck story  \n"
+            "not-a-url\n")
+    parsed = parse_watchlist(text)
+    assert parsed == [("https://youtu.be/aaa", "the octopus documentary"),
+                      ("https://youtu.be/bbb", ""),
+                      ("https://youtu.be/ccc", "12:34 mark, shipwreck story")]
+    rest = remove_watchlist_url(text, "https://youtu.be/bbb/")
+    assert "bbb" not in rest and "aaa" in rest and "ccc" in rest
+    assert rest.startswith("# candidates")   # comments survive
+    assert remove_watchlist_url(text, "") == text
+
+    # -- turn clamping -----------------------------------------------------
+    short = "I agree with the Analyst. The numbers say pause."
+    assert clamp_words(short, 70) == short
+    long_txt = ("This is a longer opening sentence that ends right here. "
+                "Then more words keep following on and on and on without "
+                "any punctuation to stop them naturally at all.")
+    cut = clamp_words(long_txt, 12)
+    assert len(cut.split()) <= 12 and cut.endswith("."), cut
+    assert clamp_words("no sentences here at all just words flowing "
+                       "endlessly onward", 6).endswith("…")
+    assert clamp_words("", 70) == ""
+
+    # -- decision validation ------------------------------------------------
+    cands = ["https://youtu.be/aaa", "https://youtu.be/bbb"]
+    pick = parse_decisions(
+        _json.dumps({"choice": "https://youtu.be/aaa",
+                     "reason": "best fit"}), "pick", cands)
+    assert pick == {"choice": "https://youtu.be/aaa", "reason": "best fit"}
+    # trailing-slash and containment tolerance
+    assert parse_decisions(
+        _json.dumps({"choice": "https://youtu.be/aaa/"}), "pick",
+        cands)["choice"] == "https://youtu.be/aaa"
+    assert parse_decisions(
+        _json.dumps({"choice": "aaa"}), "pick", cands)["choice"].endswith(
+        "aaa")
+    # not a candidate -> no decision, whatever the chair says
+    assert parse_decisions(
+        _json.dumps({"choice": "https://youtu.be/zzz"}), "pick",
+        cands) is None
+    assert parse_decisions("I choose the second one", "pick", cands) is None
+    stats = parse_decisions(
+        _json.dumps({"summary": "agreed", "decisions": [
+            "Pause 48h", "Repackage the octopus series"]}), "stats")
+    assert stats["decisions"] == ["Pause 48h",
+                                  "Repackage the octopus series"]
+    assert parse_decisions(
+        _json.dumps({"summary": "", "decisions": []}), "stats") is None
+    assert parse_decisions(
+        _json.dumps({"summary": "", "decisions": ["x"] * 6}),
+        "stats") is None
+    assert parse_decisions(_json.dumps({"nope": 1}), "stats") is None
+
+    # -- prompts: persona + question + agenda data present -------------------
+    role = ROLES[0]
+    turn = mt.build_turn_prompt(role, "AGENDA-DATA", "Name: prior turn",
+                                "QUESTION?")
+    assert "Strategist" in turn and role["persona"][:20] in turn
+    assert "AGENDA-DATA" in turn and "QUESTION?" in turn
+    assert "first person" in turn.lower() or "FIRST PERSON" in turn
+    minutes = mt.build_minutes_prompt("AGENDA-DATA", "t", "pick")
+    assert "candidate" in minutes and '"choice"' in minutes
+    stats_p = mt.build_minutes_prompt("AGENDA-DATA", "t", "stats")
+    assert '"decisions"' in stats_p
+    # four seats, four different preferred lanes
+    lanes = {r["lane"] for r in ROLES}
+    assert len(ROLES) == 4 and len(lanes) == 4
+
+    # -- minutes file -------------------------------------------------------
+    body = format_minutes("pick", "agenda text",
+                          [{"name": "Skeptic", "emoji": "🤨",
+                            "text": "I doubt it."}],
+                          {"choice": "https://youtu.be/aaa",
+                           "reason": "why"})
+    assert "Skeptic" in body and "I doubt it." in body
+    assert "https://youtu.be/aaa" in body and "Outcome" in body
+    body2 = format_minutes("stats", "agenda",
+                           [{"name": "Analyst", "emoji": "🔎", "text": "x"}],
+                           {"summary": "s", "decisions": ["a", "b"]})
+    assert "1. a" in body2 and "2. b" in body2
+    body3 = format_minutes("stats", "a", [],
+                           {"summary": "s", "decisions": ["a"]})
+    assert "no valid" not in body3.lower()
+
+    # -- a full stats meeting on scripted providers -------------------------
+    class Scripted:
+        def __init__(self):
+            self.turns = 0
+
+        def generate_text(self, prompt, temperature=0.7, tag="",
+                          json_mode=False):
+            if json_mode:
+                return _json.dumps({"summary": "Room agrees: pause and "
+                                        "repackage.",
+                                    "decisions": ["Pause uploads 48h",
+                                                  "Re-render the octopus "
+                                                  "series with new titles"]})
+            self.turns += 1
+            return f"Point number {self.turns}: the data is clear."
+
+    made = {}
+    chair = Scripted()
+
+    def fake_role_provider(cfg, lane):
+        made.setdefault(lane, Scripted())
+        return made[lane] if lane != cfg.ai_provider else chair
+
+    cfg = tmp_cfg()
+    said = []
+    import io
+    from contextlib import redirect_stdout
+    buf = io.StringIO()
+    with _patch.object(mt, "_role_provider", fake_role_provider), \
+         _patch.object(mt, "_stats_agenda",
+                       lambda c: "CHANNEL REPORT\nviews: down 40%"), \
+         redirect_stdout(buf):
+        summary = mt.run_meeting(cfg, "stats", rounds=1, send=False,
+                                 say=said.append)
+    assert "Pause uploads 48h" in summary and "2. " in summary
+    assert "Cost:" in summary and "LLM calls" in summary
+    assert len(said) >= 4, said                    # every seat spoke
+    minutes_path = cfg.out_dir / "meetings"
+    files = list(minutes_path.glob("*-stats.md"))
+    assert len(files) == 1 and files[0].parent == minutes_path
+    body = files[0].read_text(encoding="utf-8")
+    assert "CHANNEL REPORT" in body and "Pause uploads 48h" in body
+    # the chair's invalid first reply gets one retry
+    class RetryChair:
+        def __init__(self):
+            self.n = 0
+        def generate_text(self, prompt, temperature=0.7, tag="",
+                          json_mode=False):
+            if json_mode:
+                self.n += 1
+                return "not json" if self.n == 1 else _json.dumps(
+                    {"summary": "ok", "decisions": ["Do the thing"]})
+            return "turn"
+    retry = RetryChair()
+    with _patch.object(mt, "_role_provider",
+                       lambda c, lane: retry), \
+         _patch.object(mt, "_stats_agenda", lambda c: "R"), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(cfg, "stats", rounds=1, send=False)
+    assert "Do the thing" in summary and retry.n == 2
+
+    # -- a pick meeting: candidates, decision, watchlist pop ----------------
+    cfg = tmp_cfg()
+    wl = cfg.meeting_watchlist
+    wl.parent.mkdir(parents=True, exist_ok=True)
+    wl.write_text("# watchlist\nhttps://youtu.be/aaa | octopus doc\n"
+                  "https://youtu.be/bbb\n", encoding="utf-8")
+    picked = {"n": 0}
+
+    class PickChair:
+        def generate_text(self, prompt, temperature=0.7, tag="",
+                          json_mode=False):
+            if json_mode:
+                picked["n"] += 1
+                return _json.dumps({"choice": "https://youtu.be/bbb",
+                                    "reason": "stronger hook"})
+            return "I say bbb."
+    with _patch.object(mt, "_role_provider",
+                       lambda c, lane: PickChair()), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(cfg, "pick", rounds=1, send=False,
+                                 urls=["https://youtu.be/ccc"])
+    assert "https://youtu.be/bbb" in summary
+    left = wl.read_text(encoding="utf-8")
+    assert "bbb" not in left and "aaa" in left   # consumed one candidate
+    assert left.startswith("# watchlist")
+    # CLI urls joined the agenda (ccc came from --url, not the file)
+    # (agenda text is covered by _pick_candidates below)
+
+    # -- candidate collection: CLI first, watchlist deduped -----------------
+    cfg = tmp_cfg()
+    wl = cfg.meeting_watchlist
+    wl.parent.mkdir(parents=True, exist_ok=True)
+    wl.write_text("https://youtu.be/aaa\nhttps://youtu.be/ccc\n",
+                  encoding="utf-8")
+    got = mt._pick_candidates(cfg, ["https://youtu.be/aaa",
+                                    "https://youtu.be/ddd"])
+    assert [u for u, _ in got] == ["https://youtu.be/aaa",
+                                   "https://youtu.be/ddd",
+                                   "https://youtu.be/ccc"]
+    assert mt._pick_candidates(cfg, []) == [
+        ("https://youtu.be/aaa", ""), ("https://youtu.be/ccc", "")]
+    assert mt._pick_candidates(tmp_cfg(), []) == []
+
+    # -- stats meeting without snapshots says so, politely ------------------
+    empty = tmp_cfg()
+    try:
+        mt._stats_agenda(empty)
+        raise AssertionError("no-snapshot meeting should refuse")
+    except mt.MeetingError as exc:
+        assert "snap" in str(exc)
+
+    # -- no LLM lanes at all: a clear message, not a crash ------------------
+    class NoneProvider:
+        def __init__(self, cfg):
+            from scriptgen import get_provider
+            self.p = get_provider(cfg)
+        def __bool__(self):
+            return False
+    with _patch.object(mt, "_stats_agenda", lambda c: "R"), \
+         _patch.object(mt, "_role_provider",
+                       lambda c, lane: None), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(tmp_cfg(), "stats", send=False)
+    assert "No LLM lane" in summary
+
 def t_cutpoints():
     import json as _json
     from unittest.mock import patch as _patch
@@ -6765,6 +7172,8 @@ def main() -> int:
         ("parts_kit", t_parts_kit),
         ("caption_overlap", t_caption_overlap),
         ("longform", t_longform),
+        ("longform_top", t_longform_top),
+        ("meeting", t_meeting),
         ("longform_lane", t_longform_lane),
         ("cutpoints", t_cutpoints),
         ("whole_short", t_whole_short),

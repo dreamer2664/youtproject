@@ -5,18 +5,25 @@ Everything the pipeline can do, in the order you actually use it.
 
 ---
 
-## The loop (about 15 minutes a day)
+## The loop (one video a day per channel)
+
+The cadence that beat the floods: **one generation per channel per day**,
+always around the same hour. More volume never fixed a bad day — it just
+piles up more duds while the algorithm reads the channel as a content
+farm.
 
 ```powershell
-python main.py snap        # numbers + day-over-day deltas + retitle flags
-python main.py generate    # today's videos (2-3 per channel)
-python main.py package     # build upload kits -> upload/<id>/
+python main.py snap                  # numbers + day-over-day deltas + retitle flags
+python main.py meeting stats         # optional: the boardroom reads them with you
+python main.py clip <today's source> # one clip generation (any lane)
+python main.py pregen --push         # park it on your phone
 ```
 
-Then upload by hand from each kit (CHECKLIST.md inside walks you through it,
+Then upload by hand (CHECKLIST.md inside each kit walks you through it,
 ~3 min per video). `snap` flags any video ≥2 days old under 50 views with
 `RETITLE?` — exactly once per video. Retitle it in Studio from the kit's
-`TITLE.txt` ideas, or leave it.
+`TITLE.txt` ideas, or leave it. The old `generate`/`package` flow still
+works for the original-video lane.
 
 **First time on a new channel:** `python main.py snap --add <any video link
 from that channel>` — once per channel, ever.
@@ -73,10 +80,9 @@ YAML to paste (writes top/middle/bottom PNGs instead when headless).
 Swear words are masked in captions by default (fuck -> f*ck,
 `subtitles.mask_profanity`) — whole words only, timings untouched.
 
-More from one source: `--max-clips 12` (default 10), and
-`--top 5` builds ONE extra "Top 5 moments" countdown video from the
-run's best clips — numbered cards, best moment revealed last, no
-extra API calls. Its kit lands next to the clip kits.
+More from one source: `--max-clips 12` (default 10). For a 16:9
+"Top N moments" countdown of the best chapters, see the long-form
+lane's `--top N` below — it lives there, not on clip.
 
 ### Short sources: kept whole (clip and parts)
 
@@ -99,6 +105,28 @@ python main.py clip <link> --half       # two halves, split at a sentence end
 middle (within 5–15 s, more if needed), so the halves are near-equal and
 nobody is cut off mid-word. The halves get "Title / Part 1" and "Part 2"
 headers and "Title — Part X" kit titles. It warns when a half runs past 3:00.
+
+## The boardroom (AI management meetings)
+
+```powershell
+python main.py meeting stats              # agents review the channel numbers
+python main.py meeting pick               # agents argue over today's source
+python main.py meeting pick --add <link>  # seed the watchlist (no meeting)
+python main.py meeting pick --render      # ...and clip the winner after
+python main.py meeting pick --dry-run     # room + agenda, nothing spent
+```
+
+Four seats — Strategist 🎯 (Gemini), Analyst 🔎 (DeepSeek), Producer 🎬
+(Groq), Skeptic 🤨 (OpenRouter) — plus a chair that closes with
+machine-checked decisions: a pick MUST name one of the candidates, a
+stats review yields at most 5 concrete actions. Different providers per
+seat means the room really disagrees; a seat without keys rides the
+fallback chain (you lose personality, never the meeting). Minutes land
+in `out/meetings/YYYY-MM-DD-<kind>.md`, a short summary in your Telegram
+DM, and `--render` turns a pick into a clip run and pops the winner from
+`topics/sources.txt` (the watchlist: one `URL | note` per line). A
+meeting is ~10 short LLM calls — run it before the day's generation, not
+all day.
 
 ## Parts (series splitter — mechanical, not editorial)
 
@@ -160,6 +188,30 @@ same source costs one transcript total). What's different:
 - **Kit**: TITLE/DESCRIPTION/CREDIT/captions.srt/longform.ass +
   THUMB_1-3.jpg (subtitle-free frames for the thumbnail). No
   tiktok/reels captions — it isn't vertical.
+
+### `--top N` — the countdown compilation
+
+```powershell
+python main.py longform <link> --top 5          # best 5 chapters, best LAST
+python main.py longform <link> --top 5 --no-vision   # skip the frame QC
+python main.py longform <link> --top 5 --dry-run     # the plan only, $0
+```
+
+The editorial sibling of the whole/episode mode: the picker reads the
+cached transcript in windows and looks for **chapters** (40-90 s complete
+stories, not 20-45 s highlight flashes), a vision pass drops low-quality
+frames, and the survivors render 1920x1080 with bottom subtitles and get
+assembled into ONE countdown — numbered card → chapter, worst first,
+the best moment revealed as #1. The kit carries YouTube **chapter
+timestamps** (first line exactly `0:00`) and the source credit; past
+8:00 of chapter time the checklist reminds you about mid-roll placement.
+A landscape source keeps its whole frame, a portrait one rides over a
+blurred fill. `longform.moments / min_len / max_len / target_seconds`
+tune it. Output: `longform/<key8>_top{N}.mp4`. Costs ~2-4 LLM calls on
+a cached transcript (one per picker window, ~2.3k tokens in each) —
+still cheaper than a clip run. One edited, credited digest per source
+is the reused-content-safe way to make long-form — do not also
+re-upload the raw source.
 
 Output: `longform/<key8>_longform.mp4` (whole) or
 `..._longform_5m00s.mp4` (an episode cut at 5:00). Costs: **0 LLM
@@ -268,6 +320,8 @@ the tokens FOR", including the agent's own diagnostic probes.
 | `clip` | **2 + 1/clip / source** | moment pick 1 · transcript fix 1 (`clip.transcript_fix`, on by default) · title polish 1 per clip written. |
 | `longform` | **0–2 / source** | whole render of a captioned/cached source: 0. Cutting an unpunctuated transcript: one cached eos pass (8 calls on a 20-min source). Fresh Whisper source: + transcript fix (4 calls on 20 min). Chapters, thumbnails, kit: 0. |
 | `scout` | **1 / run** | proposals in one call; interest evidence is free keyless Wikimedia pageviews. |
+| `longform` | **2-4 / source** | chapter pick 1/window + transcript fix 1 (cached transcript: pick only). Vision QC ~3 frames/chapter. |
+| `meeting` | **~10 / meeting** | 4 seats × 2 rounds + chair; short turns, one agenda in every prompt. Minutes + Telegram delivery are free. |
 | `snap` · voice | **0** | YouTube API units only; edge-tts. |
 | image QC | ~1 Gemini **vision** call per candidate photo | cached by photo+query, circuit breaker, fails OPEN on outage (storm-time renders ship un-QC'd images). Live catch 2026-09-24: rejected Tokyo Tower photos posing as Eiffel. |
 | `snap` · images | **0** | YouTube API units; Pexels/Pixabay fetch only. |

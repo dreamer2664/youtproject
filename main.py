@@ -13,6 +13,8 @@
     python main.py published     record a manual upload's URL
     python main.py voices        list available voiceover voices
     python main.py clip --url L  turn a long video into subtitled vertical clips
+    python main.py meeting stats the AI boardroom reviews your channel numbers
+    python main.py meeting pick  ...or argues over today's source video
     python main.py snap          daily channel stats + retitle alerts
     python main.py scout         validated topic ideas for the backlog
     python main.py keys          API key usage vs free-tier limits
@@ -1170,6 +1172,10 @@ def cmd_clip(cfg, args) -> int:
             mark = "ok " if status == "ok" else "FAIL"
             print(f"    [{mark}] {label}"
                   + (f" — {detail}" if detail else ""))
+    elif results and results[0][1] != "ok":
+        # single source: the failure message must still reach the user
+        label, _, detail = results[0]
+        print(f"\n  ❌ {label}" + (f" — {detail}" if detail else ""))
     return 0 if any(status == "ok" for _, status, _ in results) else 1
 
 
@@ -1209,6 +1215,10 @@ def cmd_parts(cfg, args) -> int:
             mark = "ok " if status == "ok" else "FAIL"
             print(f"    [{mark}] {label}"
                   + (f" — {detail}" if detail else ""))
+    elif results and results[0][1] != "ok":
+        # single source: the failure message must still reach the user
+        label, _, detail = results[0]
+        print(f"\n  ❌ {label}" + (f" — {detail}" if detail else ""))
     return 0 if any(status == "ok" for _, status, _ in results) else 1
 
 
@@ -1234,6 +1244,8 @@ def cmd_longform(cfg, args) -> int:
                          sub_pos=getattr(args, "sub_pos", "bottom"),
                          subs=not args.no_subs,
                          chapters=False if args.no_chapters else None,
+                         top=getattr(args, "top", 0) or 0,
+                         use_vision=not getattr(args, "no_vision", False),
                          dry_run=args.dry_run, keep_work=args.keep_work,
                          out_dir=Path(args.out) if args.out else None)
             results.append((label, "ok", ""))
@@ -1247,7 +1259,66 @@ def cmd_longform(cfg, args) -> int:
             mark = "ok " if status == "ok" else "FAIL"
             print(f"    [{mark}] {label}"
                   + (f" — {detail}" if detail else ""))
+    elif results and results[0][1] != "ok":
+        # single source: the failure message must still reach the user
+        label, _, detail = results[0]
+        print(f"\n  ❌ {label}" + (f" — {detail}" if detail else ""))
     return 0 if any(status == "ok" for _, status, _ in results) else 1
+
+
+def cmd_meeting(cfg, args) -> int:
+    """The AI boardroom: agents meet on demand, decide, report."""
+    from pathlib import Path as _P
+
+    if getattr(args, "add", None):
+        import meeting as _m
+
+        wl = cfg.meeting_watchlist
+        added = 0
+        existing = {u.rstrip("/") for u, _ in
+                    _m.load_watchlist(wl)}
+        lines = []
+        if wl.exists():
+            lines = [l for l in wl.read_text(encoding="utf-8").splitlines()
+                     if l.strip()]
+        for entry in args.add:
+            url, _, note = entry.partition("|")
+            url = url.strip()
+            if not url or url.rstrip("/") in existing:
+                continue
+            lines.append(url + (f" | {note.strip()}" if note.strip() else ""))
+            existing.add(url.rstrip("/"))
+            added += 1
+        wl.parent.mkdir(parents=True, exist_ok=True)
+        wl.write_text("\n".join(lines) + ("\n" if lines else ""),
+                      encoding="utf-8")
+        print(f"  [meeting] watchlist: +{added} candidate(s) -> {wl} "
+              f"({len(existing)} total)")
+        if args.kind == "pick" and not args.url:
+            return 0
+    if getattr(args, "dry_run", False):
+        import meeting as m
+
+        if args.kind == "pick":
+            cands = m._pick_candidates(cfg, args.url or [])
+            print(f"  [meeting] dry run: pick meeting, "
+                  f"{len(cands)} candidate(s):")
+            for url, note in cands:
+                print(f"    - {url}" + (f" — {note}" if note else ""))
+        else:
+            print("  [meeting] dry run: stats meeting "
+                  "(agenda = the last `snap` report)")
+        print(f"  Room: {', '.join(r['name'] for r in m.ROLES)} + chair, "
+              f"{cfg.meeting_rounds} round(s) — "
+              f"~{len(m.ROLES) * cfg.meeting_rounds + 2} LLM calls. "
+              "Nothing spent.")
+        return 0
+    from meeting import run_meeting
+
+    print(run_meeting(cfg, args.kind, urls=args.url or [],
+                      rounds=args.rounds, render=args.render,
+                      send=not args.no_send))
+    return 0
 
 
 def cmd_pregen(cfg, args) -> int:
@@ -1828,12 +1899,38 @@ def main() -> int:
                         "captions.srt)")
     p.add_argument("--no-chapters", action="store_true",
                    help="skip chapter timestamps in the description")
+    p.add_argument("--top", type=int, default=0, metavar="N",
+                   help="compilation mode: pick the best N chapters and "
+                        "build ONE countdown video (cards, best last)")
+    p.add_argument("--no-vision", action="store_true", dest="no_vision",
+                   help="(--top) skip the frame quality check")
     p.add_argument("--dry-run", action="store_true",
                    help="print the window + chapters only: no render, $0")
     p.add_argument("--keep-work", action="store_true",
                    help="keep intermediate files (.ass, srt, thumbnails)")
     p.add_argument("--out", default=None,
                    help="output folder (default longform/)")
+
+    p = sub.add_parser("meeting",
+                       help="the AI boardroom: stats review or source pick")
+    p.add_argument("kind", choices=["stats", "pick"],
+                   help="stats = review channel numbers | pick = choose "
+                        "today's source video")
+    p.add_argument("--url", action="append", metavar="LINK",
+                   help="candidate for a pick meeting (repeatable; the "
+                        "watchlist topics/sources.txt is always included)")
+    p.add_argument("--add", action="append", metavar="LINK[|note]",
+                   help="add a candidate to the watchlist, then stop "
+                        "(no meeting)")
+    p.add_argument("--rounds", type=int, default=None, metavar="N",
+                   help="speaking rounds (default: config meeting.rounds, 2)")
+    p.add_argument("--render", action="store_true",
+                   help="(pick) render the winning video right after the "
+                        "meeting")
+    p.add_argument("--no-send", action="store_true", dest="no_send",
+                   help="skip the Telegram summary")
+    p.add_argument("--dry-run", action="store_true", dest="dry_run",
+                   help="show the room + agenda, spend nothing")
 
     p = sub.add_parser("subpreview",
                        help="preview subtitle position/size/font on a real "
@@ -1984,6 +2081,7 @@ def main() -> int:
         "clip": cmd_clip,
         "parts": cmd_parts,
         "longform": cmd_longform,
+        "meeting": cmd_meeting,
         "bot": cmd_bot,
         "pregen": cmd_pregen,
         "jarvis": cmd_jarvis,

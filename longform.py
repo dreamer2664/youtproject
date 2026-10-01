@@ -402,6 +402,7 @@ def run_longform(cfg, url: str = "", file: str = "",
                  start_at: float = 0.0,
                  sub_pos: str = "bottom", subs: bool = True,
                  chapters: bool | None = None,
+                 top: int = 0, use_vision: bool = True,
                  dry_run: bool = False, keep_work: bool = False,
                  out_dir: Path | None = None) -> int:
     """The whole lane. Returns process exit code."""
@@ -456,6 +457,13 @@ def run_longform(cfg, url: str = "", file: str = "",
 
         words = [dict(w, word=mask_profanity(str(w.get("word") or "")))
                  for w in words]
+
+    # ---- compilation mode: the picker builds a Top-N countdown instead
+    if top and top > 0:
+        return run_compilation(cfg, src, source, words or [], source_key,
+                               out_root, work, top, use_vision, sub_pos,
+                               duration=duration,
+                               dry_run=dry_run, keep_work=keep_work)
 
     # ---- plan the window
     bounds: list = []
@@ -563,6 +571,333 @@ def run_longform(cfg, url: str = "", file: str = "",
     print(f"  [longform] {out_path.name}: {title!r} "
           f"({length / 60:.1f} min, 1920x1080)")
     print(f"\n  1 long-form + kit -> {kit}")
+    if not keep_work:
+        shutil.rmtree(work, ignore_errors=True)
+    return 0
+
+
+# =========================================================== --top N mode
+# The EDITED long-form: the picker chooses the source's best CHAPTERS
+# (complete 40-90s stories), each renders landscape, and numbered cards
+# assemble them into one countdown — best moment revealed as #1 last.
+# This is the reused-content-safe product for a clip channel: one
+# credited digest, not a re-upload. Costs ~1 LLM call per picker window
+# on top of the shared transcript (nothing when it's cached and the
+# chapter list is all you need the LLM for).
+TOP_MIN_CHAPTERS = 2
+MIDROLL_SECONDS = 480          # past 8:00 the kit reminds you about mid-rolls
+
+
+def build_chapter_picker_prompt(lines: list[str], cfg, count: int,
+                                min_len: int, max_len: int) -> str:
+    """Chapter picker: standalone stories, not rapid-fire clips."""
+    transcript = "\n".join(lines)
+    return f"""You plan long-form compilation chapters for a video channel.
+
+VIDEO SOURCE: {cfg.topic}
+TRANSCRIPT (timestamps [m:ss] are video-absolute):
+
+{transcript}
+
+Pick the {count * 2} strongest CHAPTERS for a "Top moments" compilation
+(watch time is the goal, not scroll-stopping). A great chapter:
+- {min_len}-{max_len} seconds long — a COMPLETE story, argument or bit,
+  not a highlight flash
+- understandable without the rest of the video
+- strong enough that a viewer stays through it to see the next one
+- in a part of the video where something is actually happening
+
+Reject: rapid one-liners (those are Shorts, not chapters), half-told
+stories that only pay off later, dense exposition, dead air.
+
+Return ONLY JSON:
+{{"clips": [{{"start": seconds, "end": seconds, "hook_start": seconds
+where the story actually begins (use start if it already opens on it),
+"hook": "why this chapter earns its minutes (under 15 words)", "title":
+"a 4-7 word chapter title idea"}}]}}
+Use ABSOLUTE seconds matching the [m:ss] timestamps."""
+
+
+def plan_chapters(cands: list, target_seconds: float, max_moments: int,
+                  min_total: float = 0.0) -> list:
+    """LLM-ranked candidates -> the chapter list, strength order kept.
+
+    The picker returns candidates in strength order; take chapters in
+    that order until the target length is reached (or the list ends),
+    capped at max_moments. PLAY order (worst first, best = #1 last) is
+    decided by top.plan_top — the countdown is the retention trick.
+    min_total: when the target can't be met, still keep enough chapters
+    to clear it (a 2-minute "long-form" is just a bad clip).
+    """
+    if max_moments <= 0:
+        return []
+    picked: list = []
+    total = 0.0
+    for cand in cands:
+        if len(picked) >= max_moments:
+            break
+        if target_seconds and total >= target_seconds:
+            break
+        picked.append(cand)
+        total += cand.end - cand.start
+    if total < min_total:
+        for cand in cands[len(picked):]:
+            if len(picked) >= max_moments:
+                break
+            picked.append(cand)
+            total += cand.end - cand.start
+            if total >= min_total:
+                break
+    return picked
+
+
+def build_compilation_video(plan: list[dict], out_path: Path, cfg,
+                            work_dir: Path) -> Path:
+    """Concat chapter cards + chapters into one 16:9 video.
+
+    Two easy passes instead of one giant filter_complex: every card
+    becomes a tiny 1.4 s mp4 first, then the concat DEMUXER walks the
+    playlist sequentially while one re-encode normalizes everything to
+    {w}x{h} 30 fps stereo. A single mega-encode with 2 inputs per
+    chapter holds every stream's frame pipeline in memory at once and
+    OOMs a 2 GB machine at three chapters; this shape doesn't.
+    """
+    import subprocess
+
+    from assembler import resolve_encoder_args
+    from top import CARD_SECONDS, make_card
+
+    # lane geometry, NOT cfg.format: run_longform restores the channel's
+    # format before this runs, and a countdown is 16:9 by definition
+    width, height = LANDSCAPE_W, LANDSCAPE_H
+    entries: list[Path] = []
+    for seg in plan:
+        card = make_card(seg["rank"], len(plan), seg["title"],
+                         work_dir / f"card_{seg['rank']}.png",
+                         width=width, height=height)
+        card_mp4 = work_dir / f"card_{seg['rank']}.mp4"
+        subprocess.run(
+            ["ffmpeg", "-y", "-loglevel", "error",
+             "-loop", "1", "-t", f"{CARD_SECONDS}", "-i", str(card),
+             "-f", "lavfi", "-t", f"{CARD_SECONDS}", "-i",
+             "anullsrc=r=44100:cl=stereo",
+             "-vf", f"scale={width}:{height},setsar=1,fps=30,"
+                    f"format=yuv420p",
+             "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+             "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
+             str(card_mp4)],
+            check=True, capture_output=True)
+        entries.append(card_mp4)
+        entries.append(Path(seg["path"]))
+
+    list_file = work_dir / "concat.txt"
+    list_file.write_text(
+        "".join(f"file '{str(p).replace(chr(39), chr(39) * 2)}'\n"
+                for p in entries), encoding="utf-8")
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+         "-i", str(list_file),
+         "-vf", f"scale={width}:{height},setsar=1,fps=30,format=yuv420p",
+         "-af", "aresample=44100,aformat=channel_layouts=stereo",
+         *resolve_encoder_args(cfg.encoder), "-c:a", "aac", "-b:a", "160k",
+         "-ar", "44100", "-ac", "2",
+         "-movflags", "+faststart", str(out_path)],
+        check=True, capture_output=True)
+    return out_path
+
+
+def build_compilation_description(plan: list[dict], source: dict) -> str:
+    """Description with YouTube CHAPTER timestamps + credit (tested).
+
+    YouTube only activates chapters when the first stamp is exactly
+    0:00 — the first chapter card IS the video's opening, so #1 starts
+    at 0:00 and every later chapter lands on its card.
+    """
+    from top import CARD_SECONDS, _fmt
+
+    lines = [f"Top {len(plan)} moments from "
+             f"\"{source.get('title', 'this video')}\" "
+             f"({source.get('channel', 'unknown channel')}).", "",
+             "Chapters:"]
+    t = 0.0
+    for seg in plan:
+        lines.append(f"{_fmt(t)}  #{seg['rank']}  {seg['title']}")
+        t += CARD_SECONDS + seg["len"]
+    lines += ["", f"Source: {source.get('url', '')} — full credit to the "
+                  "original creator."]
+    return "\n".join(lines)
+
+
+def _compilation_checklist(total_seconds: float) -> str:
+    midroll = ("- [ ] **Mid-rolls**: past 8:00 — place ad breaks at the "
+               "chapter cards in Studio.\n"
+               if total_seconds >= MIDROLL_SECONDS else "")
+    return (
+        "# Upload checklist — long-form compilation\n\n"
+        "- [ ] **NOT a Short**: upload as a normal 16:9 video. Do not\n"
+        "      let Studio suggest #Shorts in the title.\n"
+        "- [ ] **Title** — paste from `TITLE.txt`\n"
+        "- [ ] **Description** — paste from `DESCRIPTION.txt` BEFORE\n"
+        "      publishing; it carries the chapter timestamps AND the\n"
+        "      source credit that separates a compilation from a reupload.\n"
+        "- [ ] **Chapters** — Studio reads the `0:00 ...` lines in the\n"
+        "      description automatically; keep them at the top.\n"
+        "- [ ] **Category** — Entertainment.\n"
+        f"{midroll}"
+        "- [ ] **AI disclosure** — leave UNticked: the footage is real and\n"
+        "      not AI-generated (only the captions styling is ours).\n"
+        "- [ ] `CREDIT.txt` keeps the source link + chapter windows for\n"
+        "      your records\n")
+
+
+def write_compilation_kit(video: Path, plan: list[dict], source: dict,
+                          out_root: Path, thumbs: list | None = None) -> Path:
+    """Upload kit for the compilation: title, chapters, credit."""
+    kit = out_root / video.stem
+    kit.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(video, kit / "video.mp4")
+    total = sum(seg["len"] for seg in plan)
+    title = f"Top {len(plan)} Moments - {source.get('title', '')}".strip()
+    if len(title) > 90:
+        title = title[:87] + "..."
+    (kit / "TITLE.txt").write_text(title, encoding="utf-8")
+    (kit / "DESCRIPTION.txt").write_text(
+        build_compilation_description(plan, source), encoding="utf-8")
+    (kit / "CREDIT.txt").write_text(
+        "source: " + str(source.get("url", "")) + "\nchannel: "
+        + str(source.get("channel", "")) + "\nchapters: "
+        + ", ".join(f"#{s['rank']} {s.get('start', 0):.0f}s-"
+                    f"{s.get('end', 0):.0f}s"
+                    for s in sorted(plan, key=lambda s: s.get("start", 0)))
+        + "\n", encoding="utf-8")
+    (kit / "CHECKLIST.md").write_text(_compilation_checklist(total),
+                                      encoding="utf-8")
+    for index, thumb in enumerate(thumbs or [], start=1):
+        try:
+            shutil.copy2(thumb, kit / f"THUMB_{index}.jpg")
+        except OSError:
+            pass
+    return kit
+
+
+def run_compilation(cfg, src: Path, source: dict, words: list[dict],
+                    source_key: str, out_root: Path, work: Path,
+                    top_count: int, use_vision: bool = True,
+                    sub_pos: str = "bottom", duration: float = 0.0,
+                    dry_run: bool = False, keep_work: bool = False) -> int:
+    """--top N: pick chapters, render each landscape, countdown assembly."""
+    from clipper import (apply_hook_start, dedupe_overlaps, extract_frame,
+                         frame_times, parse_candidates, snap_candidate,
+                         split_windows, transcript_lines, _frame_ok)
+    from scriptgen import get_provider
+
+    moments = max(1, top_count)
+    min_len = cfg.longform_min_len
+    max_len = cfg.longform_max_len
+    target = cfg.longform_target_seconds
+    from clipper import ClipError
+
+    if min_len >= max_len:
+        raise ClipError(f"longform.min_len ({min_len}) must be under "
+                        f"longform.max_len ({max_len})")
+    if dry_run:
+        print(f"  [longform] dry run: --top {moments} — {min_len}-{max_len}s "
+              f"chapters, target {target:.0f}s total, 1920x1080 countdown "
+              "with cards. No transcript mining, no render.")
+        if not keep_work:
+            shutil.rmtree(work, ignore_errors=True)
+        return 0
+    if len(words) < 60:
+        raise ClipError("transcript too thin to plan chapters")
+
+    provider = get_provider(cfg)
+    windows = split_windows(words)
+    candidates = []
+    for index, win in enumerate(windows, start=1):
+        print(f"  [longform] picking chapters (window {index}/"
+              f"{len(windows)})...")
+        prompt = build_chapter_picker_prompt(transcript_lines(win), cfg,
+                                             moments, min_len, max_len)
+        raw = provider.generate_text(prompt, temperature=0.4,
+                                     tag="longpick", json_mode=True)
+        candidates += parse_candidates(raw, duration, moments * 2,
+                                       min_len, max_len,
+                                       lo=win[0]["start"], hi=win[-1]["end"])
+    candidates = [apply_hook_start(c, min_len) for c in candidates]
+    candidates = [snap_candidate(c, words, min_len, max_len)
+                  for c in candidates]
+    candidates = dedupe_overlaps(candidates)
+    if not candidates:
+        raise ClipError("the model found no usable chapters")
+    print(f"  [longform] {len(candidates)} candidate chapter(s)")
+
+    accepted = []
+    for cand in candidates:
+        if use_vision:
+            verdicts = []
+            for t in frame_times(cand):
+                frame = extract_frame(src, t, work / f"frame_{t:.0f}.jpg")
+                verdicts.append(_frame_ok(frame, cfg))
+            if sum(verdicts) < 2:
+                print(f"  [longform] dropped candidate at {cand.start:.0f}s "
+                      f"(frames look dead)")
+                continue
+        accepted.append(cand)
+    if len(accepted) < TOP_MIN_CHAPTERS:
+        raise ClipError("fewer than 2 usable chapters — the source is "
+                        "too thin for a compilation (try the plain "
+                        "longform mode or `clip`)")
+
+    chapters = plan_chapters(accepted, target, moments,
+                             min_total=2 * min_len)
+    print(f"  [longform] {len(chapters)} chapter(s), "
+          f"{sum(c.end - c.start for c in chapters):.0f}s total")
+
+    # render chapters in strength order; score = inverse picker rank so
+    # top.plan_top's countdown puts the picker's best moment LAST.
+    video_cfg = cfg.data["video"]
+    original_format = video_cfg.get("format")
+    out_root.mkdir(parents=True, exist_ok=True)
+    entries: list[dict] = []
+    try:
+        video_cfg["format"] = "landscape"
+        for index, cand in enumerate(chapters, start=1):
+            seg_path = work / f"seg_{index:02d}.mp4"
+            render_longform(src, (cand.start, cand.end), words, cfg,
+                            seg_path, work, sub_pos)
+            entries.append({"path": seg_path,
+                            "title": cand.title_idea or cand.hook
+                            or f"moment {index}",
+                            "score": len(chapters) - index,
+                            "len": cand.end - cand.start,
+                            "start": cand.start, "end": cand.end})
+            print(f"  [longform] chapter {index}/{len(chapters)}: "
+                  f"{cand.start:.0f}-{cand.end:.0f}s — {cand.hook[:60]}")
+    finally:
+        if original_format is None:
+            video_cfg.pop("format", None)
+        else:
+            video_cfg["format"] = original_format
+
+    from top import plan_top
+
+    plan = plan_top(entries, len(entries))  # worst first, best = #1 last
+    by_path = {entry["path"]: entry for entry in entries}
+    for seg in plan:
+        meta = by_path[seg["path"]]
+        seg["start"], seg["end"] = meta["start"], meta["end"]
+    video_path = out_root / f"{source_key[:8]}_top{len(plan)}.mp4"
+    print(f"  [longform] assembling {len(plan)} chapters + cards "
+          f"({sum(e['len'] for e in plan):.0f}s of chapters)...")
+    build_compilation_video(plan, video_path, cfg, work / "top")
+    first_window = (plan[0]["start"], plan[0]["end"])
+    thumbs = grab_thumbnails(src, first_window, work)
+    kit = write_compilation_kit(video_path, plan, source, out_root, thumbs)
+    size_mb = video_path.stat().st_size / (1024 * 1024)
+    print(f"  [longform] ✅ {video_path.name}  "
+          f"{sum(e['len'] for e in plan):.0f}s  {size_mb:.1f} MB")
+    print(f"  [longform] kit -> {kit}  (chapter timestamps in "
+          "DESCRIPTION.txt)")
     if not keep_work:
         shutil.rmtree(work, ignore_errors=True)
     return 0

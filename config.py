@@ -387,6 +387,20 @@ DEFAULTS: dict[str, Any] = {
         "chapter_seconds": 120,
         # Two marks never closer than this (15-300s).
         "chapter_min_gap": 60,
+        # --top N compilation mode: the picker builds a countdown of the
+        # source's best chapters (complete stories, not highlight flashes).
+        "moments": 6,           # chapters in the compilation
+        "min_len": 40,          # chapter seconds
+        "max_len": 90,
+        "target_seconds": 360,  # aim total length; 0 = just the best N
+    },
+    # The boardroom (`python main.py meeting stats|pick`): four AI seats
+    # (Strategist/Analyst/Producer/Skeptic) + a chair, on demand. Each
+    # seat prefers a different LLM lane so the room really disagrees.
+    "meeting": {
+        "rounds": 2,            # speaking rounds per meeting (1-4)
+        "max_words": 70,        # per speaking turn, chair trims harder
+        "watchlist": "topics/sources.txt",  # pick candidates ("URL | note")
     },
     # `snap` stats tracker (public Data API, ~3 units/channel per run).
     "snap": {
@@ -956,6 +970,68 @@ class Config:
                                        .get("chapter_min_gap", 60))))
         except (TypeError, ValueError):
             return 60.0
+
+
+    @property
+    def longform_moments(self) -> int:
+        """Chapters in a --top compilation (2-12; garbage -> 6)."""
+        try:
+            return max(2, min(12, int(self.data.get("longform", {})
+                                      .get("moments", 6))))
+        except (TypeError, ValueError):
+            return 6
+
+    @property
+    def longform_min_len(self) -> int:
+        """Compilation chapter minimum seconds (15-300; garbage -> 40)."""
+        try:
+            return max(15, min(300, int(self.data.get("longform", {})
+                                        .get("min_len", 40))))
+        except (TypeError, ValueError):
+            return 40
+
+    @property
+    def longform_max_len(self) -> int:
+        """Compilation chapter maximum seconds (20-600; garbage -> 90)."""
+        try:
+            return max(20, min(600, int(self.data.get("longform", {})
+                                        .get("max_len", 90))))
+        except (TypeError, ValueError):
+            return 90
+
+    @property
+    def longform_target_seconds(self) -> float:
+        """Aim total seconds; 0 = no target (0-3600; garbage -> 360)."""
+        try:
+            return max(0.0, min(3600.0, float(self.data.get("longform", {})
+                                              .get("target_seconds", 360))))
+        except (TypeError, ValueError):
+            return 360.0
+
+    @property
+    def meeting_rounds(self) -> int:
+        """Speaking rounds per meeting (1-4; garbage -> 2)."""
+        try:
+            return max(1, min(4, int(self.data.get("meeting", {})
+                                     .get("rounds", 2))))
+        except (TypeError, ValueError):
+            return 2
+
+    @property
+    def meeting_max_words(self) -> int:
+        """Words per speaking turn (30-200; garbage -> 70)."""
+        try:
+            return max(30, min(200, int(self.data.get("meeting", {})
+                                        .get("max_words", 70))))
+        except (TypeError, ValueError):
+            return 70
+
+    @property
+    def meeting_watchlist(self) -> Path:
+        """Pick-meeting candidate file (default topics/sources.txt)."""
+        raw = str(self.data.get("meeting", {}).get("watchlist")
+                  or "topics/sources.txt").strip()
+        return self.root / raw
 
     @property
     def qc_candidates(self) -> int:

@@ -512,6 +512,7 @@ def _pools_line(cfg: Config) -> str:
     pools = [("Gemini", len(cfg.gemini_api_keys)),
              ("Groq", len(cfg.groq_api_keys)),
              ("OpenRouter", len(cfg.openrouter_api_keys)),
+             ("DeepSeek", len(cfg.deepseek_api_keys)),
              ("YouTube", len(cfg.youtube_api_keys)),
              ("11Labs", len(cfg.elevenlabs_api_keys))]
     have = [f"{name}×{count}" for name, count in pools if count]

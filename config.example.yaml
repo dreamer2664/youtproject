@@ -235,6 +235,26 @@ longform:
   chapter_seconds: 120
   # Two marks never closer than this (15-300).
   chapter_min_gap: 60
+  # --top N compilation mode: the picker builds a countdown of the
+  # source's best chapters (numbered cards, best moment last). Tuned by
+  # moments / min_len / max_len / target_seconds below; ~1 LLM call per
+  # picker window on a cached transcript.
+  moments: 6
+  min_len: 40
+  max_len: 90
+  target_seconds: 360
+
+meeting:
+  # The boardroom (`python main.py meeting stats|pick`): four AI seats —
+  # Strategist (Gemini), Analyst (DeepSeek), Producer (Groq), Skeptic
+  # (OpenRouter) — plus a chair that writes minutes and machine-checked
+  # decisions. Seats without keys ride the fallback chain: you lose
+  # personality, never the meeting. Minutes land in out/meetings/, a
+  # short summary in your Telegram DM. `meeting pick --render` clips the
+  # winner and pops it from the watchlist.
+  rounds: 2               # speaking rounds (each seat talks once per round)
+  max_words: 70           # per turn — the room stays sharp
+  watchlist: "topics/sources.txt"  # pick candidates, "URL | note" per line
 
 snap:
   # `python main.py snap` — stats for every channel you track (add each

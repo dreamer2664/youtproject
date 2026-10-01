@@ -1,9 +1,12 @@
 # Daily capacity: what the free stack can actually produce
 
-Researched 2026-09-16. All quotas below are free-tier, no credit card.
-Bottom line first: **5 videos/day is sustainable; ~25/day is a safe burst
-ceiling.** The binding constraints are premium voice minutes and the
-OpenRouter daily cap — not script intelligence.
+Researched 2026-09-16, quotas re-verified 2026-10-01 (see the bottom
+section). All quotas below are free-tier, no credit card. Bottom line
+first: **5 videos/day is sustainable; ~25/day is a safe burst ceiling.**
+The binding constraints are premium voice minutes and the OpenRouter
+daily cap — not script intelligence. At the NEW cadence (one clip
+generation per channel per day + a boardroom meeting) the stack runs at
+~5% of its free capacity — the constraint is judgment, not quota.
 
 ## What one ~65s video costs the stack
 
@@ -50,3 +53,32 @@ OpenRouter daily cap — not script intelligence.
 `python main.py keys` shows every key: requests/characters spent today or
 this month, what's left of each free tier, and when it refills (self-counted
 ledger in work/usage_ledger.json — the APIs don't expose remaining quota).
+
+## Re-verification 2026-10-01 (what moved, what to check)
+
+- **Gemini**: Google removed the public free-tier RPM/RPD tables (now
+  only inside AI Studio, per project). Third-party reports CONFLICT on
+  the newest models: gemini-3.8/3.7/3.6/3.5 Flash ~20 RPD/key vs older
+  Flash/Flash-Lite 500–1,500 RPD. Treat the tight number as real for the
+  newest Flash and **run `python main.py keys --probe`** to measure your
+  own keys; the model sandwich already falls back to the bigger-quota
+  older models. If probes confirm ~20 RPD on 3.8-flash, set
+  `ai.gemini_model` to a Flash-Lite id for the bulk lanes and keep the
+  newest Flash for scripts only.
+- **Groq** (gpt-oss-120b/20b, Qwen): 30 RPM, **1,000 req/day but only
+  ~200k tokens/day**, org-level — extra keys on one account do NOT add
+  quota. The clip lane's Whisper minutes are a separate pool.
+- **OpenRouter**: 50 free-model requests/day unfunded, 1,000/day after a
+  one-time $10 credit purchase. Still the afternoon-slump insurance.
+- **DeepSeek**: the official platform free tier is promo-credit based;
+  aggregators (LLM7, TeamoRouter/OpenCode Zen) serve deepseek-flash class
+  models permanently free at ~200 req/day if you ever want a dedicated
+  Analyst seat.
+- **Pollinations**: anonymous ~1 request/15s (text AND image); a free
+  auth.pollinations.ai token raises it and removes the image watermark.
+  Measured from this sandbox: even tiny prompts can take ~45s — it is a
+  last-resort lane, never a primary.
+- **New lanes' budgets**: `longform` ≈ a clip run or less (chapter pick
+  1/window + fix 1; transcript cache shared). `meeting` ≈ 10 short calls,
+  ~3–25k tokens depending on the agenda size. Two meetings/day is noise
+  next to any lane.
