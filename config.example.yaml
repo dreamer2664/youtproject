@@ -245,14 +245,20 @@ longform:
   target_seconds: 360
 
 meeting:
-  # The boardroom (`python main.py meeting stats|pick`): four AI seats —
+  # The boardroom (`python main.py meeting stats|pick|act|memory`): four
+  # AI seats —
   # Strategist (Gemini), Analyst (DeepSeek), Producer (Groq), Skeptic
   # (OpenRouter) — plus a chair that writes minutes and machine-checked
   # decisions. Seats without keys ride the fallback chain: you lose
   # personality, never the meeting. Minutes land in out/meetings/ with
   # the FULL transcript (`meeting last` reprints it), a summary + each
   # seat's last word in your Telegram DM. `meeting pick --render` clips
-  # the winner and marks its sheet row clipped.
+  # the winner and marks its sheet row clipped. `meeting act` lets the
+  # room DECIDE today's move itself (clip a queued source, or generate a
+  # video on a topic the board writes — trend-aware, exempt from the
+  # meeting call budget) and execute it. Every decision lands in
+  # work/board_memory.json; future agendas see the last few entries
+  # (`meeting memory` replays the log).
   rounds: 2               # speaking rounds (each seat talks once per round)
   max_words: 70           # per turn — the room stays sharp
   # legacy candidates file ("URL | note" per line) — still read, but new

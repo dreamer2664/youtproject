@@ -3,6 +3,10 @@
     python main.py meeting stats     # agents review channel numbers
     python main.py meeting pick      # agents choose today's source video
     python main.py meeting pick --render   # ... and render the winner
+    python main.py meeting act       # the room DECIDES today's move itself:
+                                     #   clip a pending source, or generate
+                                     #   a video on a topic it writes
+    python main.py meeting memory    # what the board decided so far
 
 Inspired by the agent-team videos (multi-AI group chats): each seat is a
 different persona on a DIFFERENT provider when keys allow — Strategist on
@@ -51,6 +55,8 @@ ROLES: list[dict] = [
 
 MAX_DECISIONS = 5
 DECISION_CHARS = 240
+MEMORY_LIMIT = 100          # entries kept in the board memory file
+MEMORY_DIGEST_N = 6         # entries injected into every agenda
 
 
 class MeetingError(RuntimeError):
@@ -99,6 +105,80 @@ def load_watchlist(path: Path) -> list[tuple[str, str]]:
         return []
 
 
+# --------------------------------------------------------- board memory
+def _memory_path(cfg: Config) -> Path:
+    return cfg.work_dir / "board_memory.json"
+
+
+def load_memory(cfg: Config) -> list[dict]:
+    """The board's decision log: [{date, kind, text}, ...] oldest first."""
+    import json
+
+    try:
+        data = json.loads(_memory_path(cfg).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - corrupt/missing = empty memory
+        return []
+    if not isinstance(data, list):
+        return []
+    return [e for e in data if isinstance(e, dict) and e.get("text")]
+
+
+def remember(cfg: Config, kind: str, text: str) -> None:
+    """Append one decision to the log. Never raises; caps the file."""
+    import json
+
+    entry = {"date": f"{datetime.now().astimezone():%Y-%m-%d %H:%M}",
+             "kind": kind, "text": " ".join(str(text).split())[:300]}
+    try:
+        entries = load_memory(cfg) + [entry]
+        _memory_path(cfg).parent.mkdir(parents=True, exist_ok=True)
+        _memory_path(cfg).write_text(
+            json.dumps(entries[-MEMORY_LIMIT:], indent=1, ensure_ascii=False),
+            encoding="utf-8")
+    except Exception:  # noqa: BLE001 - memory is a bonus, never a blocker
+        pass
+
+
+def memory_digest(cfg: Config, n: int = MEMORY_DIGEST_N) -> str:
+    """The last n decisions, compact (pure).
+
+    Full re-reads of every minutes file would cost far too many tokens;
+    one line per past meeting is the board's long-term memory.
+    """
+    entries = load_memory(cfg)
+    if not entries:
+        return ""
+    return "\n".join(f"- {e.get('date', '?')[:16]} [{e.get('kind', '?')}] "
+                     f"{e.get('text', '')}" for e in entries[-n:])
+
+
+def memory_report(cfg: Config) -> str:
+    """`meeting memory` - the whole decision log, newest first."""
+    entries = load_memory(cfg)
+    if not entries:
+        return ("The board has no memory yet - decisions get logged here "
+                "automatically after every meeting.\n"
+                f"(will live in {_memory_path(cfg)})")
+    lines = [f"Board memory - {len(entries)} decision(s), newest first "
+             f"(file: {_memory_path(cfg)})", ""]
+    for e in reversed(entries):
+        lines.append(f"{e.get('date', '?')[:16]}  [{e.get('kind', '?')}] "
+                     f"{e.get('text', '')}")
+    lines += ["", "Meetings see the last "
+              f"{MEMORY_DIGEST_N} of these automatically (keeps token "
+              "cost flat); full transcripts live in out/meetings/."]
+    return "\n".join(lines)
+
+
+def _with_memory(cfg: Config, agenda: str) -> str:
+    """Append the memory digest to an agenda (pure wrapper)."""
+    digest = memory_digest(cfg)
+    if not digest:
+        return agenda
+    return (agenda.rstrip() + "\n\nPREVIOUS BOARD DECISIONS "
+            "(most recent last):\n" + digest)
+
+
 # ------------------------------------------------------------- prompting
 def clamp_words(text: str, limit: int) -> str:
     """Cut a turn at a sentence end near the word limit (pure, tested)."""
@@ -142,6 +222,20 @@ def build_minutes_prompt(agenda: str, transcript: str, kind: str) -> str:
         instruction = ("Choose ONE candidate video for today's clip run. "
                        "Weigh the room's arguments; the choice must be one "
                        "of the candidate URLs above, exactly.")
+    elif kind == "act":
+        shape = ('Return ONLY JSON: {"action": "clip" or "generate" or '
+                 '"none", "url": "<pending source URL, exactly as listed '
+                 '- only when action is clip>", "topic": "<a specific '
+                 'video topic, 6-15 words - only when action is '
+                 'generate>", "reason": "<one sentence>"}')
+        instruction = ("Commit the room to exactly ONE action. clip: the "
+                       "url must be one of the pending sources above, "
+                       "exactly. generate: invent a specific, self-"
+                       "contained topic in the channel's niche that rides "
+                       "whatever the momentum data says is working (your "
+                       "own idea, not a listed source). none: when the "
+                       "room agrees that doing nothing extra today is "
+                       "the right call.")
     else:
         shape = ('Return ONLY JSON: {"summary": "<3 sentences: what the '
                  'room agreed on>", "decisions": ["<action 1>", ...]} '
@@ -158,6 +252,14 @@ MEETING TRANSCRIPT:
 {transcript}
 
 {instruction} {shape}"""
+
+
+def _match_candidate(choice: str,
+                     candidates: list[str] | None) -> str | None:
+    """Exact (or contained) match of the chair's pick against candidates."""
+    return next((c for c in (candidates or [])
+                 if c.strip().rstrip("/") == choice.rstrip("/")
+                 or choice in c or c in choice), None)
 
 
 def parse_decisions(raw: str, kind: str,
@@ -181,13 +283,33 @@ def parse_decisions(raw: str, kind: str,
         choice = str(data.get("choice") or "").strip()
         if not choice:
             return None
-        match = next((c for c in (candidates or [])
-                      if c.strip().rstrip("/") == choice.rstrip("/")
-                      or choice in c or c in choice), None)
+        match = _match_candidate(choice, candidates)
         if match is None:
             return None
         return {"choice": match,
                 "reason": str(data.get("reason") or "").strip()[:300]}
+    if kind == "act":
+        action = str(data.get("action") or "").strip().lower()
+        if action in ("", "nothing", "do nothing", "skip"):
+            action = "none"
+        if action not in ("clip", "generate", "none"):
+            return None
+        out = {"action": action,
+               "reason": str(data.get("reason") or "").strip()[:300]}
+        if action == "clip":
+            choice = str(data.get("url") or data.get("choice") or "").strip()
+            if not choice:
+                return None
+            match = _match_candidate(choice, candidates)
+            if match is None:
+                return None
+            out["url"] = match
+        elif action == "generate":
+            topic = " ".join(str(data.get("topic") or "").split())
+            if len(topic) < 8:
+                return None
+            out["topic"] = topic[:160]
+        return out
     decisions = data.get("decisions")
     if not isinstance(decisions, list):
         return None
@@ -203,8 +325,9 @@ def format_minutes(kind: str, agenda: str, turns: list[dict],
                    decision: dict | None) -> str:
     """The minutes file body (pure, tested)."""
     now = datetime.now().astimezone()
-    lines = [f"# Boardroom — {now:%Y-%m-%d %H:%M} — "
-             f"{'source pick' if kind == 'pick' else 'stats review'}", "",
+    title = {"pick": "source pick", "act": "board action"}.get(
+        kind, "stats review")
+    lines = [f"# Boardroom — {now:%Y-%m-%d %H:%M} — {title}", "",
              "## Present", ""]
     lines += [f"- {role['name']} {role['emoji']} ({role['lane']})"
               for role in ROLES]
@@ -223,6 +346,23 @@ def format_minutes(kind: str, agenda: str, turns: list[dict],
         else:
             lines.append("*No valid decision — the chair's pick did not "
                          "name a candidate.*")
+    elif kind == "act":
+        if decision:
+            if decision["action"] == "clip":
+                lines.append(f"**Board action: clip** {decision['url']}")
+            elif decision["action"] == "generate":
+                lines.append(f"**Board action: generate** "
+                             f"(board-written topic: {decision['topic']})")
+            else:
+                lines.append("**Board action: nothing extra today**")
+            lines.append("")
+            lines.append(f"*Why:* {decision['reason']}")
+            if decision.get("result"):
+                lines.append("")
+                lines.append(f"*Follow-through:* {decision['result']}")
+        else:
+            lines.append("*No valid action could be parsed from the "
+                         "chair's summary.*")
     else:
         if decision:
             lines.append(decision.get("summary") or "")
@@ -314,6 +454,82 @@ def _pick_agenda(candidates: list[tuple[str, str]], cfg: Config) -> str:
     return "\n".join(lines)
 
 
+def trend_lines(cfg: Config, days: int = 3, top: int = 12) -> str:
+    """Per-video view momentum across the last `days` snapshot days.
+
+    This is the board's trend signal: which videos gained views recently
+    (and which channels are stalling) — "ride what works, drop what
+    doesn't" starts from this table.
+    """
+    import channelstats as cs
+    from youtube import load_snapshots
+
+    history = load_snapshots(cs.store_path(cfg))
+    snaps = history.get("days") or []
+    if len(snaps) < 2:
+        return ("(momentum needs 2+ snapshot days - run "
+                "`python main.py snap` daily)")
+    latest = snaps[-1]
+    back = snaps[-(days + 1)] if len(snaps) > days else snaps[0]
+    now_v = latest.get("videos") or {}
+    then_v = back.get("videos") or {}
+    gains: list[tuple[int, str, str, bool]] = []
+    for vid, row in now_v.items():
+        views = row.get("views") or 0
+        old = then_v.get(vid, {}).get("views")
+        gains.append((views - (old if old is not None else 0),
+                      str(row.get("title") or "?"),
+                      str(row.get("channel") or "?"), old is None))
+    gains.sort(key=lambda g: (-g[0], g[1].lower()))
+    total = sum(g for g, *_ in gains)
+    lines = [f"Across the last {days} days (snapshots "
+             f"{back.get('date', '?')} -> {latest.get('date', '?')}): "
+             f"{total:+d} views total."]
+    by_channel: dict[str, int] = {}
+    for gain, _title, channel, _new in gains:
+        by_channel[channel] = by_channel.get(channel, 0) + gain
+    if by_channel:
+        mom = " · ".join(f"{c} {g:+d}" for c, g in
+                         sorted(by_channel.items(), key=lambda kv: -kv[1]))
+        lines.append(f"Channel momentum: {mom}")
+    lines.append("Per video (biggest movers first):")
+    for gain, title, channel, is_new in gains[:top]:
+        tag = " (published since)" if is_new else ""
+        lines.append(f"  {gain:+d} — {title[:60]} [{channel}]{tag}")
+    if len(gains) > top:
+        lines.append(f"  …and {len(gains) - top} more")
+    return "\n".join(lines)
+
+
+def _act_agenda(cfg: Config, candidates: list[tuple[str, str]]) -> str:
+    """The act meeting's data: numbers, momentum, clip sources."""
+    lines = [f"Channel niche: {cfg.topic}",
+             "This is a BOARD ACTION meeting: the room itself commits to "
+             "today's one extra move.", ""]
+    try:
+        lines += ["LATEST CHANNEL NUMBERS (last `snap`):",
+                  _stats_agenda(cfg), ""]
+    except MeetingError as exc:
+        lines += [f"LATEST CHANNEL NUMBERS: unavailable — {str(exc)[:120]}",
+                  ""]
+    lines += ["VIEWS MOMENTUM:", trend_lines(cfg), ""]
+    if candidates:
+        lines.append("Sources available to clip today:")
+        lines += [f"{i}. {url}" + (f" — {note}" if note else "")
+                  for i, (url, note) in enumerate(candidates, 1)]
+    else:
+        lines.append("Sources available to clip: none queued — the clip "
+                     "option is off the table today.")
+    lines.append("")
+    lines.append("Standing context: one clip per day per channel is the "
+                 "cadence. The generate lane renders a real-footage "
+                 "(b-roll + voiceover) video from a topic the board "
+                 "writes itself — the move for when clips are "
+                 "underperforming or the momentum data points at a "
+                 "topic worth riding.")
+    return "\n".join(lines)
+
+
 def _transcript_text(turns: list[dict]) -> str:
     return "\n".join(f"{t['name']}: {t['text']}" for t in turns) or ""
 
@@ -349,20 +565,37 @@ def latest_minutes(cfg: Config) -> Path | None:
 
 def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
                 rounds: int | None = None, render: bool = False,
-                send: bool = True, say=None) -> str:
-    """Hold one meeting. Returns a summary string. Never raises."""
+                send: bool = True, say=None, executor=None) -> str:
+    """Hold one meeting. Returns a summary string. Never raises.
+
+    kind="act" is the autonomous lane: the room commits to ONE action
+    (clip a listed source / generate a video on a board-written topic /
+    nothing) and `executor(decision)` — wired by main.py — carries it
+    out. Board-initiated renders are NOT part of the meeting's call
+    budget: the generate pipeline has its own quota headroom.
+    """
     say = say or print
-    if kind not in ("stats", "pick"):
-        return f"Unknown meeting kind {kind!r} (stats or pick)."
+    if kind not in ("stats", "pick", "act"):
+        return f"Unknown meeting kind {kind!r} (stats, pick or act)."
     rounds = rounds or cfg.meeting_rounds
     try:
         if kind == "stats":
-            agenda = _stats_agenda(cfg)
+            agenda = _with_memory(cfg, _stats_agenda(cfg))
             candidates = None
             question = ("What do these numbers say, and what should we do "
                         "about it today? One video per day per channel is "
                         "the current plan — challenge it if the data says "
                         "so.")
+        elif kind == "act":
+            candidates = _pick_candidates(cfg, urls or [])
+            agenda = _with_memory(cfg, _act_agenda(cfg, candidates))
+            question = ("What should the room DO today? Study the momentum "
+                        "data, the latest numbers and what the board "
+                        "previously decided, then commit to exactly ONE "
+                        "action: (a) CLIP one of the listed sources (name "
+                        "it), (b) GENERATE one video on a specific topic "
+                        "you write that rides what's working, or (c) "
+                        "NOTHING extra (say why). Argue it through first.")
         else:
             candidates = _pick_candidates(cfg, urls or [])
             if not candidates:
@@ -413,7 +646,8 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
     decision = None
     chair = _role_provider(cfg, cfg.ai_provider)
     if chair is not None:
-        cand_urls = [c[0] for c in candidates] if kind == "pick" else None
+        cand_urls = ([c[0] for c in candidates]
+                     if kind in ("pick", "act") else None)
         prompt = build_minutes_prompt(agenda, _transcript_text(turns), kind)
         for attempt in (1, 2):
             try:
@@ -429,6 +663,41 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
             prompt += ("\n\nYour last reply was not valid (wrong shape or "
                        "not one of the candidates). Try again, JSON only.")
 
+    # -- remember the decision (the board's long-term memory) --------------
+    if decision:
+        if kind == "pick":
+            remember(cfg, "pick",
+                     f"picked {decision['choice']} — {decision['reason']}")
+        elif kind == "stats":
+            joined = "; ".join(decision["decisions"])
+            remember(cfg, "stats",
+                     (decision.get("summary") or "")
+                     + (f" Decisions: {joined}" if joined else ""))
+        elif kind == "act":
+            if decision["action"] == "clip":
+                remember(cfg, "act", f"clip {decision['url']} — "
+                                     f"{decision['reason']}")
+            elif decision["action"] == "generate":
+                remember(cfg, "act", f"generate '{decision['topic']}' — "
+                                     f"{decision['reason']}")
+            else:
+                remember(cfg, "act", f"none — {decision['reason']}")
+
+    # -- act: carry the decision out ----------------------------------------
+    if kind == "act" and decision and decision["action"] != "none":
+        if executor is None:
+            decision["result"] = ("not executed — no executor was wired "
+                                  "(re-run via `python main.py meeting "
+                                  "act` to follow through)")
+        else:
+            say(f"  [meeting] executing the board's action: "
+                f"{decision['action']}")
+            try:
+                decision["result"] = str(executor(decision) or "done")
+            except Exception as exc:  # noqa: BLE001 - report, don't crash
+                decision["result"] = f"execution failed: {str(exc)[:200]}"
+        remember(cfg, "act", f"outcome: {decision['result']}")
+
     # -- deliver -----------------------------------------------------------
     now = datetime.now().astimezone()
     minutes = format_minutes(kind, agenda, turns, decision)
@@ -442,10 +711,22 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
         say(f"  [meeting] could not write minutes ({exc})")
 
     header = (f"📋 Boardroom {now:%Y-%m-%d}: "
-              f"{'source pick' if kind == 'pick' else 'stats review'}")
+              + {"pick": "source pick", "act": "board action"}.get(
+                  kind, "stats review"))
     if kind == "pick" and decision:
         summary = (f"{header}\n\nToday's source: {decision['choice']}\n"
                    f"Why: {decision['reason']}")
+    elif kind == "act" and decision:
+        if decision["action"] == "clip":
+            body = f"Board action: clip {decision['url']}"
+        elif decision["action"] == "generate":
+            body = (f"Board action: generate — '{decision['topic']}' "
+                    "(board-written script, b-roll lane)")
+        else:
+            body = "Board action: nothing extra today"
+        summary = f"{header}\n\n{body}\nWhy: {decision['reason']}"
+        if decision.get("result"):
+            summary += f"\n{decision['result']}"
     elif kind == "stats" and decision:
         summary = (f"{header}\n\n{decision.get('summary', '')}\n\n"
                    "Decisions:\n"
@@ -480,6 +761,17 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
             summary += f"\n\nRender failed: {str(exc)[:200]}"
             _mark_sheet(cfg, decision["choice"], "failed",
                         f"render failed: {str(exc)[:120]}")
+    if kind == "act" and decision and decision["action"] == "clip":
+        _mark_sheet(cfg, decision["url"], "picked",
+                    f"boardroom: {decision['reason']}")
+        try:
+            wl = cfg.meeting_watchlist
+            if wl.exists():
+                wl.write_text(remove_watchlist_url(
+                    wl.read_text(encoding="utf-8"), decision["url"]),
+                    encoding="utf-8")
+        except OSError:
+            pass
     if kind == "pick" and decision:
         _mark_sheet(cfg, decision["choice"], "picked",
                     f"boardroom: {decision['reason']}")

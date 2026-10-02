@@ -82,3 +82,45 @@ ledger in work/usage_ledger.json — the APIs don't expose remaining quota).
   1/window + fix 1; transcript cache shared). `meeting` ≈ 10 short calls,
   ~3–25k tokens depending on the agenda size. Two meetings/day is noise
   next to any lane.
+
+## Re-verification 2026-10-02 (fresh quotas + the multi-key truth)
+
+Current free-tier consensus (sources below; `python main.py keys` stays
+the live ledger, `keys --probe` measures your own keys):
+
+| Provider | Free tier (Oct 2026) | Extra keys on the SAME account |
+|---|---|---|
+| Gemini | Gemini 3 Flash 10 RPM / 250k TPM / **1,500 req/day per project**; 3.1 Flash-Lite 15 RPM / 1,000/day; Pro 50/day | nothing — the quota is per PROJECT. New keys from *other projects/accounts* = new pools (the legit multiplier) |
+| Groq | 30 RPM / 6k TPM / ~1,000 req/day per model (14.4k/day org aggregate), ~8h Whisper audio | **NOTHING — the pool is org-level.** All keys on one account share it |
+| OpenRouter | 25+ `:free` models, 20 RPM, **50 req/day per account**; one-time $10 credit → **1,000/day** (credit never expires) | nothing — the cap is per ACCOUNT, keys share it |
+| DeepSeek | balance-based free grant (platform.deepseek.com) | new account = new grant |
+| ElevenLabs | ~10k chars/month per key | each key its own ~10k |
+| Pexels / Pixabay / YouTube / Pollinations | unchanged (200/h + 20k/mo · ~100/min · 10k units/day · 1 req/15s) | each key its own pool |
+
+**What this means for the key re-creation plan** (decided 2026-10-02):
+
+1. Ten OpenRouter keys on ONE account = still 50 requests/day total.
+   Either spread across separate accounts (ToS gray zone — it works,
+   know what it is), or put ONE $10 credit on one account → 1,000
+   requests/day forever. The $10 beats ~19 extra accounts and is fully
+   legit.
+2. Groq: same-account keys add literally nothing. Separate accounts
+   each get the org pool. The clean move: **add a credit card** — the
+   Developer tier has zero minimum spend and multiplies rate limits
+   ~10x (that's 10x Whisper minutes too, our binding constraint).
+3. Gemini: keys from separate Google accounts (or separate Cloud
+   projects) genuinely multiply — each carries its own ~1,500/day.
+   This is the provider where multiple keys are unambiguously worth it.
+4. The 2026-10-01 caveat stands for the very newest Flash ids
+   (3.5–3.8): third-party tables disagree (some report ~20 RPD early in
+   a model's life); our model sandwich falls back to older Flash ids
+   automatically. `keys --probe` settles it on your own keys.
+
+Sources (fetched 2026-10-02): pecollective.com/tools/gemini-free-tier-guide
+(Gemini 3 Flash 10 RPM / 250k TPM / 1,500 RPD; 3.1 Flash-Lite 1,000 RPD),
+tokenmix.ai/blog/gemini-api-free-tier-limits (2.5 Flash 1,500 RPD; Pro 50
+RPD), cloudzero.com/blog/groq-pricing (Groq org-level: 30 RPM / 6k TPM /
+14.4k RPD, "multiple API keys don't help"; Developer tier 10x),
+layer3labs.io/guides/groq-pricing (Whisper ~20 RPM / 2,000 req/day
+separate pool), costgoat.com/deals/openrouter.ai + buldrr.com (50/day →
+$10 credit → 1,000/day, credits never expire).

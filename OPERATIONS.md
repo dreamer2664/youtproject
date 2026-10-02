@@ -154,6 +154,9 @@ headers and "Title — Part X" kit titles. It warns when a half runs past 3:00.
 python main.py meeting stats              # agents review the channel numbers
 python main.py meeting pick               # agents argue over today's source
 python main.py meeting pick --render      # ...and clip the winner after
+python main.py meeting act                # the room DECIDES today's move itself
+python main.py meeting act --dry-run      # preview its agenda, spend nothing
+python main.py meeting memory             # every decision the board ever made
 python main.py meeting last               # re-read the whole debate
 python main.py meeting pick --dry-run     # room + agenda, nothing spent
 ```
@@ -175,6 +178,36 @@ Candidates come from the source sheet (every queued row) plus any `--url`
 flags. `--render` turns a pick into a clip run: the winner's sheet row
 moves to `clipped` (or `failed` if the render refuses). A meeting is ~10
 short LLM calls — run it before the day's generation, not all day.
+
+### `meeting act` — the board acts on its own
+
+The autonomous lane. The agenda carries the channel numbers, a **3-day
+momentum table** (which videos and channels actually gained views —
+"ride what works"), the pending sources, and the board's previous
+decisions. The room argues, then commits to exactly ONE action:
+
+- **clip** one of the listed sources — rendered immediately, sheet row
+  marked (`clipped`/`failed`);
+- **generate** one video on a topic the board writes itself — the
+  b-roll (Pexels) + voiceover lane, chosen from the trend data (e.g.
+  psychological explainers outperforming animal clips → another
+  psychological topic). The chair's topic is validated to be a real,
+  specific topic, then rendered via the normal `generate` pipeline;
+- **none** — a no-action day, with the reason on record.
+
+Board-initiated renders are **exempt from the meeting's ~10-call
+budget**: the generate pipeline has its own quota headroom (CAPACITY.md)
+and runs after the meeting closes.
+
+### Board memory
+
+Every decision — picks, stats actions, act moves and their outcomes —
+is logged to `work/board_memory.json` (capped at the last 100). Each
+meeting's agenda automatically includes the last 6 entries as one-line
+digest items, so the room builds on what it previously decided without
+re-reading old transcripts (which would cost far too many tokens).
+`meeting memory` shows the whole log; the full debates stay in
+`out/meetings/*.md`.
 
 ## Parts (series splitter — mechanical, not editorial)
 

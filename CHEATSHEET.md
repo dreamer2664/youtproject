@@ -18,6 +18,9 @@ cd youtproject
 python main.py preflight           # check FFmpeg, libraries, folders
 python main.py preflight --live    # + validate the Gemini key (one tiny free call)
 python main.py keys --probe        # live-check every API key you configured
+python main.py keys --advice          # what each key lane powers + the honest
+                                           # multi-key truths (Groq org-level, the
+                                           # OpenRouter $10 move, ranked upgrades)
 ```
 
 Keys live in `config.yaml` (copy `config.example.yaml` to start — it's
@@ -121,13 +124,28 @@ python main.py meeting pick --url "https://youtu.be/xyz"   # add a one-off candi
 python main.py meeting pick --rounds 3     # longer debate (default 2)
 python main.py meeting pick --dry-run      # room + agenda, spend nothing
 python main.py meeting stats               # review the channel numbers (needs `snap` first)
+python main.py meeting act                 # the room decides today's move ITSELF and
+                                           #   executes it (clip a queued source, or
+                                           #   generate a video on a topic it writes)
+python main.py meeting act --dry-run       # preview the act agenda (numbers, 3-day
+                                           #   momentum, sources, memory) — $0
+python main.py meeting act --rounds 3      # a longer debate before committing
+python main.py meeting memory              # the board's full decision log
 python main.py meeting last                # re-read the last meeting — full transcript
 python main.py meeting pick --no-send      # skip the Telegram summary
 ```
 
 Every turn prints live, the Telegram DM carries each seat's last word,
 and the minutes (with the FULL transcript) land in
-`out/meetings/YYYY-MM-DD-pick.md` (or `-stats.md`).
+`out/meetings/YYYY-MM-DD-pick.md` (or `-stats.md` / `-act.md`).
+
+`meeting act` agenda = channel numbers + 3-day view momentum per video
+and channel + pending sources + the last 6 board decisions. Its action
+is machine-checked (clip must name a listed source; generate must carry
+a real topic) and executed on the spot — board-written generates ride
+the b-roll (Pexels) lane and are exempt from the meeting's ~10-call
+budget. Every decision lands in `work/board_memory.json`; `meeting
+memory` replays the log.
 
 ---
 

@@ -25,24 +25,30 @@ from pathlib import Path
 ORDER = ["gemini", "groq", "openrouter", "deepseek", "elevenlabs", "pexels",
          "pixabay", "youtube", "pollinations"]
 
-# Free-tier limits, verified Sep 2026 (sources in CAPACITY.md).
+# Free-tier limits, re-verified 2026-10-02 (sources in CAPACITY.md).
 LIMITS = {
     "gemini": {
         "title": "GEMINI",
-        "day": 1000, "unit": "requests",
-        "rule": "~1,000 requests/day per key · resets midnight US Pacific",
+        "day": 1500, "unit": "requests",
+        "rule": "~1,500 requests/day per PROJECT/key on Flash models "
+                "(3 Flash 10 RPM · 250k tokens/min · 3.1 Flash-Lite "
+                "1,000/day · Pro 50/day) · resets midnight US Pacific",
         "tz": "pac"},
     "groq": {
         "title": "GROQ",
         "day": 14400, "unit": "requests", "shared": True,
         "audio_day": 28800,
-        "rule": "~14,400 requests/day, ALL KEYS ONE POOL · ~8h Whisper "
-                "audio/day · resets midnight UTC",
+        "rule": "ONE POOL PER ACCOUNT (org-level): all its keys share "
+                "~1,000 req/day per model, 6k tokens/min, ~8h Whisper "
+                "audio · add a card (free) = Developer tier, 10x · "
+                "resets midnight UTC",
         "tz": "utc"},
     "openrouter": {
         "title": "OPENROUTER",
         "day": 50, "unit": "requests", "shared": True,
-        "rule": "50 requests/day on :free models (20/minute) · resets midnight UTC",
+        "rule": "50 requests/day on :free models (20/minute) per ACCOUNT "
+                "· one-time $10 credit -> 1,000/day forever · resets "
+                "midnight UTC",
         "tz": "utc"},
     "deepseek": {
         "title": "DEEPSEEK",
@@ -71,6 +77,88 @@ LIMITS = {
         "unit": "requests",
         "rule": "anonymous, no hard daily cap (paced ~1 request/15s)"},
 }
+
+# What each lane is good for + how to actually add capacity
+# (re-verified 2026-10-02; plain truths, sources in CAPACITY.md).
+ADVICE = {
+    "gemini": [
+        "Powers: scripts + titles + fact-check + boardroom Strategist "
+        "(chain head). Models: Gemini 3 Flash (default), 3.1 Flash-Lite, "
+        "2.5 Flash — all ~1,500 requests/day per project.",
+        "ADDING CAPACITY: each Google ACCOUNT (and each Cloud project) "
+        "carries its own pool — extra keys from separate projects are "
+        "the one legit multiplier. API image generation is NOT on the "
+        "free tier; Nano Banana stills are free ~500/day in the AI "
+        "Studio web UI, not via API."],
+    "groq": [
+        "Powers: Whisper transcription (the stack's binding constraint, "
+        "~8h audio/day) + fast LLM answers (Llama/Qwen/gpt-oss) + "
+        "boardroom Producer.",
+        "ADDING CAPACITY: extra keys on the SAME account add NOTHING "
+        "(org-level pool). Separate accounts each get a pool (gray "
+        "zone). The legit move: add a credit card — the Developer tier "
+        "is $0/min-spend and multiplies rate limits ~10x."],
+    "openrouter": [
+        "Powers: boardroom Skeptic + overflow lane; 25+ :free models "
+        "(Llama, Gemma, Qwen, DeepSeek R1 distills, Mistral).",
+        "ADDING CAPACITY: 50 requests/day is PER ACCOUNT — keys on one "
+        "account share it. A one-time $10 credit (never expires) lifts "
+        "that account to 1,000/day: cheaper and cleaner than 19 extra "
+        "accounts."],
+    "deepseek": [
+        "Powers: boardroom Analyst + cheap reasoning lane.",
+        "ADDING CAPACITY: the free grant is balance-based — check "
+        "platform.deepseek.com; top-ups are cheap if it ever runs dry."],
+    "youtube": [
+        "Powers: snap stats (3 units/channel/day) + yt search (100).",
+        "10,000 units/day is far beyond this stack's use — one key "
+        "is enough; a second from another Cloud project is spare."],
+    "pexels": [
+        "Powers: real-footage b-roll for the generate lane (the board's "
+        "'make a video' action rides this).",
+        "200/hour + 20,000/month per key; a second key doubles a "
+        "generous pool — low priority."],
+    "pixabay": [
+        "Powers: alternate b-roll lane (~100 req/min). One key is "
+        "plenty."],
+    "elevenlabs": [
+        "Powers: premium narration (~10k chars/month per key); overflow "
+        "rides edge-tts (unlimited, free). Extra keys = extra ~10k "
+        "chars/month each."],
+    "pollinations": [
+        "Powers: last-resort text + keyless images (1 req/15s "
+        "anonymous, watermarked). Register at auth.pollinations.ai "
+        "(free) for more + no watermark."],
+}
+
+
+def advice_report() -> str:
+    """`keys --advice`: what each key does + how to add capacity."""
+    lines = ["Key strategy — what each lane powers, and how to grow it",
+             "(free tiers re-verified 2026-10-02; sources in CAPACITY.md)",
+             ""]
+    for provider in ORDER:
+        if provider not in ADVICE:
+            continue
+        lines.append(f"{LIMITS[provider]['title']}")
+        for tip in ADVICE[provider]:
+            lines.append(f"  · {tip}")
+        lines.append("")
+    lines += [
+        "Ranked capacity moves:",
+        "  1. OpenRouter: one-time $10 credit -> 1,000 free-model "
+        "requests/day (beats 19 extra accounts, fully legit).",
+        "  2. Groq: add a credit card -> Developer tier, ~10x rate "
+        "limits at zero minimum spend.",
+        "  3. Gemini: extra keys from separate Google accounts/projects "
+        "— each carries its own ~1,500/day pool (the legit multiplier).",
+        "  4. More accounts on any provider multiplies pools but rides "
+        "the ToS gray zone — know that's what it is.",
+        "",
+        "Rotating keys: revoke + re-create freely; the ledger tracks "
+        "keys MASKED, so new keys just start fresh rows."]
+    return "\n".join(lines)
+
 
 LEDGER_NAME = "usage_ledger.json"
 KEEP_DAYS = 35
@@ -336,11 +424,16 @@ def build_status(cfg, now: datetime | None = None) -> str:
     lines.append(f"Ledger: {_path if _path else 'work/' + LEDGER_NAME}"
                  " (masked keys, pruned after "
                  f"{KEEP_DAYS} days)")
+    lines.append("Key strategy + how to add capacity: "
+                 "python main.py keys --advice")
     return "\n".join(lines)
 
 
 def cmd_keys(cfg, args) -> int:
-    """`python main.py keys` — the dashboard."""
+    """`python main.py keys` — the dashboard (`--advice`: key strategy)."""
+    if getattr(args, "advice", False):
+        print(advice_report())
+        return 0
     print(build_status(cfg))
     return 0
 

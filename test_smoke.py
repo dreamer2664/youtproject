@@ -1536,6 +1536,289 @@ def t_meeting():
     assert rows["https://youtu.be/nope"]["status"] == "failed"
 
 
+def t_meeting_act():
+    """Board autonomy: act meetings, board memory, momentum trends."""
+    import io
+    import json as _json
+    from contextlib import redirect_stdout
+    from unittest.mock import patch as _patch
+
+    import meeting as mt
+    from meeting import (MEMORY_DIGEST_N, format_minutes, load_memory,
+                         memory_digest, memory_report, parse_decisions,
+                         remember, trend_lines)
+    from sheet import append_sheet
+
+    # -- decision validation: the act JSON --------------------------------
+    cands = ["https://youtu.be/aaa", "https://youtu.be/bbb"]
+    clip = parse_decisions(
+        _json.dumps({"action": "clip", "url": "https://youtu.be/aaa",
+                     "reason": "strong pending source"}), "act", cands)
+    assert clip == {"action": "clip", "url": "https://youtu.be/aaa",
+                    "reason": "strong pending source"}
+    # a clip that names no listed source is no decision at all
+    assert parse_decisions(
+        _json.dumps({"action": "clip", "url": "https://youtu.be/zzz"}),
+        "act", cands) is None
+    assert parse_decisions(
+        _json.dumps({"action": "clip"}), "act", cands) is None
+    gen = parse_decisions(
+        _json.dumps({"action": "generate",
+                     "topic": "why ships used to carry canaries",
+                     "reason": "morbid explainers are carrying the "
+                               "channel"}), "act", cands)
+    assert gen["action"] == "generate" and "canaries" in gen["topic"]
+    # a topic too thin to render is refused
+    assert parse_decisions(
+        _json.dumps({"action": "generate", "topic": "boats"}),
+        "act", cands) is None
+    assert parse_decisions(
+        _json.dumps({"action": "generate"}), "act", cands) is None
+    # none tolerates lazy spellings; anything else is invalid
+    for lazy in ("none", "nothing", "do nothing", "skip"):
+        got = parse_decisions(_json.dumps({"action": lazy,
+                                           "reason": "r"}), "act", cands)
+        assert got == {"action": "none", "reason": "r"}, lazy
+    assert parse_decisions(
+        _json.dumps({"action": "delete-the-channel"}), "act",
+        cands) is None
+
+    # -- the chair's act prompt names all three actions --------------------
+    p = mt.build_minutes_prompt("AGENDA", "t", "act")
+    assert '"action"' in p and "clip" in p and "generate" in p \
+        and "none" in p
+
+    # -- minutes: act outcomes + follow-through ---------------------------
+    body = format_minutes("act", "agenda",
+                           [{"name": "Producer", "emoji": "🎬",
+                             "text": "clip it."}],
+                           {"action": "clip", "url": "https://youtu.be/aaa",
+                            "reason": "r", "result": "Clipped -> clips/."})
+    assert "Board action: clip" in body and "Follow-through" in body
+    assert "board action" in body.splitlines()[0].lower()
+    body = format_minutes("act", "a", [], {"action": "generate",
+                                           "topic": "canary ships",
+                                           "reason": "r"})
+    assert "Board action: generate" in body and "canary ships" in body
+    body = format_minutes("act", "a", [], {"action": "none", "reason": "r"})
+    assert "nothing extra today" in body
+    body = format_minutes("act", "a", [], None)
+    assert "no valid action" in body.lower()
+
+    # -- board memory: remember, digest, report, cap ------------------------
+    cfg = tmp_cfg()
+    assert load_memory(cfg) == []
+    assert memory_digest(cfg) == ""
+    assert "no memory yet" in memory_report(cfg).lower()
+    remember(cfg, "stats", "agreed to pause uploads")
+    remember(cfg, "pick", "picked https://youtu.be/aaa")
+    remember(cfg, "act", "generate 'canary ships' — momentum")
+    entries = load_memory(cfg)
+    assert [e["kind"] for e in entries] == ["stats", "pick", "act"]
+    digest = memory_digest(cfg)
+    assert digest.count("\n") == 2 and "canary ships" in digest
+    assert "[stats]" in digest and "[pick]" in digest   # one line each
+    # the report is newest-first; the digest is the tail
+    report = memory_report(cfg)
+    assert report.index("canary ships") < report.index("pause uploads")
+    assert "newest first" in report
+    # only the last MEMORY_DIGEST_N entries make it into agendas
+    for i in range(MEMORY_DIGEST_N + 2):
+        remember(cfg, "stats", f"filler decision {i}")
+    short = memory_digest(cfg)
+    assert short.count("\n") == MEMORY_DIGEST_N - 1
+    assert "filler decision 0" not in short and \
+        "filler decision 1" not in short
+    assert len(load_memory(cfg)) == MEMORY_DIGEST_N + 5  # nothing lost yet
+    # the log caps at MEMORY_LIMIT entries on disk
+    import meeting
+    with _patch.object(meeting, "MEMORY_LIMIT", 8):
+        remember(cfg, "stats", "one past the cap")
+    assert len(load_memory(cfg)) == 8
+    assert load_memory(cfg)[-1]["text"] == "one past the cap"
+
+    # -- momentum trends from snapshot history -----------------------------
+    import channelstats as cs
+    import youtube as yt
+
+    cfg2 = tmp_cfg()
+    history = {"channels": [], "days": [], "flagged": []}
+
+    def day(hist, date, v1, v2):
+        videos = [
+            {"id": "vid1", "title": "The shipwreck psychology",
+             "channel": "Compass", "views": v1, "likes": 0, "comments": 0,
+             "published": date},
+            {"id": "vid2", "title": "A very calm animal clip",
+             "channel": "ClipStudios", "views": v2, "likes": 0,
+             "comments": 0, "published": date},
+        ]
+        return yt.record_snapshot(hist, videos, date)
+
+    history = {"channels": [], "days": [], "flagged": []}
+    for date, v1, v2 in (("2026-09-29", 100, 50),
+                         ("2026-09-30", 130, 52),
+                         ("2026-10-01", 160, 53),
+                         ("2026-10-02", 240, 54)):
+        history = day(history, date, v1, v2)
+    yt.save_snapshots(cs.store_path(cfg2), history)
+    trend = trend_lines(cfg2, days=3)
+    assert "+140" in trend          # vid1: 100 views (09-29) -> 240 (10-02)
+    assert "+4" in trend            # vid2: 50 -> 54
+    assert "momentum" in trend.lower()
+    assert "Compass +140" in trend and "ClipStudios +4" in trend
+    assert "shipwreck psychology" in trend and "calm animal" in trend
+    # a brand-new video (not in the 3-days-ago snapshot) shows as new
+    history["days"][-1]["videos"]["vid3"] = {
+        "title": "Brand new upload", "channel": "Compass", "views": 12,
+        "likes": 0, "comments": 0, "published": "2026-10-02"}
+    yt.save_snapshots(cs.store_path(cfg2), history)
+    assert "published since" in trend_lines(cfg2, days=3)
+    # one snapshot day is not a trend
+    cfg3 = tmp_cfg()
+    single = day({"channels": [], "days": [], "flagged": []},
+                 "2026-10-02", 10, 5)
+    yt.save_snapshots(cs.store_path(cfg3), single)
+    assert "2+ snapshot days" in trend_lines(cfg3)
+
+    # -- a full act meeting on scripted seats ------------------------------
+    cfg4 = tmp_cfg()
+    append_sheet(cfg4.sources_sheet, "https://youtu.be/aaa", "octopus doc")
+    calls = []
+
+    class ActChair:
+        def generate_text(self, prompt, temperature=0.7, tag="",
+                          json_mode=False):
+            if json_mode:
+                return _json.dumps(
+                    {"action": "generate",
+                     "topic": "why lighthouse keepers heard voices",
+                     "reason": "morbid explainers outperform, ride it"})
+            return "I say we generate — the trend is clear."
+
+    with _patch.object(mt, "_role_provider",
+                       lambda c, lane: ActChair()), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(cfg4, "act", rounds=1, send=False,
+                                 executor=lambda d: calls.append(d) or
+                                 f"Rendered '{d['topic']}' -> out/")
+    assert "Board action: generate" in summary
+    assert "lighthouse keepers" in summary
+    assert "Rendered" in summary
+    assert calls and calls[0]["action"] == "generate" \
+        and "lighthouse" in calls[0]["topic"]
+    # decision + outcome both landed in memory
+    mem = " | ".join(e["text"] for e in load_memory(cfg4))
+    assert "generate 'why lighthouse keepers heard voices'" in mem
+    assert "outcome: Rendered" in mem
+    # minutes file carries the follow-through
+    act_files = list((cfg4.out_dir / "meetings").glob("*-act.md"))
+    assert len(act_files) == 1
+    body = act_files[0].read_text(encoding="utf-8")
+    assert "Board action: generate" in body and "Follow-through" in body
+    # the agenda the room saw: momentum note + sheet source + memory
+    assert "octopus doc" in body          # candidates were on the table
+
+    # -- a clip action executes + books the sheet ---------------------------
+    cfg5 = tmp_cfg()
+    append_sheet(cfg5.sources_sheet, "https://youtu.be/bbb", "kevin hart")
+
+    class ClipChair:
+        def generate_text(self, prompt, temperature=0.7, tag="",
+                          json_mode=False):
+            if json_mode:
+                return _json.dumps(
+                    {"action": "clip", "url": "https://youtu.be/bbb",
+                     "reason": "pending and on-niche"})
+            return "clip it."
+
+    with _patch.object(mt, "_role_provider",
+                       lambda c, lane: ClipChair()), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(cfg5, "act", rounds=1, send=False,
+                                 executor=lambda d: "Clipped -> clips/.")
+    assert "Board action: clip" in summary
+    assert "https://youtu.be/bbb" in summary
+    rows = {r["url"]: r for r in
+            __import__("sheet").load_sheet(cfg5.sources_sheet)}
+    assert rows["https://youtu.be/bbb"]["status"] == "picked"
+
+    # -- 'none' is a valid outcome, and no executor fires -------------------
+    cfg6 = tmp_cfg()
+
+    class NoneChair:
+        def generate_text(self, prompt, temperature=0.7, tag="",
+                          json_mode=False):
+            if json_mode:
+                return _json.dumps({"action": "none",
+                                    "reason": "clips are landing fine"})
+            return "hold."
+
+    fired = []
+    with _patch.object(mt, "_role_provider",
+                       lambda c, lane: NoneChair()), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(cfg6, "act", rounds=1, send=False,
+                                 executor=lambda d: fired.append(d))
+    assert "nothing extra today" in summary and not fired
+    assert "none — clips are landing fine" in \
+        " | ".join(e["text"] for e in load_memory(cfg6))
+
+    # -- executor = main.py's follow-through, unit level ---------------------
+    import main as main_mod
+
+    cfg7 = tmp_cfg()
+    seen = {}
+
+    def fake_generate(cfg, args):
+        seen["topic"] = args.topic
+        seen["count"] = args.count
+        return 0
+
+    with _patch.object(main_mod, "cmd_generate", fake_generate):
+        out = main_mod._execute_board_action(
+            cfg7, {"action": "generate", "topic": "canary ships",
+                   "reason": "r"})
+    assert seen["topic"] == "canary ships" and seen["count"] == 1
+    assert "Rendered" in out
+    with _patch.object(main_mod, "cmd_generate",
+                       lambda c, a: 1):
+        out = main_mod._execute_board_action(
+            cfg7, {"action": "generate", "topic": "canary ships",
+                   "reason": "r"})
+    assert "failed" in out.lower()
+
+    cfg8 = tmp_cfg()
+    append_sheet(cfg8.sources_sheet, "https://youtu.be/ccc", "")
+    import clipper as clipper_mod
+
+    clipped = {}
+
+    def fake_run_clip(cfg, url=None, **kw):
+        clipped["url"] = url
+        return ["clips/x.mp4"]
+
+    with _patch.object(clipper_mod, "run_clip", fake_run_clip):
+        out = main_mod._execute_board_action(
+            cfg8, {"action": "clip", "url": "https://youtu.be/ccc",
+                   "reason": "r"})
+    assert clipped["url"] == "https://youtu.be/ccc"
+    assert "clips/" in out
+    rows = {r["url"]: r for r in
+            __import__("sheet").load_sheet(cfg8.sources_sheet)}
+    assert rows["https://youtu.be/ccc"]["status"] == "clipped"
+
+    # -- without an executor the decision still lands, unexecuted ----------
+    cfg9 = tmp_cfg()
+    with _patch.object(mt, "_role_provider",
+                       lambda c, lane: ActChair()), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(cfg9, "act", rounds=1, send=False)
+    assert "not executed" in summary
+    assert "generate 'why lighthouse" in \
+        " | ".join(e["text"] for e in load_memory(cfg9))
+
+
 def t_sheet():
     from sheet import (SheetError, append_sheet, ensure_sheet,
                        load_sheet, mark_sheet, parse_sheet,
@@ -3458,6 +3741,19 @@ def t_keystats():
     assert row["req"] == 10 and row["tok"] == 840
     assert row["tags"]["script"] == {"req": 2, "tok": 100}
     assert row["tags"]["probe"] == {"req": 1, "tok": 40}
+
+    # -- key strategy advice (2026-10-02): honest multi-key truths --------
+    advice = keystats.advice_report()
+    assert "org-level" in advice or "NOTHING" in advice   # groq truth
+    assert "1,000/day" in advice                # openrouter $10 move
+    assert "per project" in advice.lower() or "1,500" in advice
+    assert "Ranked capacity moves" in advice
+    # every provider with keys gets advice, in dashboard order
+    for name in keystats.ORDER:
+        title = keystats.LIMITS[name]["title"]
+        assert title in advice, name
+    # the default dashboard points at it
+    assert "--advice" in keystats.build_status(cfg)
     assert row["tags"]["(untagged)"] == {"req": 7, "tok": 700}
     assert "ancient" not in row["tags"]
     report = keystats.month_report()
@@ -7380,6 +7676,7 @@ def main(argv: list[str] | None = None) -> int:
         ("longform", t_longform),
         ("longform_top", t_longform_top),
         ("meeting", t_meeting),
+        ("meeting act", t_meeting_act),
         ("sheet", t_sheet),
         ("longform_lane", t_longform_lane),
         ("cutpoints", t_cutpoints),

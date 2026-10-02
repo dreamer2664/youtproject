@@ -116,6 +116,10 @@ python main.py sheet --add <link>  # queue a source (or paste rows in sources/sh
 python main.py clip --sheet        # clip the next queued source from the sheet
 python main.py meeting stats       # the AI boardroom reviews your numbers
 python main.py meeting pick --render   # ...or picks + clips today's source
+python main.py meeting act         # the board decides today's move ITSELF:
+                                   #   clip a queued source, or generate a
+                                   #   video on a topic it writes
+python main.py meeting memory      # every decision the board ever made
 python main.py meeting last        # re-read the full boardroom transcript
 python main.py generate --style cartoon   # flat 2D vector toon look
 python main.py generate --no-subs       # skip subtitles for one run

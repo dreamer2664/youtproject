@@ -16,10 +16,15 @@
     python main.py sheet             paste/list source links (the clip queue)
     python main.py meeting stats the AI boardroom reviews your channel numbers
     python main.py meeting pick  ...or argues over today's source video
+    python main.py meeting act   the room decides today's move ITSELF (clip
+                                 a queued source, or generate a video on a
+                                 topic it writes) and carries it out
+    python main.py meeting memory  every decision the board ever made
     python main.py meeting last  re-read what the room said (transcript)
     python main.py snap          daily channel stats + retitle alerts
     python main.py scout         validated topic ideas for the backlog
     python main.py keys          API key usage vs free-tier limits
+    python main.py keys --advice  what each key lane powers + how to grow
     (full workflow: OPERATIONS.md)
 
 Nothing here costs money and nothing here touches the YouTube API, which is
@@ -1333,6 +1338,12 @@ def cmd_meeting(cfg, args) -> int:
         print(latest.read_text(encoding="utf-8"), end="")
         return 0
 
+    if args.kind == "memory":
+        from meeting import memory_report
+
+        print(memory_report(cfg))
+        return 0
+
     if getattr(args, "add", None):
         from sheet import SheetError, append_sheet
 
@@ -1358,6 +1369,11 @@ def cmd_meeting(cfg, args) -> int:
                   f"{len(cands)} candidate(s):")
             for url, note in cands:
                 print(f"    - {url}" + (f" — {note}" if note else ""))
+        elif args.kind == "act":
+            cands = m._pick_candidates(cfg, args.url or [])
+            print("  [meeting] dry run: act meeting — agenda preview:")
+            print()
+            print(m._act_agenda(cfg, cands))
         else:
             print("  [meeting] dry run: stats meeting "
                   "(agenda = the last `snap` report)")
@@ -1368,10 +1384,48 @@ def cmd_meeting(cfg, args) -> int:
         return 0
     from meeting import run_meeting
 
+    executor = _execute_board_action if args.kind == "act" else None
     print(run_meeting(cfg, args.kind, urls=args.url or [],
                       rounds=args.rounds, render=args.render,
-                      send=not args.no_send))
+                      send=not args.no_send, executor=executor))
     return 0
+
+
+def _execute_board_action(cfg, args) -> str:
+    """Follow-through for `meeting act` (called by meeting.run_meeting).
+
+    clip: render clips from the chosen source and book the sheet.
+    generate: render one b-roll video from the board's own topic —
+    this pipeline is EXEMPT from the meeting's call budget (it has its
+    own quota headroom, see CAPACITY.md).
+    """
+    if args["action"] == "clip":
+        from clipper import run_clip
+        from meeting import _mark_sheet
+
+        url = args["url"]
+        print(f"  [act] clipping the board's pick: {url}")
+        run_clip(cfg, url=url)
+        _mark_sheet(cfg, url, "clipped",
+                    f"clips/ — boardroom act ({cfg.topic})")
+        return f"Clipped {url} -> clips/ (pregen --push parks it)."
+
+    if args["action"] == "generate":
+        import argparse
+
+        topic = args["topic"]
+        print(f"  [act] rendering the board's topic: {topic}")
+        gen_args = argparse.Namespace(
+            topic=topic, count=1, seconds=None, format=None,
+            images_per_scene=None, no_subs=False, no_gemini=False,
+            style=None, keep_work=False, keep_going=True, verbose=False)
+        rc = cmd_generate(cfg, gen_args)
+        if rc:
+            return (f"Generate failed (exit {rc}) — see the log above; "
+                    "the topic is not lost, it's in the minutes + memory.")
+        return (f"Rendered the board's video on '{topic}' -> out/ "
+                "(pregen --push parks it).")
+    return "(nothing to execute)"
 
 
 def cmd_pregen(cfg, args) -> int:
@@ -1765,8 +1819,11 @@ def cmd_voices(cfg, args) -> int:
 
 def cmd_keys(cfg, args) -> int:
     """API key dashboard: self-counted usage + free-tier refill times."""
-    from keystats import build_status, month_report, run_probes
+    from keystats import advice_report, build_status, month_report, run_probes
 
+    if getattr(args, "advice", False):
+        print(advice_report())
+        return 0
     if getattr(args, "probe", False):
         print(run_probes(cfg))
         return 0
@@ -1975,12 +2032,16 @@ def main() -> int:
                    help="queue a source (repeatable); without it the "
                         "sheet is just listed")
 
-    p = sub.add_parser("meeting",
-                       help="the AI boardroom: stats review or source pick")
-    p.add_argument("kind", choices=["stats", "pick", "last"],
+    p = sub.add_parser(
+        "meeting",
+        help="the AI boardroom: stats review, source pick, or board action")
+    p.add_argument("kind", choices=["stats", "pick", "act", "memory", "last"],
                    help="stats = review channel numbers | pick = choose "
-                        "today's source video | last = re-read what the "
-                        "room said (the full transcript)")
+                        "today's source video | act = the room decides "
+                        "today's move itself (clip a queued source, or "
+                        "generate a video on a topic it writes) | memory "
+                        "= the board's decision log | last = re-read what "
+                        "the room said (the full transcript)")
     p.add_argument("--url", action="append", metavar="LINK",
                    help="candidate for a pick meeting (repeatable; the "
                         "source sheet sources/sheet.csv is always "
@@ -2097,6 +2158,8 @@ def main() -> int:
     p = sub.add_parser("errors", help="full text of recent failures (for debugging)")
     sub.add_parser("costs", help="Azure OpenAI spend vs caps")
     pk = sub.add_parser("keys", help="API key usage: requests spent, what's left, when quotas refill")
+    pk.add_argument("--advice", action="store_true",
+                   help="what each key lane powers + how to add capacity")
     pk.add_argument("--probe", action="store_true",
                     help="live-check every provider/key (each check is "
                          "ledgered as tag=probe — nothing spends off the books)")
