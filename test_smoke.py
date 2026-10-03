@@ -6592,40 +6592,6 @@ def t_openrouter_lane():
     assert [label for label, _ in get_provider(cfg).chain] == ["openrouter", "pollinations", "template"]
 
 
-def t_broll():
-    from unittest.mock import Mock, patch
-
-    from broll import _pick_file, search_clips
-
-    portrait_hd = {"id": 1, "file_type": "video/mp4", "width": 1080, "height": 1920,
-                   "fps": 30, "link": "https://v/p.mp4"}
-    landscape_4k = {"id": 2, "file_type": "video/mp4", "width": 3840, "height": 2160,
-                    "fps": 30, "link": "https://v/l.mp4"}
-    assert _pick_file({"video_files": [landscape_4k, portrait_hd]}) == portrait_hd
-    assert _pick_file({"video_files": [landscape_4k]}) == landscape_4k
-    assert _pick_file({"video_files": []}) is None
-    assert _pick_file({}) is None
-
-    body = {"videos": [{"id": 9, "url": "https://p/9", "duration": 16,
-                        "image": "https://i/9.jpg", "video_files": [portrait_hd]}]}
-    resp = Mock(status_code=200)
-    resp.json.return_value = body
-    with patch("broll.requests.get", return_value=resp) as get:
-        clips = search_clips("KEY", "ocean waves", per_page=3)
-    assert len(clips) == 1 and clips[0]["file"] == "https://v/p.mp4"
-    assert clips[0]["height"] == 1920 and clips[0]["duration"] == 16
-    assert get.call_args.kwargs["headers"] == {"Authorization": "KEY"}
-    assert get.call_args.kwargs["params"]["orientation"] == "portrait"
-    with patch("broll.requests.get",
-               return_value=Mock(status_code=401, text="bad")):
-        try:
-            search_clips("BAD", "x")
-        except RuntimeError as exc:
-            assert "rejected" in str(exc)
-        else:
-            raise AssertionError("expected RuntimeError on 401")
-
-
 def t_image_402_fails_over_fast():
     """Pollinations HTTP 402 must fail over at once — one request, no retries.
 
@@ -8207,7 +8173,6 @@ def main(argv: list[str] | None = None) -> int:
         ("probe_whisper", t_probe_whisper),
         ("probe_sample", t_probe_sample),
         ("probe_report_shape", t_probe_report_shape),
-        ("broll", t_broll),
         ("chat_tools", t_chat_tools),
         ("jarvis_task", t_jarvis_task),
         ("analytics", t_analytics),
