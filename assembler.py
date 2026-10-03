@@ -1007,9 +1007,17 @@ def _thumbnail_filters(title: str, cfg: Config) -> list[tuple[str, str]]:
         fontfile = next((f for f in font_candidates if Path(f).exists()), "")
         if fontfile:
             safe_font = fontfile.replace("\\", "/").replace("'", "")
+            # FFmpeg's filter parser splits on ':' (C:/Windows/Fonts/...), so
+            # the drive colon has to reach drawtext as '\:'. Computed OUTSIDE
+            # the f-string on purpose: a backslash inside an f-string
+            # expression part is a SyntaxError before Python 3.12 (PEP 701).
+            # This one line was the sole reason CI failed on every single run
+            # since 2026-09-15 — 40 of 138 tests can't even import assembler,
+            # and it is invisible on a 3.12+ dev machine.
+            escaped_font = safe_font.replace(":", "\\:")
             variants.append(
                 ("titled",
-                 f"{base},drawtext=fontfile='{safe_font.replace(':', '\\:')}':{text_args}"))
+                 f"{base},drawtext=fontfile='{escaped_font}':{text_args}"))
             variants.append(
                 ("titled",
                  f"{base},drawtext=fontfile='{safe_font}':{text_args}"))

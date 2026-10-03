@@ -36,10 +36,21 @@ def download_telegram_voice(bot_token: str, file_id: str, dest_dir: Path) -> Pat
 
 
 def transcribe(cfg: Config, path: Path) -> str:
-    """Whisper via Groq keys in order (429/401/403 -> next key)."""
+    """Whisper via Groq keys in order (429/401/403 -> next key).
+
+    Ledgered like the clip lane's transcription: Groq Whisper audio-minutes
+    are the stack's binding constraint (org-level ~8 h/day pool), so a
+    voice note spent off the books would make `keys` / `keys --month`
+    under-report the one number that actually gates the day. The audio
+    length comes from the local file (ffprobe when available, 0 otherwise —
+    bookkeeping must never fail a transcription).
+    """
     keys = cfg.groq_api_keys
     if not keys:
         raise RuntimeError("no Groq API keys")
+    import keystats
+
+    seconds = _audio_seconds(path)
     last = "no keys tried"
     for key in keys:
         try:
@@ -54,6 +65,10 @@ def transcribe(cfg: Config, path: Path) -> str:
         except Exception as exc:
             last = str(exc)[:120]
             continue
+        # The request reached Groq: count it exactly once per key, before
+        # any parsing that could raise and skip the bookkeeping.
+        keystats.bump("groq", key, req=1, audio=max(0, int(seconds)),
+                      tag="voicenote")
         if response.status_code == 200:
             try:
                 return (response.json().get("text") or "").strip()
@@ -63,3 +78,21 @@ def transcribe(cfg: Config, path: Path) -> str:
         if response.status_code not in (429, 401, 403):
             break
     raise RuntimeError(f"transcription failed ({last})")
+
+
+def _audio_seconds(path: Path) -> float:
+    """Duration of a local audio file via ffprobe; 0.0 when unknown.
+
+    Never raises: the ledger is best-effort by design (keystats.bump is a
+    no-op on failure), and a missing ffprobe must not break a voice note.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+            capture_output=True, text=True, timeout=30)
+        return max(0.0, float((out.stdout or "0").strip() or 0.0))
+    except Exception:  # noqa: BLE001 - ffprobe missing / unreadable file
+        return 0.0

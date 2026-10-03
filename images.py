@@ -494,7 +494,10 @@ def generate_scene_images(script, cfg: Config, out_dir: Path,
 
     With audio_paths (the render pipeline: voiceover runs first), long
     scenes get more shots so no image holds past ~SHOT_TARGET_SECONDS;
-    without it, images_per_scene per scene as before.
+    without it, images_per_scene per scene as before. The returned lists
+    are per scene and can therefore be LONGER than images_per_scene —
+    every planned shot is returned, in slot order, so the assembler cuts
+    as densely as the plan asked for.
 
     Each image walks the provider chain (primary, then fallbacks) until one
     provider delivers. Downloads run on ai.image_workers threads, but request
@@ -516,16 +519,25 @@ def generate_scene_images(script, cfg: Config, out_dir: Path,
         counts = plan_shot_counts(
             [ffprobe_duration(p) for p in audio_paths], per_scene)
         print(f"  [image] shot plan (adaptive): {counts}")
+    # Shots actually planned for each scene (1-based index -> count). The
+    # adaptive plan can ask for MORE than images_per_scene on long scenes;
+    # every one of them has to reach the video, so the job list, the
+    # progress line, the file names and the return value all read this one
+    # source of truth. (Was `per_scene` in three of those four places, so
+    # the extra shots were downloaded, paced and ledgered — then dropped.)
+    per_scene_shots = [counts[i - 1] if counts else per_scene
+                       for i in range(1, len(script.scenes) + 1)]
+
     jobs: list[tuple[int, int, str, Path, int]] = []
     for index, scene in enumerate(script.scenes, start=1):
-        scene_shots = counts[index - 1] if counts else per_scene
+        scene_shots = per_scene_shots[index - 1]
         base = stylize(scene.image_prompt, cfg.style)
         for slot in range(scene_shots):
             if per_scene > 1:
                 prompt = f"{base}, {shots[slot % len(shots)]}"
             else:
                 prompt = base
-            name = f"scene_{index:02d}_{slot + 1}of{per_scene}_{_safe_slug(prompt)}.jpg"
+            name = f"scene_{index:02d}_{slot + 1}of{scene_shots}_{_safe_slug(prompt)}.jpg"
             jobs.append((index, slot, prompt, out_dir / name, 1000 + index * 100 + slot))
 
     total_scenes = len(script.scenes)
@@ -545,11 +557,12 @@ def generate_scene_images(script, cfg: Config, out_dir: Path,
                 results[(index, slot)] = future.result()  # raises on failure
                 done += 1
                 print(f"  [image] done {done}/{len(jobs)} "
-                      f"(scene {index}/{total_scenes} shot {slot + 1}/{per_scene})")
+                      f"(scene {index}/{total_scenes} shot {slot + 1}/"
+                      f"{per_scene_shots[index - 1]})")
         except BaseException:
             for future in future_to_job:
                 future.cancel()
             raise
 
-    return [[results[(index, slot)] for slot in range(per_scene)]
+    return [[results[(index, slot)] for slot in range(per_scene_shots[index - 1])]
             for index in range(1, total_scenes + 1)]

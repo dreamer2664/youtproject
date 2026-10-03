@@ -1451,16 +1451,32 @@ def t_meeting():
     # -- latest_minutes + `meeting last` ------------------------------------
     import os
     import meeting as mt2
-    from datetime import datetime, timedelta
     meetings = cfg.out_dir / "meetings"
     meetings.mkdir(parents=True, exist_ok=True)
     old = meetings / "2026-09-30-stats.md"
     new = meetings / "2026-10-01-pick.md"
     old.write_text("OLD MINUTES", encoding="utf-8")
     new.write_text("NEW MINUTES", encoding="utf-8")
-    stamp = datetime.now().timestamp()
+    # Explicit mtimes, and `new` strictly in the FUTURE. Two reasons: this
+    # sandbox's clock handed consecutive writes the exact same timestamp, and
+    # the run_meeting calls above already dropped a `2026-10-03-*.md` in here.
+    # Left to itself, `new` tied with that file and the test's answer then
+    # depended on the order the directory happened to list its files in.
+    import time as _time
+    stamp = _time.time() + 3600
     os.utime(old, (stamp - 86400, stamp - 86400))
-    assert mt2.latest_minutes(cfg) == new
+    os.utime(new, (stamp, stamp))
+    assert mt2.latest_minutes(cfg) == new, sorted(
+        (p.name, p.stat().st_mtime) for p in meetings.glob("*.md"))
+
+    # An exact tie is resolved by name (dates sort), never by glob order —
+    # that tie is what made `meeting last` non-deterministic.
+    tied = meetings / "2026-10-04-act.md"
+    tied.write_text("TIED MINUTES", encoding="utf-8")
+    os.utime(tied, (stamp, stamp))
+    assert mt2.latest_minutes(cfg) == tied, "tie must break toward the later date"
+    os.utime(new, (stamp + 60, stamp + 60))     # strictly newer wins again
+    assert mt2.latest_minutes(cfg) == new, "mtime must still outrank the name"
 
     import main as cli
     from argparse import Namespace
@@ -3739,8 +3755,20 @@ def t_keystats():
     totals = keystats.month_totals(sample, now=now)
     row = totals["groq"]
     assert row["req"] == 10 and row["tok"] == 840
-    assert row["tags"]["script"] == {"req": 2, "tok": 100}
-    assert row["tags"]["probe"] == {"req": 1, "tok": 40}
+    assert row["tags"]["script"] == {"req": 2, "tok": 100, "audio": 0}
+    assert row["tags"]["probe"] == {"req": 1, "tok": 40, "audio": 0}
+    # Audio rides the tag split: "which lane ate the 8h Whisper pool"
+    # (clip/parts/longform `whisper` vs the bot's `voicenote`).
+    audio_sample = [
+        {"t": now.isoformat(), "p": "groq", "k": "...a", "req": 1,
+         "audio": 1200, "tag": "whisper"},
+        {"t": now.isoformat(), "p": "groq", "k": "...a", "req": 1,
+         "audio": 30, "tag": "voicenote"},
+    ]
+    arow = keystats.month_totals(audio_sample, now=now)["groq"]
+    assert arow["audio"] == 1230
+    assert arow["tags"]["whisper"]["audio"] == 1200
+    assert arow["tags"]["voicenote"]["audio"] == 30
 
     # -- key strategy advice (2026-10-02): honest multi-key truths --------
     advice = keystats.advice_report()
@@ -3754,7 +3782,7 @@ def t_keystats():
         assert title in advice, name
     # the default dashboard points at it
     assert "--advice" in keystats.build_status(cfg)
-    assert row["tags"]["(untagged)"] == {"req": 7, "tok": 700}
+    assert row["tags"]["(untagged)"] == {"req": 7, "tok": 700, "audio": 0}
     assert "ancient" not in row["tags"]
     report = keystats.month_report()
     assert "30 days" in report and "probe" in report
@@ -3770,6 +3798,46 @@ def t_keystats():
     cfg.data["ai"]["groq_api_keys"] = ["gq-full-secret-bb18"]
     out = keystats.build_status(cfg)
     assert "GROQ" in out and "pool total" in out and "14,400" in out
+    # Multi-key headers say the truth about what N keys buy (pure).
+    assert keystats._keys_note(1, False) == ""
+    assert keystats._keys_note(1, True) == ""
+    assert "35 separate pools" in keystats._keys_note(35, False)
+    note = keystats._keys_note(5, True)
+    assert "ONE shared pool" in note and "no capacity" in note
+    # A wall of PER-KEY pools (the real setup: ~35 Gemini keys) gets an
+    # aggregate row — 35 individual "N left of 1,500" rows are unreadable
+    # and the aggregate is the number that gates the day. The legacy key
+    # bumped earlier in this test is still in the ledger, so it keeps its
+    # row (rotated-out keys still show their spend) and counts once.
+    cfg.data["ai"]["gemini_api_keys"] = [f"gkey-{i:02d}-secret-ab{i:02d}"
+                                         for i in range(35)]
+    gem = keystats._configured_keys(cfg, "gemini")
+    assert len(gem) == 36                      # 35 listed + 1 legacy
+    out = keystats.build_status(cfg)
+    assert "36 keys = 36 separate pools" in out
+    assert "all keys" in out
+    assert f"{36 * keystats.LIMITS['gemini']['day']:,}" in out   # 54,000
+    assert not any(f"gkey-{i:02d}-secret" in out for i in range(35))
+    # Shared pools must NOT claim multiplied capacity. (The clipfix bump
+    # above left a ledger-only Groq mask, so it keeps a row and counts
+    # once — hence 6 masks for 5 configured keys.)
+    cfg.data["ai"]["groq_api_keys"] = [f"gq-secret-{i:02d}xx" for i in range(5)]
+    assert len(cfg.groq_api_keys) == 5
+    out = keystats.build_status(cfg)
+    assert "ONE shared pool" in out and "add no capacity" in out
+    assert "6 keys" in out
+    assert f"{keystats.LIMITS['groq']['day']:,}" in out            # 14,400
+    assert f"{6 * keystats.LIMITS['groq']['day']:,}" not in out    # no 86,400
+    # A shared pool shows ONE `pool total` row and never an `all keys`
+    # aggregate (that row would falsely imply multiplied capacity).
+    groq_section = out.split("GROQ")[-1].split("OPENROUTER")[0]
+    assert "pool total" in groq_section and "all keys" not in groq_section
+    # ElevenLabs is per-key but MONTHLY: header truth, no daily aggregate.
+    cfg.data["channel"]["elevenlabs_api_keys"] = ["el-secret-1", "el-secret-2"]
+    out = keystats.build_status(cfg)
+    assert "ELEVENLABS" in out and "3 keys = 3 separate pools" in out
+    assert "all keys" not in out.split("ELEVENLABS")[-1]   # monthly: no row
+    keystats.init(cfg)                                     # restore for the rest
     # Audio formatter + bump round-trip for the Whisper pool.
     assert keystats._fmt_audio(0) == "0s"
     assert keystats._fmt_audio(30) == "30s"
@@ -4405,6 +4473,162 @@ def t_shot_plan():
     for dur, count in zip([50.0, 13.0], [8, 3]):
         assert dur / count <= SHOT_TARGET_SECONDS + 1.5, (dur, count)
     assert 80.0 / 9 <= 9.0  # capped case: 8.9s, the accepted ceiling
+
+
+def t_shot_plan_delivery():
+    """The adaptive shot plan must actually REACH the video.
+
+    Regression guard: generate_scene_images() used to plan extra shots for
+    long scenes, fetch them all (paying the Pollinations pacer and the
+    ledger for each) and then return only the first `images_per_scene` per
+    scene — so the 2026-09-21 "images hold too long" fix silently did
+    nothing on the real render path. `plan_shot_counts` alone can't catch
+    that; this walks the whole function with a faked fetch.
+    """
+    import tempfile
+    from unittest.mock import patch
+
+    import assembler
+    import images
+
+    cfg = tmp_cfg()
+    cfg.data["video"]["images_per_scene"] = 1
+    cfg.data["ai"]["image_provider"] = "pollinations"   # keyless lane
+
+    class Scene:
+        def __init__(self, prompt):
+            self.image_prompt = prompt
+            self.narration = "n"
+
+    class Script:
+        scenes = [Scene("long scene"), Scene("short scene")]
+
+    fetched: list[str] = []
+
+    def fake_fetch(prompt, dest, cfg_, seed, attempts):
+        fetched.append(Path(dest).name)
+        Path(dest).write_bytes(b"\xff\xd8\xff fake jpeg")
+        return dest
+
+    # Scene 1 is 20s -> ceil(20/6.5) = 4 shots (capped at 3x per_scene = 3);
+    # scene 2 is 5s -> the 1-image baseline.
+    with tempfile.TemporaryDirectory() as tmp, \
+            patch.dict(images._FETCH, {"pollinations": fake_fetch}, clear=True), \
+            patch.object(assembler, "ffprobe_duration",
+                         lambda p: 20.0 if p.name == "a1.wav" else 5.0), \
+            patch.object(images, "MIN_REQUEST_INTERVAL", 0.0):
+        result = images.generate_scene_images(
+            Script(), cfg, Path(tmp),
+            audio_paths=[Path("a1.wav"), Path("a2.wav")])
+
+        planned = images.plan_shot_counts([20.0, 5.0], 1)
+        assert planned == [3, 1], planned
+        # Every planned shot is returned, in slot order — nothing dropped.
+        assert [len(scene) for scene in result] == planned, result
+        assert sum(len(scene) for scene in result) == len(fetched) == 4
+        # ... and every returned path is a real file the assembler can read.
+        assert all(path.exists() for scene in result for path in scene)
+        # File names carry the true shot count (was "2of1" for the 3rd shot).
+        assert any("1of3" in name for name in fetched), fetched
+        assert any("3of3" in name for name in fetched), fetched
+        assert not any("2of1" in name or "3of1" in name for name in fetched)
+
+    # No audio -> no adaptive plan -> exactly images_per_scene per scene.
+    cfg.data["video"]["images_per_scene"] = 3
+    fetched.clear()
+    with tempfile.TemporaryDirectory() as tmp, \
+            patch.dict(images._FETCH, {"pollinations": fake_fetch}, clear=True), \
+            patch.object(images, "MIN_REQUEST_INTERVAL", 0.0):
+        result = images.generate_scene_images(Script(), cfg, Path(tmp))
+        assert [len(scene) for scene in result] == [3, 3], result
+        assert len(fetched) == 6
+        assert all(path.exists() for scene in result for path in scene)
+
+
+def t_voice_ledger():
+    """Voice-note Whisper audio must land in the ledger (binding constraint).
+
+    The clip lane has ledgered Groq audio since 6ff2be1; the bot's
+    voice-note path (voice.transcribe) did not, so `keys` under-reported
+    the ~8h/day org-level Whisper pool — the one quota that gates the day.
+    """
+    from unittest.mock import Mock, mock_open, patch
+
+    import keystats
+    from voice import _audio_seconds, transcribe
+
+    cfg = tmp_cfg()
+    keystats.init(cfg)
+    cfg.data.setdefault("ai", {})["groq_api_keys"] = ["gq-voice-key-0001"]
+
+    ok = Mock(status_code=200)
+    ok.json.return_value = {"text": "make a video about black holes"}
+    with patch("requests.post", return_value=ok), \
+            patch("builtins.open", mock_open(read_data=b"ogg")), \
+            patch("voice._audio_seconds", return_value=42.0):
+        assert transcribe(cfg, Path("note.ogg")) == \
+            "make a video about black holes"
+
+    events = [e for e in keystats._load(keystats._path) if e.get("p") == "groq"]
+    assert len(events) == 1, events
+    assert events[0]["req"] == 1
+    assert events[0]["audio"] == 42          # seconds spent, not 0
+    assert events[0]["tag"] == "voicenote"   # distinguishable from `whisper`
+    assert "gq-voice-key" not in str(events[0])     # masked on disk
+
+    # The clip lane's tag stays distinct so `keys --month` can split them.
+    from clipper import _whisper_request
+
+    resp = Mock(status_code=200)
+    resp.json.return_value = {"words": []}
+    with patch("requests.post", return_value=resp), \
+            patch("builtins.open", mock_open(read_data=b"ogg")):
+        _whisper_request(Path("chunk.opus"), ["gq-clip-key-0002"], seconds=600)
+    groq = [e for e in keystats._load(keystats._path) if e.get("p") == "groq"]
+    assert {e.get("tag") for e in groq} == {"voicenote", "whisper"}
+    assert sum(e["audio"] for e in groq) == 642
+
+    # Audio length: unknown/missing file degrades to 0.0, never raises.
+    assert _audio_seconds(Path("/nonexistent/nope.ogg")) == 0.0
+
+
+def t_dry_run_banner_once():
+    """`batch --dry-run` / `schedule --dry-run` print the banner ONCE.
+
+    cmd_batch/cmd_schedule print BANNER, then the dry-run helper printed
+    it again — the preview read like two runs had happened.
+    """
+    import io
+    from contextlib import redirect_stdout
+
+    from main import BANNER, _dry_run_batch, _dry_run_schedule, cmd_batch
+
+    cfg = tmp_cfg()
+    # The banner's rule line appears twice per banner — count its unique
+    # middle line instead.
+    marker = "Free AI video generator (manual-upload edition)"
+    assert marker in BANNER
+    for helper, call in (
+            (_dry_run_batch, lambda: _dry_run_batch(cfg, ["t", None])),
+            (_dry_run_schedule,
+             lambda: _dry_run_schedule(cfg, [], 2))):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            assert call() == 0
+        assert marker not in buf.getvalue(), helper.__name__
+
+    # ... and the CLI path still shows it exactly once.
+    import argparse
+
+    args = argparse.Namespace(topics=None, count=2, dry_run=True, seconds=None,
+                              format=None, images_per_scene=None,
+                              no_subs=False, no_gemini=False, style=None,
+                              keep_work=False, keep_going=False,
+                              verbose=False, sleep=0)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        assert cmd_batch(cfg, args) == 0
+    assert buf.getvalue().count(marker) == 1
 
 
 def t_shot_bounds():
@@ -6956,6 +7180,146 @@ def t_deps_guard():
     assert "Traceback" not in proc.stderr
 
 
+def t_py_compat():
+    """Every module must COMPILE on the oldest Python we claim to support.
+
+    CI runs 3.11 and the setup docs point at 3.12, but a dev machine on
+    3.12+ silently accepts syntax that 3.11 rejects — a backslash inside an
+    f-string expression part (PEP 701) broke `assembler.py` and took out 40
+    of 138 tests on EVERY CI run from 2026-09-15 to 2026-10-03 while
+    staying invisible locally. Importing the modules can't catch that (the
+    suite is already running under the broken interpreter by then), so this
+    shells out to a clean interpreter and compiles the source instead.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    MIN_SUPPORTED = (3, 11)          # CI's interpreter; keep in sync with
+                                     # .github/workflows/smoke.yml
+    assert sys.version_info[:2] >= MIN_SUPPORTED
+    root = Path(__file__).resolve().parent
+    files = sorted(root.glob("*.py"))
+    assert len(files) > 40, files    # sanity: we really scanned the project
+    # A clean interpreter compiles the SOURCE (not the already-imported
+    # modules): compile() is where PEP 701 syntax is accepted or rejected,
+    # and it touches no disk, so there is nothing to clean up.
+    probe = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "bad = []\n"
+        "for path in map(Path, sys.argv[1:]):\n"
+        "    try:\n"
+        "        compile(path.read_text(encoding='utf-8'), str(path), 'exec')\n"
+        "    except SyntaxError as exc:\n"
+        "        bad.append(f'{path.name}:{exc.lineno}: {exc.msg}')\n"
+        "print('\\n'.join(bad))\n"
+        "sys.exit(1 if bad else 0)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe] + [str(f) for f in files],
+        capture_output=True, text=True)
+    assert proc.returncode == 0, \
+        (f"does not compile on Python "
+         f"{'.'.join(map(str, sys.version_info[:3]))}:\n{proc.stdout}\n"
+         f"{proc.stderr}")
+    # The specific trap, so the failure names itself if it ever returns:
+    # no f-string in the project may hold a backslash in its expression part.
+    import ast
+
+    for path in root.glob("*.py"):
+        src = path.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue                      # t_py_compat's compile check owns it
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.JoinedStr):
+                continue
+            for part in node.values:
+                if isinstance(part, ast.FormattedValue):
+                    seg = ast.get_source_segment(src, part.value) or ""
+                    assert "\\" not in seg, \
+                        (f"{path.name}:{node.lineno} — backslash inside an "
+                         f"f-string expression is a SyntaxError before "
+                         f"Python 3.12 (PEP 701): {seg[:80]}")
+
+
+def t_thumbnail_filter_variants():
+    """Thumbnail drawtext variants: ordered, and the Windows colon escaped.
+
+    Regression guard for the PEP 701 fix in assembler._thumbnail_filters:
+    hoisting `safe_font.replace(':', '\\\\:')` out of the f-string must not
+    change what the filter string says. FFmpeg's filter parser splits on
+    ':', so a drive-letter path only works with the colon backslashed —
+    that variant has to stay FIRST, with the plain-colon spelling and the
+    fontconfig-name fallbacks behind it, and a textless 'plain' last.
+    """
+    from unittest.mock import patch
+
+    from assembler import _thumbnail_filters
+
+    # Landscape on purpose: thumb_width is 1280 there, so the fontsize
+    # ladder below is the unscaled 72/56/44 one (portrait would multiply it
+    # by 720/1280 and these assertions would chase the wrong numbers).
+    cfg = tmp_cfg(video={"format": "landscape"})
+
+    class _NoFonts:
+        """assembler only ever does Path(f).exists() on the candidates."""
+        def __call__(self, p):
+            return self
+
+        def exists(self):
+            return False
+
+    class _WindowsFonts:
+        def __call__(self, p):
+            self.seen = str(p)
+            return self
+
+        def exists(self):
+            return self.seen.startswith("C:")
+
+    # No drawtext in this FFmpeg build -> only the textless fallback.
+    with patch("assembler._ffmpeg_has_filter", return_value=False):
+        variants = _thumbnail_filters("A Title", cfg)
+    assert [label for label, _ in variants] == ["plain"], variants
+
+    with patch("assembler._ffmpeg_has_filter", return_value=True):
+        # No font file on disk -> fontconfig names, then plain.
+        with patch("assembler.Path", _NoFonts()):
+            variants = _thumbnail_filters("A Title", cfg)
+        labels = [label for label, _ in variants]
+        assert labels == ["titled", "titled", "plain"], labels
+        assert any("font='Arial Bold'" in vf for _, vf in variants)
+        assert any("font='DejaVu Sans Bold'" in vf for _, vf in variants)
+        # Long titles shrink the font instead of running off the frame, and
+        # only the first 8 words ever reach the thumbnail.
+        with patch("assembler.Path", _NoFonts()):
+            short_vf = _thumbnail_filters("Short", cfg)[0][1]
+            mid_vf = _thumbnail_filters("A somewhat longer thumbnail title", cfg)[0][1]
+            long_vf = _thumbnail_filters("thumbnail " * 12, cfg)[0][1]
+        assert "fontsize=72" in short_vf, short_vf
+        assert "fontsize=56" in mid_vf, mid_vf
+        assert "fontsize=44" in long_vf, long_vf
+        assert "text='thumbnail thumbnail thumbnail thumbnail thumbnail " \
+            "thumbnail thumbnail thumbnail'" in long_vf, long_vf
+
+        # A Windows font path: variant 1 escapes the drive colon, variant 2
+        # deliberately does not (FFmpeg builds disagree), and the escaped
+        # spelling has to stay FIRST — it's the one that survives FFmpeg's
+        # ':'-delimited filter parsing.
+        with patch("assembler.Path", _WindowsFonts()):
+            variants = _thumbnail_filters("A Title", cfg)
+        fonts = [vf for _, vf in variants if "fontfile=" in vf]
+        assert len(fonts) == 2, fonts
+        assert "fontfile='C\\:/Windows/Fonts/arialbd.ttf'" in fonts[0], fonts[0]
+        assert "fontfile='C:/Windows/Fonts/arialbd.ttf'" in fonts[1], fonts[1]
+        assert "\\:" not in fonts[1], fonts[1]
+        assert [label for label, _ in variants] == \
+            ["titled", "titled", "titled", "titled", "plain"], variants
+
+
 def t_render_debug():
     import io
     from contextlib import redirect_stdout
@@ -7753,6 +8117,9 @@ def main(argv: list[str] | None = None) -> int:
         ("clipper", t_clipper),
         ("image_speed", t_image_speed),
         ("shot_plan", t_shot_plan),
+        ("shot_plan_delivery", t_shot_plan_delivery),
+        ("voice_ledger", t_voice_ledger),
+        ("dry_run_banner_once", t_dry_run_banner_once),
         ("shot_bounds", t_shot_bounds),
         ("voice_budget", t_voice_budget),
         ("pixabay", t_pixabay),
@@ -7777,6 +8144,8 @@ def main(argv: list[str] | None = None) -> int:
         ("crew_watch", t_crew_watch),
         ("key_pools", t_key_pools),
         ("deps_guard", t_deps_guard),
+        ("py_compat", t_py_compat),
+        ("thumbnail_variants", t_thumbnail_filter_variants),
         ("render_debug", t_render_debug),
         ("emergency_mux", t_emergency_mux),
         ("pygarnish", t_pygarnish),

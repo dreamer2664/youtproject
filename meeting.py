@@ -522,11 +522,13 @@ def _act_agenda(cfg: Config, candidates: list[tuple[str, str]]) -> str:
                      "option is off the table today.")
     lines.append("")
     lines.append("Standing context: one clip per day per channel is the "
-                 "cadence. The generate lane renders a real-footage "
-                 "(b-roll + voiceover) video from a topic the board "
-                 "writes itself — the move for when clips are "
-                 "underperforming or the momentum data points at a "
-                 "topic worth riding.")
+                 "cadence. The generate lane renders a stock-footage "
+                 "video (Pexels/Pixabay stills + edge-tts voiceover + "
+                 "karaoke subtitles) from a topic the board writes "
+                 "itself — the move for when clips are underperforming "
+                 "or the momentum data points at a topic worth riding. "
+                 "It costs a full generate budget (~5-6 LLM calls, ~21 "
+                 "images), not a clip's.")
     return "\n".join(lines)
 
 
@@ -553,14 +555,30 @@ def room_digest(turns: list[dict], per_turn_chars: int = 200) -> str:
 
 
 def latest_minutes(cfg: Config) -> Path | None:
-    """The most recent minutes file (for `meeting last`)."""
+    """The most recent minutes file (for `meeting last`).
+
+    Sorted by mtime with the FILE NAME as the tie-break. Two minutes files
+    land on the same mtime more often than it looks: the board can hold a
+    second meeting inside one clock tick, and some filesystems have coarse
+    mtime granularity (a smoke-test run hit an exact tie, after which
+    `max()` returned whichever file the directory happened to list first —
+    so `meeting last` showed the wrong meeting at random). Names start with
+    YYYY-MM-DD, so on a tie the later-dated meeting wins, deterministically.
+    """
     try:
         files = list((cfg.out_dir / "meetings").glob("*.md"))
     except OSError:
         return None
     if not files:
         return None
-    return max(files, key=lambda p: p.stat().st_mtime)
+
+    def recency(p: Path) -> tuple[float, str]:
+        try:
+            return (p.stat().st_mtime, p.name)
+        except OSError:                    # deleted mid-glob: sort it last
+            return (float("-inf"), "")
+
+    return max(files, key=recency)
 
 
 def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
@@ -721,7 +739,7 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
             body = f"Board action: clip {decision['url']}"
         elif decision["action"] == "generate":
             body = (f"Board action: generate — '{decision['topic']}' "
-                    "(board-written script, b-roll lane)")
+                    "(board-written script, stock-footage generate lane)")
         else:
             body = "Board action: nothing extra today"
         summary = f"{header}\n\n{body}\nWhy: {decision['reason']}"

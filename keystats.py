@@ -338,6 +338,24 @@ def _fmt_audio(seconds: int) -> str:
     return f"{secs}s"
 
 
+def _keys_note(count: int, shared: bool) -> str:
+    """Header suffix explaining what N keys actually buy (pure, tested).
+
+    The multi-key truth (CAPACITY.md, re-verified 2026-10-02): Groq and
+    OpenRouter pools are ACCOUNT/org-level, so extra keys on one account
+    add nothing — the aggregate below is capacity you do NOT have. Gemini,
+    YouTube, ElevenLabs, Pexels and Pixabay are per key/project, so the
+    aggregate is real. Saying which is which, right where the numbers are,
+    is the difference between a dashboard and a trap.
+    """
+    if count < 2:
+        return ""
+    if shared:
+        return (f"  ·  {count} keys, ONE shared pool — the extra keys add "
+                f"no capacity")
+    return f"  ·  {count} keys = {count} separate pools"
+
+
 def build_status(cfg, now: datetime | None = None) -> str:
     """The dashboard text (pure-ish: reads the ledger file + config keys)."""
     now = now or datetime.now(timezone.utc)
@@ -365,7 +383,8 @@ def build_status(cfg, now: datetime | None = None) -> str:
                 masks.append(mask)
         if not masks:
             continue
-        lines.append(f"{spec['title']}  ·  {spec['rule']}")
+        lines.append(f"{spec['title']}  ·  {spec['rule']}"
+                     + _keys_note(len(masks), bool(spec.get("shared"))))
         for mask in masks:
             row = day.get(mask) or {"req": 0, "tok": 0, "chars": 0,
                                         "units": 0, "audio": 0}
@@ -417,6 +436,22 @@ def build_status(cfg, now: datetime | None = None) -> str:
                 lines.append(f"  {'audio pool':<12} "
                              f"{_fmt_audio(audio_used)} / "
                              f"~{_fmt_audio(spec['audio_day'])} today")
+        elif len(masks) > 1 and spec.get("day") and provider != "elevenlabs":
+            # PER-KEY pools (Gemini, YouTube, Pexels, Pixabay): with a wall
+            # of keys the individual rows are unreadable and the number
+            # that actually gates the day is the aggregate. This is
+            # capacity you really have — unlike a `shared` pool.
+            # ElevenLabs is skipped: its limit is per CALENDAR MONTH while
+            # this row sums a daily window, and its per-key rows already
+            # read "N chars this month / M left".
+            unit = "units" if provider == "youtube" else "requests"
+            field = "units" if provider == "youtube" else "req"
+            used = sum((day.get(m) or {}).get(field, 0) for m in masks)
+            capacity = int(spec["day"]) * len(masks)
+            _, reset, label = _window(provider, now)
+            lines.append(f"  {'all keys':<12} {_fmt_num(used)} / "
+                         f"{_fmt_num(capacity)} {unit} today   "
+                         f"resets {label} (in {_fmt_delta(reset - now)})")
         lines.append("")
     if len(lines) <= 4:
         lines.append("No keys configured and nothing spent yet — set keys "
@@ -444,8 +479,8 @@ def month_totals(events: list[dict], now: datetime | None = None) -> dict:
 
     {"gemini": {"req": 12, "tok": 3400, "chars": 0, "units": 0,
                 "audio": 0,
-                "tags": {"script": {"req": 10, "tok": 3200},
-                         "probe": {"req": 2, "tok": 200}}}, ...}
+                "tags": {"script": {"req": 10, "tok": 3200, "audio": 0},
+                         "probe": {"req": 2, "tok": 200, "audio": 0}}}, ...}
     """
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=30)
@@ -465,9 +500,14 @@ def month_totals(events: list[dict], now: datetime | None = None) -> dict:
         for field in ("req", "tok", "chars", "units", "audio"):
             row[field] += int(event.get(field) or 0)
         tag = str(event.get("tag") or "(untagged)")
-        trow = row["tags"].setdefault(tag, {"req": 0, "tok": 0})
+        trow = row["tags"].setdefault(tag, {"req": 0, "tok": 0, "audio": 0})
         trow["req"] += int(event.get("req") or 0)
         trow["tok"] += int(event.get("tok") or 0)
+        # Audio rides the tag split too: Groq Whisper minutes are the
+        # stack's binding constraint, so "which lane ate the 8h pool"
+        # (clip/parts/longform `whisper` vs the bot's `voicenote`) is the
+        # question `keys --month` should answer.
+        trow["audio"] += int(event.get("audio") or 0)
     return out
 
 
@@ -494,6 +534,8 @@ def month_report() -> str:
         for tag, trow in sorted(row["tags"].items(),
                                 key=lambda kv: -kv[1]["req"]):
             extra = f" · {trow['tok']:,} tok" if trow["tok"] else ""
+            if trow.get("audio"):
+                extra += f" · {_fmt_audio(trow['audio'])} audio"
             lines.append(f"    {tag:<12} {trow['req']} req{extra}")
     return "\n".join(lines)
 

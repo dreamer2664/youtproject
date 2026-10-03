@@ -189,10 +189,12 @@ decisions. The room argues, then commits to exactly ONE action:
 - **clip** one of the listed sources — rendered immediately, sheet row
   marked (`clipped`/`failed`);
 - **generate** one video on a topic the board writes itself — the
-  b-roll (Pexels) + voiceover lane, chosen from the trend data (e.g.
+  stock-footage generate lane (Pexels/Pixabay stills + edge-tts
+  voiceover + karaoke subtitles), chosen from the trend data (e.g.
   psychological explainers outperforming animal clips → another
   psychological topic). The chair's topic is validated to be a real,
-  specific topic, then rendered via the normal `generate` pipeline;
+  specific topic, then rendered via the normal `generate` pipeline
+  (its own ~5-6 LLM calls + ~21 images, NOT a clip's budget);
 - **none** — a no-action day, with the reason on record.
 
 Board-initiated renders are **exempt from the meeting's ~10-call
@@ -215,12 +217,16 @@ re-reading old transcripts (which would cost far too many tokens).
 python main.py parts <youtube link>            # ~60s episodes, header + subs
 python main.py parts --file C:\path\to.mp4    # a local file
 python main.py parts <link> --part-len 90      # 90-second episodes
-python main.py parts <link> --dry-run          # windows only, $0
+python main.py parts <link> --dry-run          # windows only, no renders
 ```
 
 Same ingest as clips (download once, transcript once — cached and shared
 with the clip lane), but the cuts are mechanical: every `--part-len`
-seconds, moved to a sentence end. How the lane finds sentence ends:
+seconds, moved to a sentence end. `--dry-run` prints the windows without
+rendering — but it still ingests the transcript, so on a source with no
+YouTube captions it spends the Whisper audio-minutes once (cached; the
+real run is then free). See the note under "Long-form".
+How the lane finds sentence ends:
 YouTube auto-captions have no punctuation, so one small LLM pass marks
 where sentences end (numbered words in, positions out, cached; Whisper
 transcripts skip it), and FFmpeg `silencedetect` finds the real pauses
@@ -252,12 +258,24 @@ python main.py longform <link>             # the whole source as ONE 1920x1080 v
 python main.py longform <link> --minutes 8 # ONE ~8-min episode of a longer source
 python main.py longform <link> --minutes 8 --start 600   # ...starting near 10:00
 python main.py longform --file C:\path\to.mp4
-python main.py longform <link> --dry-run   # window + chapters only, $0
+python main.py longform <link> --dry-run   # window + chapters only, no render
 ```
 
 Same ingest as clips and parts (download once, transcript once — the
 cache is shared across lanes, so running `clip` then `longform` on the
-same source costs one transcript total). What's different:
+same source costs one transcript total).
+
+> **What `--dry-run` really costs.** It skips the render and every
+> editorial LLM call, but it plans windows and chapters from the
+> transcript, so it still ingests one. On a source with harvestable
+> YouTube captions (or an already-cached transcript) that is genuinely
+> free. On a **fresh uncaptioned source it spends the Groq Whisper
+> audio-minutes** — the stack's binding quota — exactly once: the
+> transcript lands in `work/clip_cache/`, so the real run afterwards
+> costs 0 audio-minutes and 0 LLM calls. Dry runs are never billed in
+> dollars, which is what the old "$0" wording meant.
+
+What's different:
 
 - **16:9 always.** Landscape sources scale+pad to 1920x1080 — nothing is
   cropped. Portrait sources get the whole frame over a blurred landscape
@@ -280,7 +298,7 @@ same source costs one transcript total). What's different:
 ```powershell
 python main.py longform <link> --top 5          # best 5 chapters, best LAST
 python main.py longform <link> --top 5 --no-vision   # skip the frame QC
-python main.py longform <link> --top 5 --dry-run     # the plan only, $0
+python main.py longform <link> --top 5 --dry-run     # the plan only, no render
 ```
 
 The editorial sibling of the whole/episode mode: the picker reads the
@@ -404,9 +422,9 @@ the tokens FOR", including the agent's own diagnostic probes.
 |---|---|---|
 | `generate` | **5–6 / video** | script 1 · factcheck 1 · punch-up 1 · title polish 1 · decringe 1 · topic top-up 1 (only when the backlog dips). Hook fix, title fix, expand/tighten fire only on violations/word-budget misses — normally 0. |
 | `clip` | **2 + 1/clip / source** | moment pick 1 · transcript fix 1 (`clip.transcript_fix`, on by default) · title polish 1 per clip written. |
-| `longform` | **0–2 / source** | whole render of a captioned/cached source: 0. Cutting an unpunctuated transcript: one cached eos pass (8 calls on a 20-min source). Fresh Whisper source: + transcript fix (4 calls on 20 min). Chapters, thumbnails, kit: 0. |
+| `longform` (whole / `--minutes`) | **0–12 / source** | whole render of a captioned or cached source: **0**. Cutting an unpunctuated transcript: one cached eos pass (8 calls on a 20-min source). A fresh uncaptioned source adds the transcript-fix pass (4 calls on 20 min). Chapters, thumbnails and the kit: 0. |
+| `longform --top N` | **2–4 / source** | chapter pick 1 per transcript window (~1400 words ≈ 9 min of speech) + transcript fix 1 (a cached transcript pays the picker only). Vision QC adds ~1 call per candidate chapter (~3 frames each) unless `--no-vision`. |
 | `scout` | **1 / run** | proposals in one call; interest evidence is free keyless Wikimedia pageviews. |
-| `longform` | **2-4 / source** | chapter pick 1/window + transcript fix 1 (cached transcript: pick only). Vision QC ~3 frames/chapter. |
 | `meeting` | **~10 / meeting** | 4 seats × 2 rounds + chair; short turns, one agenda in every prompt. Minutes + Telegram delivery are free. |
 | `snap` · voice | **0** | YouTube API units only; edge-tts. |
 | image QC | ~1 Gemini **vision** call per candidate photo | cached by photo+query, circuit breaker, fails OPEN on outage (storm-time renders ship un-QC'd images). Live catch 2026-09-24: rejected Tokyo Tower photos posing as Eiffel. |
@@ -431,6 +449,10 @@ the top-up call.
 | `[queue] state.json was unreadable` | a crash interrupted a queue write | already auto-quarantined; nothing to do |
 | job shows `reclaimed` | that render was killed mid-run (timeout, Ctrl-C, power cut) | nothing to do — the next generate put its topic back on the backlog |
 | `elevenlabs key ... is dead` | a revoked key | remove it from `ai.elevenlabs_api_keys` |
+| `[image] attempt N/6 failed: HTTP 402` | Pollinations' anonymous image lane refusing (free tier exhausted / gated upstream). It retries, but each attempt also pays the 16 s pacer — ~45 s wasted per image | set a free `ai.pollinations_token` (auth.pollinations.ai), or better: a free `ai.pexels_api_key` / `pixabay.api_keys` so stock photos are primary and Pollinations is only the last fallback |
+| `[image] pacing: next request in Ns` on every image, render takes 20-40 min | no Pexels/Pixabay key, so all ~21 images ride anonymous Pollinations (~1 req/15 s + ~50 s each) | add a Pexels key (200/h, 20k/mo, free, no card) — the single biggest speed win in the generate lane |
+| `keys` shows a wall of Gemini rows and no total | expected with many keys; each is its own ~1,500/day pool | the `all keys  N / M requests today` row under the section is the aggregate; the header says how many pools you hold |
+| `keys` shows less Groq audio than you actually spent | the voice-note lane used to be off the books | fixed — `voice.transcribe` now ledgeres with `tag=voicenote`; `keys --month` splits `whisper` (clip/parts/longform) from `voicenote` (bot) |
 
 ## What is automated vs yours
 

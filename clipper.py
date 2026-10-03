@@ -691,7 +691,11 @@ def _whisper_request(path: Path, keys: list[str],
             last = f"network: {str(exc)[:100]}"
             continue
         import keystats
-        keystats.bump("groq", key, req=1, audio=max(0, int(seconds)))
+        # tag="whisper": the clip/parts/longform transcription lane. The
+        # bot's voice notes use tag="voicenote" (voice.py), so
+        # `keys --month` can show WHICH lane ate the ~8h/day audio pool.
+        keystats.bump("groq", key, req=1, audio=max(0, int(seconds)),
+                      tag="whisper")
         if response.status_code == 200:
             try:
                 return response.json()

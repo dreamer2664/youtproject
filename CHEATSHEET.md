@@ -143,9 +143,9 @@ and the minutes (with the FULL transcript) land in
 and channel + pending sources + the last 6 board decisions. Its action
 is machine-checked (clip must name a listed source; generate must carry
 a real topic) and executed on the spot — board-written generates ride
-the b-roll (Pexels) lane and are exempt from the meeting's ~10-call
-budget. Every decision lands in `work/board_memory.json`; `meeting
-memory` replays the log.
+the stock-footage generate lane (Pexels/Pixabay stills + voiceover) and
+are exempt from the meeting's ~10-call budget. Every decision lands in
+`work/board_memory.json`; `meeting memory` replays the log.
 
 ---
 
@@ -176,7 +176,7 @@ python main.py parts <link> --part-len 90    # target seconds per part
 python main.py parts <link> --max-parts 20   # episode cap
 python main.py parts <link> --no-header      # skip the fading top title
 python main.py parts <link> --half           # just two halves
-python main.py parts <link> --dry-run        # the part windows only, $0
+python main.py parts <link> --dry-run        # the part windows only, no renders
 ```
 
 ### longform — 16:9 videos (optional, new — not in the daily loop)
@@ -187,7 +187,7 @@ python main.py longform <link> --minutes 8      # ONE ~8-minute episode
 python main.py longform <link> --minutes 8 --start 600   # episode starting near 10:00
 python main.py longform <link> --top 5          # "Top 5 chapters" countdown, best LAST
 python main.py longform <link> --top 5 --no-vision      # skip frame QC
-python main.py longform <link> --dry-run        # the plan only, $0
+python main.py longform <link> --dry-run        # the plan only, no render
 python main.py longform <link> --no-chapters    # skip description timestamps
 python main.py longform <link> --no-subs        # skip the subtitle burn (kit keeps .srt)
 python main.py longform --file C:\video.mp4     # a local file

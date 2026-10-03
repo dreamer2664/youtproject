@@ -243,3 +243,14 @@ The bottom line survives the merge unchanged: whole long-form is a
 0-LLM lane on cached sources, the compilation is a clip-run-priced
 editorial lane, and the daily quota question is still "how many fresh
 audio-minutes did we transcribe today".
+
+---
+
+## 9. Note on the test counts above (2026-10-03)
+
+§7 (131) and §8 (133/133) are point-in-time records of what shipped with
+each change and are left as written. The suite has grown since: run
+`python test_smoke.py` for the live count (138 as of 2026-10-03, all
+green). Nothing else in this report changes — the quota accounting is
+still measured against the same prompt builders, and the daily question
+is still "how many fresh audio-minutes did we transcribe today".

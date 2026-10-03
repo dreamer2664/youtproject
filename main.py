@@ -283,7 +283,8 @@ def _fresh_preview(cfg, limit: int) -> tuple[list[str], int]:
 
 def _dry_run_batch(cfg, topics: list) -> int:
     """Report what batch WOULD render. No API calls, no backlog writes."""
-    print(BANNER)
+    # No BANNER here: the only caller (cmd_batch) already printed it, and
+    # printing it twice made the dry run read like two runs.
     avg, basis = _estimate_render_seconds(cfg)
     explicit = [t for t in topics if t]
     auto_count = len(topics) - len(explicit)
@@ -306,7 +307,7 @@ def _dry_run_batch(cfg, topics: list) -> int:
 
 def _dry_run_schedule(cfg, times: list[str], per_day: int) -> int:
     """Report what schedule WOULD do. No API calls, no backlog writes, no sleep."""
-    print(BANNER)
+    # No BANNER here either — cmd_schedule printed it (see _dry_run_batch).
     avg, basis = _estimate_render_seconds(cfg)
     slots = ", ".join(times) if times else f"evenly spaced x{per_day}"
     print(f"DRY RUN — {per_day} video(s)/day at {slots} "
@@ -1976,7 +1977,10 @@ def main() -> int:
                    help="subtitle placement for this run (default bottom: "
                         "shorts-safe, never collides with the top header)")
     p.add_argument("--dry-run", action="store_true",
-                   help="print the part windows only: no renders, $0")
+                   help="print the part windows only: no renders, no LLM "
+                        "editorial calls. The transcript is still ingested, "
+                        "so a source with no YouTube captions spends Groq "
+                        "Whisper minutes ONCE (cached for the real run)")
     group = p.add_mutually_exclusive_group()
     group.add_argument("--whole", dest="whole", action="store_const",
                        const=True, default=None,
@@ -2019,7 +2023,11 @@ def main() -> int:
     p.add_argument("--no-vision", action="store_true", dest="no_vision",
                    help="(--top) skip the frame quality check")
     p.add_argument("--dry-run", action="store_true",
-                   help="print the window + chapters only: no render, $0")
+                   help="print the window + chapters only: no render, no "
+                        "LLM editorial calls. The transcript is still "
+                        "ingested, so a source with no YouTube captions "
+                        "spends Groq Whisper minutes ONCE (cached — the "
+                        "real run afterwards is free)")
     p.add_argument("--keep-work", action="store_true",
                    help="keep intermediate files (.ass, srt, thumbnails)")
     p.add_argument("--out", default=None,
