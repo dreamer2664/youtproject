@@ -232,7 +232,7 @@ Shorts, long-form and art styles without touching the config.
 | `jarvis.py` | Channel manager brain: tasks → render + schedule + report |
 | `openai_compat.py` | Shared base for OpenAI-style chat lanes (rotation + fallback) |
 | `groq.py` / `openrouter.py` | Free LLM lanes (primary / backup) |
-| `broll.py` | Pexels stock B-roll fetcher (fetch-only) |
+| `broll.py` | Pexels **video** clip fetcher — fetch-only, NOT wired into any render path yet (the generate lane uses `stock.py` photos) |
 | `editorial.py` | Punch-up (retention) + decringe (taste veto) passes |
 | `analytics.py` | Buffer stats: posts + per-post metrics roll-up (read-only) |
 | `voice.py` | Voice notes: Telegram download + Groq Whisper transcription |

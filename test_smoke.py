@@ -3739,8 +3739,20 @@ def t_keystats():
     totals = keystats.month_totals(sample, now=now)
     row = totals["groq"]
     assert row["req"] == 10 and row["tok"] == 840
-    assert row["tags"]["script"] == {"req": 2, "tok": 100}
-    assert row["tags"]["probe"] == {"req": 1, "tok": 40}
+    assert row["tags"]["script"] == {"req": 2, "tok": 100, "audio": 0}
+    assert row["tags"]["probe"] == {"req": 1, "tok": 40, "audio": 0}
+    # Audio rides the tag split: "which lane ate the 8h Whisper pool"
+    # (clip/parts/longform `whisper` vs the bot's `voicenote`).
+    audio_sample = [
+        {"t": now.isoformat(), "p": "groq", "k": "...a", "req": 1,
+         "audio": 1200, "tag": "whisper"},
+        {"t": now.isoformat(), "p": "groq", "k": "...a", "req": 1,
+         "audio": 30, "tag": "voicenote"},
+    ]
+    arow = keystats.month_totals(audio_sample, now=now)["groq"]
+    assert arow["audio"] == 1230
+    assert arow["tags"]["whisper"]["audio"] == 1200
+    assert arow["tags"]["voicenote"]["audio"] == 30
 
     # -- key strategy advice (2026-10-02): honest multi-key truths --------
     advice = keystats.advice_report()
@@ -3754,7 +3766,7 @@ def t_keystats():
         assert title in advice, name
     # the default dashboard points at it
     assert "--advice" in keystats.build_status(cfg)
-    assert row["tags"]["(untagged)"] == {"req": 7, "tok": 700}
+    assert row["tags"]["(untagged)"] == {"req": 7, "tok": 700, "audio": 0}
     assert "ancient" not in row["tags"]
     report = keystats.month_report()
     assert "30 days" in report and "probe" in report
@@ -3770,6 +3782,46 @@ def t_keystats():
     cfg.data["ai"]["groq_api_keys"] = ["gq-full-secret-bb18"]
     out = keystats.build_status(cfg)
     assert "GROQ" in out and "pool total" in out and "14,400" in out
+    # Multi-key headers say the truth about what N keys buy (pure).
+    assert keystats._keys_note(1, False) == ""
+    assert keystats._keys_note(1, True) == ""
+    assert "35 separate pools" in keystats._keys_note(35, False)
+    note = keystats._keys_note(5, True)
+    assert "ONE shared pool" in note and "no capacity" in note
+    # A wall of PER-KEY pools (the real setup: ~35 Gemini keys) gets an
+    # aggregate row — 35 individual "N left of 1,500" rows are unreadable
+    # and the aggregate is the number that gates the day. The legacy key
+    # bumped earlier in this test is still in the ledger, so it keeps its
+    # row (rotated-out keys still show their spend) and counts once.
+    cfg.data["ai"]["gemini_api_keys"] = [f"gkey-{i:02d}-secret-ab{i:02d}"
+                                         for i in range(35)]
+    gem = keystats._configured_keys(cfg, "gemini")
+    assert len(gem) == 36                      # 35 listed + 1 legacy
+    out = keystats.build_status(cfg)
+    assert "36 keys = 36 separate pools" in out
+    assert "all keys" in out
+    assert f"{36 * keystats.LIMITS['gemini']['day']:,}" in out   # 54,000
+    assert not any(f"gkey-{i:02d}-secret" in out for i in range(35))
+    # Shared pools must NOT claim multiplied capacity. (The clipfix bump
+    # above left a ledger-only Groq mask, so it keeps a row and counts
+    # once — hence 6 masks for 5 configured keys.)
+    cfg.data["ai"]["groq_api_keys"] = [f"gq-secret-{i:02d}xx" for i in range(5)]
+    assert len(cfg.groq_api_keys) == 5
+    out = keystats.build_status(cfg)
+    assert "ONE shared pool" in out and "add no capacity" in out
+    assert "6 keys" in out
+    assert f"{keystats.LIMITS['groq']['day']:,}" in out            # 14,400
+    assert f"{6 * keystats.LIMITS['groq']['day']:,}" not in out    # no 86,400
+    # A shared pool shows ONE `pool total` row and never an `all keys`
+    # aggregate (that row would falsely imply multiplied capacity).
+    groq_section = out.split("GROQ")[-1].split("OPENROUTER")[0]
+    assert "pool total" in groq_section and "all keys" not in groq_section
+    # ElevenLabs is per-key but MONTHLY: header truth, no daily aggregate.
+    cfg.data["channel"]["elevenlabs_api_keys"] = ["el-secret-1", "el-secret-2"]
+    out = keystats.build_status(cfg)
+    assert "ELEVENLABS" in out and "3 keys = 3 separate pools" in out
+    assert "all keys" not in out.split("ELEVENLABS")[-1]   # monthly: no row
+    keystats.init(cfg)                                     # restore for the rest
     # Audio formatter + bump round-trip for the Whisper pool.
     assert keystats._fmt_audio(0) == "0s"
     assert keystats._fmt_audio(30) == "30s"
@@ -4405,6 +4457,162 @@ def t_shot_plan():
     for dur, count in zip([50.0, 13.0], [8, 3]):
         assert dur / count <= SHOT_TARGET_SECONDS + 1.5, (dur, count)
     assert 80.0 / 9 <= 9.0  # capped case: 8.9s, the accepted ceiling
+
+
+def t_shot_plan_delivery():
+    """The adaptive shot plan must actually REACH the video.
+
+    Regression guard: generate_scene_images() used to plan extra shots for
+    long scenes, fetch them all (paying the Pollinations pacer and the
+    ledger for each) and then return only the first `images_per_scene` per
+    scene — so the 2026-09-21 "images hold too long" fix silently did
+    nothing on the real render path. `plan_shot_counts` alone can't catch
+    that; this walks the whole function with a faked fetch.
+    """
+    import tempfile
+    from unittest.mock import patch
+
+    import assembler
+    import images
+
+    cfg = tmp_cfg()
+    cfg.data["video"]["images_per_scene"] = 1
+    cfg.data["ai"]["image_provider"] = "pollinations"   # keyless lane
+
+    class Scene:
+        def __init__(self, prompt):
+            self.image_prompt = prompt
+            self.narration = "n"
+
+    class Script:
+        scenes = [Scene("long scene"), Scene("short scene")]
+
+    fetched: list[str] = []
+
+    def fake_fetch(prompt, dest, cfg_, seed, attempts):
+        fetched.append(Path(dest).name)
+        Path(dest).write_bytes(b"\xff\xd8\xff fake jpeg")
+        return dest
+
+    # Scene 1 is 20s -> ceil(20/6.5) = 4 shots (capped at 3x per_scene = 3);
+    # scene 2 is 5s -> the 1-image baseline.
+    with tempfile.TemporaryDirectory() as tmp, \
+            patch.dict(images._FETCH, {"pollinations": fake_fetch}, clear=True), \
+            patch.object(assembler, "ffprobe_duration",
+                         lambda p: 20.0 if p.name == "a1.wav" else 5.0), \
+            patch.object(images, "MIN_REQUEST_INTERVAL", 0.0):
+        result = images.generate_scene_images(
+            Script(), cfg, Path(tmp),
+            audio_paths=[Path("a1.wav"), Path("a2.wav")])
+
+        planned = images.plan_shot_counts([20.0, 5.0], 1)
+        assert planned == [3, 1], planned
+        # Every planned shot is returned, in slot order — nothing dropped.
+        assert [len(scene) for scene in result] == planned, result
+        assert sum(len(scene) for scene in result) == len(fetched) == 4
+        # ... and every returned path is a real file the assembler can read.
+        assert all(path.exists() for scene in result for path in scene)
+        # File names carry the true shot count (was "2of1" for the 3rd shot).
+        assert any("1of3" in name for name in fetched), fetched
+        assert any("3of3" in name for name in fetched), fetched
+        assert not any("2of1" in name or "3of1" in name for name in fetched)
+
+    # No audio -> no adaptive plan -> exactly images_per_scene per scene.
+    cfg.data["video"]["images_per_scene"] = 3
+    fetched.clear()
+    with tempfile.TemporaryDirectory() as tmp, \
+            patch.dict(images._FETCH, {"pollinations": fake_fetch}, clear=True), \
+            patch.object(images, "MIN_REQUEST_INTERVAL", 0.0):
+        result = images.generate_scene_images(Script(), cfg, Path(tmp))
+        assert [len(scene) for scene in result] == [3, 3], result
+        assert len(fetched) == 6
+        assert all(path.exists() for scene in result for path in scene)
+
+
+def t_voice_ledger():
+    """Voice-note Whisper audio must land in the ledger (binding constraint).
+
+    The clip lane has ledgered Groq audio since 6ff2be1; the bot's
+    voice-note path (voice.transcribe) did not, so `keys` under-reported
+    the ~8h/day org-level Whisper pool — the one quota that gates the day.
+    """
+    from unittest.mock import Mock, mock_open, patch
+
+    import keystats
+    from voice import _audio_seconds, transcribe
+
+    cfg = tmp_cfg()
+    keystats.init(cfg)
+    cfg.data.setdefault("ai", {})["groq_api_keys"] = ["gq-voice-key-0001"]
+
+    ok = Mock(status_code=200)
+    ok.json.return_value = {"text": "make a video about black holes"}
+    with patch("requests.post", return_value=ok), \
+            patch("builtins.open", mock_open(read_data=b"ogg")), \
+            patch("voice._audio_seconds", return_value=42.0):
+        assert transcribe(cfg, Path("note.ogg")) == \
+            "make a video about black holes"
+
+    events = [e for e in keystats._load(keystats._path) if e.get("p") == "groq"]
+    assert len(events) == 1, events
+    assert events[0]["req"] == 1
+    assert events[0]["audio"] == 42          # seconds spent, not 0
+    assert events[0]["tag"] == "voicenote"   # distinguishable from `whisper`
+    assert "gq-voice-key" not in str(events[0])     # masked on disk
+
+    # The clip lane's tag stays distinct so `keys --month` can split them.
+    from clipper import _whisper_request
+
+    resp = Mock(status_code=200)
+    resp.json.return_value = {"words": []}
+    with patch("requests.post", return_value=resp), \
+            patch("builtins.open", mock_open(read_data=b"ogg")):
+        _whisper_request(Path("chunk.opus"), ["gq-clip-key-0002"], seconds=600)
+    groq = [e for e in keystats._load(keystats._path) if e.get("p") == "groq"]
+    assert {e.get("tag") for e in groq} == {"voicenote", "whisper"}
+    assert sum(e["audio"] for e in groq) == 642
+
+    # Audio length: unknown/missing file degrades to 0.0, never raises.
+    assert _audio_seconds(Path("/nonexistent/nope.ogg")) == 0.0
+
+
+def t_dry_run_banner_once():
+    """`batch --dry-run` / `schedule --dry-run` print the banner ONCE.
+
+    cmd_batch/cmd_schedule print BANNER, then the dry-run helper printed
+    it again — the preview read like two runs had happened.
+    """
+    import io
+    from contextlib import redirect_stdout
+
+    from main import BANNER, _dry_run_batch, _dry_run_schedule, cmd_batch
+
+    cfg = tmp_cfg()
+    # The banner's rule line appears twice per banner — count its unique
+    # middle line instead.
+    marker = "Free AI video generator (manual-upload edition)"
+    assert marker in BANNER
+    for helper, call in (
+            (_dry_run_batch, lambda: _dry_run_batch(cfg, ["t", None])),
+            (_dry_run_schedule,
+             lambda: _dry_run_schedule(cfg, [], 2))):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            assert call() == 0
+        assert marker not in buf.getvalue(), helper.__name__
+
+    # ... and the CLI path still shows it exactly once.
+    import argparse
+
+    args = argparse.Namespace(topics=None, count=2, dry_run=True, seconds=None,
+                              format=None, images_per_scene=None,
+                              no_subs=False, no_gemini=False, style=None,
+                              keep_work=False, keep_going=False,
+                              verbose=False, sleep=0)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        assert cmd_batch(cfg, args) == 0
+    assert buf.getvalue().count(marker) == 1
 
 
 def t_shot_bounds():
@@ -7753,6 +7961,9 @@ def main(argv: list[str] | None = None) -> int:
         ("clipper", t_clipper),
         ("image_speed", t_image_speed),
         ("shot_plan", t_shot_plan),
+        ("shot_plan_delivery", t_shot_plan_delivery),
+        ("voice_ledger", t_voice_ledger),
+        ("dry_run_banner_once", t_dry_run_banner_once),
         ("shot_bounds", t_shot_bounds),
         ("voice_budget", t_voice_budget),
         ("pixabay", t_pixabay),

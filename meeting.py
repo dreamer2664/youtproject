@@ -522,11 +522,13 @@ def _act_agenda(cfg: Config, candidates: list[tuple[str, str]]) -> str:
                      "option is off the table today.")
     lines.append("")
     lines.append("Standing context: one clip per day per channel is the "
-                 "cadence. The generate lane renders a real-footage "
-                 "(b-roll + voiceover) video from a topic the board "
-                 "writes itself — the move for when clips are "
-                 "underperforming or the momentum data points at a "
-                 "topic worth riding.")
+                 "cadence. The generate lane renders a stock-footage "
+                 "video (Pexels/Pixabay stills + edge-tts voiceover + "
+                 "karaoke subtitles) from a topic the board writes "
+                 "itself — the move for when clips are underperforming "
+                 "or the momentum data points at a topic worth riding. "
+                 "It costs a full generate budget (~5-6 LLM calls, ~21 "
+                 "images), not a clip's.")
     return "\n".join(lines)
 
 
@@ -721,7 +723,7 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
             body = f"Board action: clip {decision['url']}"
         elif decision["action"] == "generate":
             body = (f"Board action: generate — '{decision['topic']}' "
-                    "(board-written script, b-roll lane)")
+                    "(board-written script, stock-footage generate lane)")
         else:
             body = "Board action: nothing extra today"
         summary = f"{header}\n\n{body}\nWhy: {decision['reason']}"
