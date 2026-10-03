@@ -3,9 +3,20 @@ on: [push, pull_request]
 jobs:
   tests:
     runs-on: ubuntu-latest
+    # 3.11 is the floor we claim to support and what setup.ps1 can fall back
+    # to; 3.13 is the current stable. Two versions on purpose: a PEP 701
+    # backslash inside an f-string expression (assembler.py, 2026-09-12)
+    # compiled fine on 3.12+ dev machines and SyntaxError'd on this job's lone
+    # 3.11 runner, so every single run from 2026-09-15 to 2026-10-03 was red
+    # and nobody could tell a real regression from the standing failure. A
+    # matrix makes the broken version name itself.
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
-        with: {python-version: "3.11"}
+        with: {python-version: "${{ matrix.python-version }}"}
       - run: pip install -r requirements.txt
       - run: python test_smoke.py
