@@ -1829,7 +1829,7 @@ def cmd_keys(cfg, args) -> int:
         print(advice_report())
         return 0
     if getattr(args, "probe", False):
-        print(run_probes(cfg))
+        print(run_probes(cfg, sample=int(getattr(args, "sample", 0) or 0)))
         return 0
     if getattr(args, "month", False):
         print(month_report())
@@ -2176,6 +2176,9 @@ def main() -> int:
                          "ledgered as tag=probe — nothing spends off the books)")
     pk.add_argument("--month", action="store_true",
                     help="30-day spend rollup per provider, split by call tag")
+    pk.add_argument("--sample", type=int, default=0,
+                    help="with --probe: check only the first N keys per "
+                         "provider (0 = every key)")
     p.add_argument("--count", type=int, default=3, help="how many failures to show")
 
     sub.add_parser("queue", help="show the queue")

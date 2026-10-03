@@ -6652,6 +6652,51 @@ def t_image_402_fails_over_fast():
     assert not dest.exists()
 
 
+def t_probe_whisper():
+    """probe_whisper posts the wav, ledgers audio=1 tag=probe, never raises."""
+    from unittest.mock import Mock, patch
+
+    import keystats
+
+    cfg = tmp_cfg()
+    keystats.init(cfg)
+    ok_resp = Mock(status_code=200, text="")
+    with patch("requests.post", return_value=ok_resp) as post:
+        ok, detail = keystats.probe_whisper("gsk-secret-0001", b"RIFFfake")
+    assert ok and "audio-second" in detail, (ok, detail)
+    assert post.call_args.kwargs["data"]["model"] == "whisper-large-v3-turbo"
+    events = keystats._load(keystats._path)
+    probes = [e for e in events if e.get("p") == "groq"
+              and e.get("tag") == "probe"]
+    assert probes and probes[-1]["audio"] == 1 and probes[-1]["req"] == 1
+
+    with patch("requests.post", return_value=Mock(status_code=401, text="bad")):
+        ok, detail = keystats.probe_whisper("gsk-secret-0001", b"RIFFfake")
+    assert not ok and "401" in detail, (ok, detail)
+
+
+def t_probe_sample():
+    """--probe --sample N slices key lists; 0/negative = all (pure)."""
+    import keystats
+
+    assert keystats._sample(["a", "b", "c", "d"], 2) == ["a", "b"]
+    assert keystats._sample(["a", "b"], 0) == ["a", "b"]
+    assert keystats._sample(["a"], -3) == ["a"]
+    assert keystats._sample([], 5) == []
+
+
+def t_probe_report_shape():
+    """run_probes works keyless (no network) and names the Whisper lane."""
+    import keystats
+
+    cfg = tmp_cfg()
+    text = keystats.run_probes(cfg, sample=1)
+    assert "GEMINI" in text and "GROQ" in text
+    assert "WHISPER" in text
+    assert "sampling the first 1 key" in text
+    assert "python main.py keys --month" in text
+
+
 def t_chat_tools():
     from unittest.mock import Mock, patch
 
@@ -8159,6 +8204,9 @@ def main(argv: list[str] | None = None) -> int:
         ("editorial", t_editorial),
         ("openrouter_lane", t_openrouter_lane),
         ("image_402", t_image_402_fails_over_fast),
+        ("probe_whisper", t_probe_whisper),
+        ("probe_sample", t_probe_sample),
+        ("probe_report_shape", t_probe_report_shape),
         ("broll", t_broll),
         ("chat_tools", t_chat_tools),
         ("jarvis_task", t_jarvis_task),
