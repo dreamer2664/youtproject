@@ -6626,6 +6626,32 @@ def t_broll():
             raise AssertionError("expected RuntimeError on 401")
 
 
+def t_image_402_fails_over_fast():
+    """Pollinations HTTP 402 must fail over at once — one request, no retries.
+
+    The old behavior treated 402 as generic-retryable: six paced attempts,
+    ~45s of sleeps per image, then the chain failed over anyway.
+    """
+    from unittest.mock import Mock, patch
+
+    import images
+
+    cfg = tmp_cfg()
+    dest = Path(tempfile.mkdtemp(prefix="youttest_")) / "img.jpg"
+    resp = Mock(status_code=402, text="payment required")
+    resp.headers = {}
+    with patch("images._wait_for_slot", lambda *a, **k: None), \
+         patch("images.requests.get", return_value=resp) as get:
+        try:
+            images._pollinations_fetch("prompt", dest, cfg, seed=1)
+        except RuntimeError as exc:
+            assert "402" in str(exc), str(exc)
+        else:
+            raise AssertionError("expected RuntimeError on HTTP 402")
+    assert get.call_count == 1, f"402 was retried {get.call_count} times"
+    assert not dest.exists()
+
+
 def t_chat_tools():
     from unittest.mock import Mock, patch
 
@@ -8132,6 +8158,7 @@ def main(argv: list[str] | None = None) -> int:
         ("dry_run_batch", t_dry_run_batch),
         ("editorial", t_editorial),
         ("openrouter_lane", t_openrouter_lane),
+        ("image_402", t_image_402_fails_over_fast),
         ("broll", t_broll),
         ("chat_tools", t_chat_tools),
         ("jarvis_task", t_jarvis_task),
