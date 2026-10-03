@@ -1,4 +1,4 @@
-"""Rotating end-of-video call to action (comment bait).
+"""Rotating end-of-video call to action (a gentle follow line by default).
 
 Each video gets the next line from cta.lines, spoken by the narrator and
 shown as an end-card overlay. The counter lives in cta_state.json next to

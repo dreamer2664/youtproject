@@ -1,7 +1,9 @@
 """Configuration loading with environment-variable overrides.
 
-youtproject talks to NO YouTube/Google API, so there is no OAuth, no token
-file, no quota and no audit. The only secret is the optional free Gemini key.
+youtproject has NO upload API and no OAuth anywhere, so no audit or
+verification can ever be required. Every key it accepts is optional and free
+tier — LLM lanes, stock photos, ElevenLabs, read-only YouTube Data API keys
+(`yt` / `snap`), Telegram, Buffer. Secrets live in config.yaml (git-ignored).
 """
 
 from __future__ import annotations

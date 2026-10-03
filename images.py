@@ -1,9 +1,11 @@
 """AI image generation with automatic provider fallbacks.
 
-Primary: Pollinations (free, keyless anonymous tier; an optional free token
-raises the rate limit and removes the watermark). Fallbacks, tried in order
-when the primary fails an image: Gemini image generation (same free Gemini
-key as the scripts — no new signup).
+The chain is config-driven: `ai.image_provider` first, then
+`ai.image_fallbacks` in order (the shipped example config uses
+pexels → pixabay → pollinations → gemini; providers missing a key are
+skipped). Pollinations is the keyless default that always works — anonymous,
+with an optional free token to raise the rate limit and remove the watermark.
+Gemini image generation reuses the script key — no new signup.
 
 There is no SLA on any provider, so every call is retried, failures fall
 through to the next provider, and a total failure raises rather than

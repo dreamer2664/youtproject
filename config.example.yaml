@@ -2,8 +2,10 @@
 #  CONFIGURATION — edit this file, it is git-ignored so it is safe to keep
 #  your key in it. Copy config.example.yaml -> config.yaml to start.
 #
-#  This project uses NO YouTube API, so there is no OAuth, no quota and no
-#  audit. The only secret here is the optional free Gemini key.
+#  There is no upload API and no OAuth anywhere in this project, so no audit
+#  or verification can ever be required. Every key below is optional and free
+#  tier — the youtube.api_keys section powers read-only public stats
+#  (`yt` / `snap`) only; nothing here can upload a video.
 # ============================================================================
 
 channel:

@@ -114,12 +114,12 @@ ADVICE = {
         "10,000 units/day is far beyond this stack's use — one key "
         "is enough; a second from another Cloud project is spare."],
     "pexels": [
-        "Powers: real-footage b-roll for the generate lane (the board's "
+        "Powers: real stock photos for the generate lane (the board's "
         "'make a video' action rides this).",
         "200/hour + 20,000/month per key; a second key doubles a "
         "generous pool — low priority."],
     "pixabay": [
-        "Powers: alternate b-roll lane (~100 req/min). One key is "
+        "Powers: alternate stock-photo lane (~100 req/min). One key is "
         "plenty."],
     "elevenlabs": [
         "Powers: premium narration (~10k chars/month per key); overflow "

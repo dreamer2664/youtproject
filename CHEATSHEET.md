@@ -33,7 +33,7 @@ commented line by line):
 | DeepSeek, OpenRouter (extra LLM lanes) | `ai.deepseek_api_keys`, `ai.openrouter_api_keys` | their consoles (free tiers) |
 | **YouTube Data API (channel stats)** | `youtube.api_keys` | console.cloud.google.com — see §2 |
 | Telegram (DMs, phone queue, boardroom summaries) | `telegram.bot_token`, `telegram.owner_id`, `telegram.channel_id` | @BotFather, @userinfobot |
-| Pixabay (b-roll) | `pixabay.api_keys` | pixabay.com/api (free) |
+| Pixabay (stock photos) | `pixabay.api_keys` | pixabay.com/api (free) |
 
 ---
 
