@@ -7164,6 +7164,146 @@ def t_deps_guard():
     assert "Traceback" not in proc.stderr
 
 
+def t_py_compat():
+    """Every module must COMPILE on the oldest Python we claim to support.
+
+    CI runs 3.11 and the setup docs point at 3.12, but a dev machine on
+    3.12+ silently accepts syntax that 3.11 rejects — a backslash inside an
+    f-string expression part (PEP 701) broke `assembler.py` and took out 40
+    of 138 tests on EVERY CI run from 2026-09-15 to 2026-10-03 while
+    staying invisible locally. Importing the modules can't catch that (the
+    suite is already running under the broken interpreter by then), so this
+    shells out to a clean interpreter and compiles the source instead.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    MIN_SUPPORTED = (3, 11)          # CI's interpreter; keep in sync with
+                                     # .github/workflows/smoke.yml
+    assert sys.version_info[:2] >= MIN_SUPPORTED
+    root = Path(__file__).resolve().parent
+    files = sorted(root.glob("*.py"))
+    assert len(files) > 40, files    # sanity: we really scanned the project
+    # A clean interpreter compiles the SOURCE (not the already-imported
+    # modules): compile() is where PEP 701 syntax is accepted or rejected,
+    # and it touches no disk, so there is nothing to clean up.
+    probe = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "bad = []\n"
+        "for path in map(Path, sys.argv[1:]):\n"
+        "    try:\n"
+        "        compile(path.read_text(encoding='utf-8'), str(path), 'exec')\n"
+        "    except SyntaxError as exc:\n"
+        "        bad.append(f'{path.name}:{exc.lineno}: {exc.msg}')\n"
+        "print('\\n'.join(bad))\n"
+        "sys.exit(1 if bad else 0)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe] + [str(f) for f in files],
+        capture_output=True, text=True)
+    assert proc.returncode == 0, \
+        (f"does not compile on Python "
+         f"{'.'.join(map(str, sys.version_info[:3]))}:\n{proc.stdout}\n"
+         f"{proc.stderr}")
+    # The specific trap, so the failure names itself if it ever returns:
+    # no f-string in the project may hold a backslash in its expression part.
+    import ast
+
+    for path in root.glob("*.py"):
+        src = path.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue                      # t_py_compat's compile check owns it
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.JoinedStr):
+                continue
+            for part in node.values:
+                if isinstance(part, ast.FormattedValue):
+                    seg = ast.get_source_segment(src, part.value) or ""
+                    assert "\\" not in seg, \
+                        (f"{path.name}:{node.lineno} — backslash inside an "
+                         f"f-string expression is a SyntaxError before "
+                         f"Python 3.12 (PEP 701): {seg[:80]}")
+
+
+def t_thumbnail_filter_variants():
+    """Thumbnail drawtext variants: ordered, and the Windows colon escaped.
+
+    Regression guard for the PEP 701 fix in assembler._thumbnail_filters:
+    hoisting `safe_font.replace(':', '\\\\:')` out of the f-string must not
+    change what the filter string says. FFmpeg's filter parser splits on
+    ':', so a drive-letter path only works with the colon backslashed —
+    that variant has to stay FIRST, with the plain-colon spelling and the
+    fontconfig-name fallbacks behind it, and a textless 'plain' last.
+    """
+    from unittest.mock import patch
+
+    from assembler import _thumbnail_filters
+
+    # Landscape on purpose: thumb_width is 1280 there, so the fontsize
+    # ladder below is the unscaled 72/56/44 one (portrait would multiply it
+    # by 720/1280 and these assertions would chase the wrong numbers).
+    cfg = tmp_cfg(video={"format": "landscape"})
+
+    class _NoFonts:
+        """assembler only ever does Path(f).exists() on the candidates."""
+        def __call__(self, p):
+            return self
+
+        def exists(self):
+            return False
+
+    class _WindowsFonts:
+        def __call__(self, p):
+            self.seen = str(p)
+            return self
+
+        def exists(self):
+            return self.seen.startswith("C:")
+
+    # No drawtext in this FFmpeg build -> only the textless fallback.
+    with patch("assembler._ffmpeg_has_filter", return_value=False):
+        variants = _thumbnail_filters("A Title", cfg)
+    assert [label for label, _ in variants] == ["plain"], variants
+
+    with patch("assembler._ffmpeg_has_filter", return_value=True):
+        # No font file on disk -> fontconfig names, then plain.
+        with patch("assembler.Path", _NoFonts()):
+            variants = _thumbnail_filters("A Title", cfg)
+        labels = [label for label, _ in variants]
+        assert labels == ["titled", "titled", "plain"], labels
+        assert any("font='Arial Bold'" in vf for _, vf in variants)
+        assert any("font='DejaVu Sans Bold'" in vf for _, vf in variants)
+        # Long titles shrink the font instead of running off the frame, and
+        # only the first 8 words ever reach the thumbnail.
+        with patch("assembler.Path", _NoFonts()):
+            short_vf = _thumbnail_filters("Short", cfg)[0][1]
+            mid_vf = _thumbnail_filters("A somewhat longer thumbnail title", cfg)[0][1]
+            long_vf = _thumbnail_filters("thumbnail " * 12, cfg)[0][1]
+        assert "fontsize=72" in short_vf, short_vf
+        assert "fontsize=56" in mid_vf, mid_vf
+        assert "fontsize=44" in long_vf, long_vf
+        assert "text='thumbnail thumbnail thumbnail thumbnail thumbnail " \
+            "thumbnail thumbnail thumbnail'" in long_vf, long_vf
+
+        # A Windows font path: variant 1 escapes the drive colon, variant 2
+        # deliberately does not (FFmpeg builds disagree), and the escaped
+        # spelling has to stay FIRST — it's the one that survives FFmpeg's
+        # ':'-delimited filter parsing.
+        with patch("assembler.Path", _WindowsFonts()):
+            variants = _thumbnail_filters("A Title", cfg)
+        fonts = [vf for _, vf in variants if "fontfile=" in vf]
+        assert len(fonts) == 2, fonts
+        assert "fontfile='C\\:/Windows/Fonts/arialbd.ttf'" in fonts[0], fonts[0]
+        assert "fontfile='C:/Windows/Fonts/arialbd.ttf'" in fonts[1], fonts[1]
+        assert "\\:" not in fonts[1], fonts[1]
+        assert [label for label, _ in variants] == \
+            ["titled", "titled", "titled", "titled", "plain"], variants
+
+
 def t_render_debug():
     import io
     from contextlib import redirect_stdout
@@ -7988,6 +8128,8 @@ def main(argv: list[str] | None = None) -> int:
         ("crew_watch", t_crew_watch),
         ("key_pools", t_key_pools),
         ("deps_guard", t_deps_guard),
+        ("py_compat", t_py_compat),
+        ("thumbnail_variants", t_thumbnail_filter_variants),
         ("render_debug", t_render_debug),
         ("emergency_mux", t_emergency_mux),
         ("pygarnish", t_pygarnish),
