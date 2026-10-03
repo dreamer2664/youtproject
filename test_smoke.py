@@ -1451,16 +1451,32 @@ def t_meeting():
     # -- latest_minutes + `meeting last` ------------------------------------
     import os
     import meeting as mt2
-    from datetime import datetime, timedelta
     meetings = cfg.out_dir / "meetings"
     meetings.mkdir(parents=True, exist_ok=True)
     old = meetings / "2026-09-30-stats.md"
     new = meetings / "2026-10-01-pick.md"
     old.write_text("OLD MINUTES", encoding="utf-8")
     new.write_text("NEW MINUTES", encoding="utf-8")
-    stamp = datetime.now().timestamp()
+    # Explicit mtimes, and `new` strictly in the FUTURE. Two reasons: this
+    # sandbox's clock handed consecutive writes the exact same timestamp, and
+    # the run_meeting calls above already dropped a `2026-10-03-*.md` in here.
+    # Left to itself, `new` tied with that file and the test's answer then
+    # depended on the order the directory happened to list its files in.
+    import time as _time
+    stamp = _time.time() + 3600
     os.utime(old, (stamp - 86400, stamp - 86400))
-    assert mt2.latest_minutes(cfg) == new
+    os.utime(new, (stamp, stamp))
+    assert mt2.latest_minutes(cfg) == new, sorted(
+        (p.name, p.stat().st_mtime) for p in meetings.glob("*.md"))
+
+    # An exact tie is resolved by name (dates sort), never by glob order —
+    # that tie is what made `meeting last` non-deterministic.
+    tied = meetings / "2026-10-04-act.md"
+    tied.write_text("TIED MINUTES", encoding="utf-8")
+    os.utime(tied, (stamp, stamp))
+    assert mt2.latest_minutes(cfg) == tied, "tie must break toward the later date"
+    os.utime(new, (stamp + 60, stamp + 60))     # strictly newer wins again
+    assert mt2.latest_minutes(cfg) == new, "mtime must still outrank the name"
 
     import main as cli
     from argparse import Namespace
