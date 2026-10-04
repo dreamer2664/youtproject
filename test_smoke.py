@@ -7963,6 +7963,11 @@ def t_panel_launch():
         body = b'{"ok": true, "project": "older-board"}'
 
     class Ours(_Base):                        # /api/state exactly as we serve
+        body = _json.dumps({"app": panel.APP_MARKER, "token": "abc123",
+                            "snapshot": {"keys": {}},
+                            "runner": {}}).encode()
+
+    class Lookalike(_Base):       # copies our SHAPE, not our identity
         body = _json.dumps({"snapshot": {"keys": {}},
                             "runner": {}}).encode()
 
@@ -7977,6 +7982,23 @@ def t_panel_launch():
     try:
         assert panel.probe_ours("127.0.0.1", fport) is False   # not ours
         assert panel.probe_ours("127.0.0.1", oport) is True    # ours
+
+        # A lookalike that copies our JSON shape is still not ours…
+        look, lport = spin(Lookalike)
+        try:
+            assert panel.probe_ours("127.0.0.1", lport) is False
+            # …and even the real one fails a WRONG token (identity, not shape)
+            assert panel.probe_ours("127.0.0.1", oport,
+                                    token="abc123") is True
+            assert panel.probe_ours("127.0.0.1", oport,
+                                    token="wrong-token") is False
+            # with no port file, find_our_panel still locates ours by marker
+            empty = tmp_cfg()
+            assert panel.read_port_file(empty) is None
+            found = panel.find_our_panel(empty, start=min(oport, lport))
+            assert found in (oport, None) or found != lport, found
+        finally:
+            look.shutdown(); look.server_close()
 
         # The exact bug: a stranger on the recorded port opens NO window.
         panel.write_port_file(cfg, fport)
@@ -8069,6 +8091,102 @@ def t_panel_launch():
     assert seen.get("port") == 45991 and seen.get("file") == 45991, seen
     assert seen.get("url") == "http://127.0.0.1:45991/", seen
     assert seen.get("closed") and panel.read_port_file(cfg) is None
+
+
+def t_panel_status_and_defaults():
+    """`panel --status` names the ports; panel.port pins the default."""
+    import unittest.mock as mock
+
+    import panel
+
+    cfg = tmp_cfg()
+    assert panel.default_port(cfg) == 8765
+    cfg2 = tmp_cfg(panel={"port": 9000})
+    assert panel.default_port(cfg2) == 9000
+    cfg3 = tmp_cfg(panel={"port": "banana"})
+    assert panel.default_port(cfg3) == 8765          # garbage = default
+
+    rows = [{"port": 8765, "state": "other"},
+            {"port": 8766, "state": "ours"},
+            {"port": 8767, "state": "free"}]
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with mock.patch.object(panel, "scan_ports", lambda *a, **k: rows), \
+         redirect_stdout(buf):
+        rc = panel.panel_status(cfg)
+    out = buf.getvalue()
+    assert rc == 0, rc
+    assert "8765  held by another program" in out, out
+    assert "8766  ← THIS panel" in out, out
+    assert "http://127.0.0.1:8766/" in out, out
+    assert "another project" in out, out
+
+    # nothing running: it says so and tells him how to start it
+    buf = io.StringIO()
+    with mock.patch.object(panel, "scan_ports",
+                           lambda *a, **k: [{"port": 8765, "state": "free"}]), \
+         redirect_stdout(buf):
+        panel.panel_status(cfg)
+    out = buf.getvalue()
+    assert "no panel of ours is running" in out, out
+    assert "Start Panel.bat" in out and "python main.py panel" in out, out
+
+
+def t_panel_failure_is_visible():
+    """Start Panel.bat runs under pythonw: a failed start must DIALOG.
+
+    Before: serve() returning 1 printed to a console that does not exist
+    and pythonw exited silently — from the owner's side, "nothing happened"
+    and he fell back to typing URLs into the browser by hand.
+    """
+    import unittest.mock as mock
+
+    import panel
+
+    import config as config_mod
+
+    seen = []
+    cfg = tmp_cfg()
+    with mock.patch.object(config_mod, "load_config", lambda path=None: cfg), \
+         mock.patch.object(panel, "launch", lambda *a, **k: 1), \
+         mock.patch.object(panel, "_alert",
+                           lambda title, text: seen.append((title, text))):
+        rc = panel._main(["--app-window"])
+    assert rc == 1, rc
+    assert seen and "could not start" in seen[0][1], seen
+    assert "panel --status" in seen[0][1], seen
+
+    # a normal Ctrl+C stop (130) is not an error: no dialog
+    seen.clear()
+    with mock.patch.object(config_mod, "load_config", lambda path=None: cfg), \
+         mock.patch.object(panel, "launch", lambda *a, **k: 130), \
+         mock.patch.object(panel, "_alert",
+                           lambda title, text: seen.append((title, text))):
+        assert panel._main(["--app-window"]) == 130
+    assert seen == [], seen
+    assert callable(getattr(config_mod, "load_config", None))
+
+
+def t_panel_port_file_forms():
+    """The port file tolerates old bare-number files and carries the token."""
+    import panel
+
+    cfg = tmp_cfg()
+    path = panel.port_file_path(cfg)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("9000", encoding="utf-8")          # the old form
+    assert panel.read_port_file(cfg) == 9000
+    assert panel.read_port_file_full(cfg).get("token") == ""
+    path.write_text('{"port": 8766, "pid": 1, "token": "t0k"}',
+                    encoding="utf-8")
+    full = panel.read_port_file_full(cfg)
+    assert full["port"] == 8766 and full["token"] == "t0k", full
+    path.write_text("garbage", encoding="utf-8")
+    assert panel.read_port_file(cfg) is None
+    path.write_text('{"port": 99999}', encoding="utf-8")
+    assert panel.read_port_file(cfg) is None
 
 
 def t_nightbatch():
@@ -10772,6 +10890,9 @@ def main(argv: list[str] | None = None) -> int:
         ("panel_state", t_panel_state),
         ("panel_files", t_panel_files),
         ("panel_launch", t_panel_launch),
+        ("panel_status_and_defaults", t_panel_status_and_defaults),
+        ("panel_failure_is_visible", t_panel_failure_is_visible),
+        ("panel_port_file_forms", t_panel_port_file_forms),
         ("nightbatch", t_nightbatch),
         ("nightreq", t_nightreq),
         ("meeting_review", t_meeting_review),

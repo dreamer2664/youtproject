@@ -557,6 +557,17 @@ Studio is driven exactly like an English one — including the publish gate.
 If Opera ever misbehaves, `Desktop Chrome.bat msedge` runs the same lane on
 Edge (already on every Windows machine).
 
+**Panel ports, and why a double-click can land elsewhere:** `Start Panel.bat`
+tries 8765 first (or `panel.port` from config.yaml), then the next free port
+in the 8765..8775 range, and opens the window on the port it actually bound.
+A panel of yours that is already running is *reused* instead of duplicated;
+identification is by token (`/api/state` answers with a per-run token, and the
+port file records it), so an older sibling project answering on the same port
+is never mistaken for this panel. `python main.py panel --status` prints a
+line per port — `THIS panel (yours)` / `held by another program` / `free` —
+plus the URL to open. If the start fails under `pythonw` (no console) a
+dialog says so instead of nothing happening.
+
 **From the panel:** the Publish section (and the phone bot) drive the same
 `order` lane. One sentence, three buttons: **Plan** (free), **Dry run**
 (everything up to the publish click), **Run** (respects the uploads gate;

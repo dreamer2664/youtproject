@@ -189,9 +189,20 @@ output live, and one job runs at a time. The Publish section drives the same
 before any publish click; the header shows `uploads off`/`uploads ON` at all
 times, and with ON the Run button asks before it starts. The panel itself
 contains no upload code. If something else already holds port
-8765 (an older local project, a dev server), the panel quietly takes the
-next free port and opens *that* window — the launcher recognises its own
-server by probing `/api/state`, so it can never show you another program.
+8765 (an older local project, a dev server) the panel takes the next free
+port and opens *that* window, saying so in the console. Every panel run gets
+its own identity token, so the launcher can tell one of your projects from
+another that merely looks similar — it never shows you a stranger's window.
+If a double-click ever seems to do nothing, the launcher now says why in a
+dialog instead of dying silently, and this tells you the whole story:
+
+```
+python main.py panel --status     # who owns each port, and the URL to open
+```
+
+To always use one port (e.g. 9000), set `panel: {port: 9000}` in
+config.yaml — then `Start Panel.bat` binds 9000 and opens
+`http://127.0.0.1:9000/` for you.
 
 ```
 python main.py panel                  # the same thing from a terminal

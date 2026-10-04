@@ -301,6 +301,13 @@ jarvis:
   # Hard cap per task (render_videos refuses more, with a note).
   max_videos: 5
 
+panel:
+  # The click-only control panel (Start Panel.bat / `main.py panel`).
+  # Port to try first. If something else holds it (an older local project,
+  # a dev server), the panel takes the next free port and opens THAT — and
+  # `python main.py panel --status` tells you which port is which.
+  port: 8765
+
 schedule:
   # Unattended daily rendering: `python main.py schedule` pops backlog
   # topics and renders forever (Ctrl+C stops). Telegram-notifies each

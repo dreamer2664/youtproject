@@ -734,7 +734,8 @@ def make_handler(cfg, hub: Hub, runner: Runner):
                 self._events()
                 return
             if route.path == "/api/state":
-                self._json({"snapshot": snapshot(cfg),
+                self._json({"app": APP_MARKER, "token": RUN_TOKEN,
+                            "snapshot": snapshot(cfg),
                             "runner": runner.state(),
                             "history": runner.history[-12:],
                             "roles": _roles_payload(),
@@ -854,6 +855,13 @@ def _roles_payload() -> list[dict]:
 # actually bound (8765, else the next free one).
 PORT_FILE = "panel_port.txt"
 
+# Every run of THIS panel gets its own token, written into the port file and
+# answered by /api/state. The owner also runs sibling projects on the same
+# port range; a lookalike can copy our JSON shape, but it cannot know a
+# token that was generated one second ago. Identity, not resemblance.
+RUN_TOKEN = ""
+APP_MARKER = "youtproject-panel"
+
 
 def _open_host(host: str) -> str:
     """The host a local browser window should use for a bind address."""
@@ -869,7 +877,8 @@ def write_port_file(cfg, port: int) -> None:
     try:
         path = port_file_path(cfg)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"port": int(port), "pid": os.getpid()}),
+        path.write_text(json.dumps({"port": int(port), "pid": os.getpid(),
+                                    "token": RUN_TOKEN}),
                         encoding="utf-8")
     except OSError:
         pass  # a missing port file only costs a cold start, never a crash
@@ -877,18 +886,30 @@ def write_port_file(cfg, port: int) -> None:
 
 def read_port_file(cfg) -> "int | None":
     """The port of our last run — tolerates a bare number and garbage."""
+    return read_port_file_full(cfg).get("port")
+
+
+def read_port_file_full(cfg) -> dict:
+    """The port file as a dict: {port, pid, token}. {} when unreadable."""
     try:
         raw = port_file_path(cfg).read_text(encoding="utf-8").strip()
     except OSError:
-        return None
+        return {}
     try:
-        port = int(json.loads(raw)["port"])
+        data = json.loads(raw)
+        port = int(data["port"])
     except Exception:  # noqa: BLE001 - fall through to the bare-int form
-        try:
-            port = int(raw)
-        except ValueError:
-            return None
-    return port if 1 <= port <= 65535 else None
+        def _int_only() -> dict:
+            try:
+                return {"port": int(raw)}
+            except ValueError:
+                return {}
+        data = _int_only()
+        port = data.get("port")
+    if port is None or not 1 <= port <= 65535:
+        return {}
+    return {"port": port, "pid": data.get("pid"),
+            "token": str(data.get("token") or "")}
 
 
 def clear_port_file(cfg, port: int) -> None:
@@ -902,12 +923,13 @@ def clear_port_file(cfg, port: int) -> None:
 
 
 def probe_ours(host: str = "127.0.0.1", port: int = DEFAULT_PORT,
-               timeout: float = 0.8) -> bool:
+               timeout: float = 0.8, token: str = "") -> bool:
     """True only when what answers on `port` is THIS panel.
 
-    /api/state exists here and nowhere else. A foreign server — any other
-    board project, dev tool or stray web app — fails the check and is
-    ignored instead of being opened as if it were us.
+    Two locks: the `app` marker (a stranger that only answers JSON fails),
+    and — when a token is known from the port file — an exact token match
+    (a stranger that copies our shape still fails). A foreign server is
+    ignored, never opened as if it were us.
     """
     import urllib.request
 
@@ -915,18 +937,122 @@ def probe_ours(host: str = "127.0.0.1", port: int = DEFAULT_PORT,
         with urllib.request.urlopen(
                 f"http://{_open_host(host)}:{int(port)}/api/state",
                 timeout=timeout) as resp:
-            body = resp.read(4096)
+            body = resp.read(8192)
     except Exception:  # noqa: BLE001 - unreachable/garbage/foreign = not ours
         return False
+    if f'"{APP_MARKER}"'.encode() not in body:
+        return False
+    if token:
+        return f'"{token}"'.encode() in body
     return b'"snapshot"' in body and b'"runner"' in body
 
 
-def existing_panel_url(cfg, host: str = "127.0.0.1") -> "str | None":
+def _port_live(host: str, port: int, timeout: float = 0.25) -> bool:
+    """Something is listening there? A cheap TCP connect — no HTTP."""
+    import socket
+
+    try:
+        with socket.socket() as sock:
+            sock.settimeout(timeout)
+            return sock.connect_ex((_open_host(host), int(port))) == 0
+    except OSError:
+        return False
+
+
+def find_our_panel(cfg, host: str = "127.0.0.1",
+                   start: "int | None" = None, span: int = 11) -> "int | None":
+    """The port of a RUNNING panel of ours, or None.
+
+    The port file first (with its token — proof), then the usual range with
+    a cheap TCP check before the HTTP probe. This is what lets a double
+    click find the panel even when a sibling project holds 8765, and even
+    when the port file was lost.
+    """
+    saved = read_port_file_full(cfg)
+    if saved.get("port") and probe_ours(host, saved["port"],
+                                        token=saved.get("token") or ""):
+        return int(saved["port"])
+    begin = int(start or default_port(cfg))
+    for candidate in range(begin, begin + span):
+        if candidate == saved.get("port"):
+            continue
+        if _port_live(host, candidate) and probe_ours(
+                host, candidate, timeout=0.35):
+            return candidate
+    return None
+
+
+def existing_panel_url(cfg, host: str = "127.0.0.1",
+                       start: "int | None" = None) -> "str | None":
     """URL of a panel of OURS that is already running, else None."""
-    port = read_port_file(cfg)
-    if not port or not probe_ours(host, port):
+    port = find_our_panel(cfg, host, start=start)
+    if not port:
         return None
     return f"http://{_open_host(host)}:{port}/"
+
+
+def default_port(cfg) -> int:
+    """The port to try first: `panel.port` in config.yaml, else 8765."""
+    try:
+        block = (cfg.data or {}).get("panel") or {}
+        port = int(block.get("port") or DEFAULT_PORT)
+        return port if 1 <= port <= 65535 else DEFAULT_PORT
+    except Exception:  # noqa: BLE001 - bad config is not a crash
+        return DEFAULT_PORT
+
+
+def scan_ports(cfg, host: str = "127.0.0.1", span: int = 11) -> list:
+    """Every port of the usual range: ours / other / free. Cheap + offline."""
+    start = default_port(cfg)
+    out = []
+    for candidate in range(start, start + span):
+        if not _port_live(host, candidate):
+            state = "free"
+        elif probe_ours(host, candidate, timeout=0.35):
+            state = "ours"
+        else:
+            state = "other"
+        out.append({"port": candidate, "state": state})
+    return out
+
+
+def panel_status(cfg, host: str = "127.0.0.1") -> int:
+    """`panel --status`: who owns which port and how to open the panel."""
+    rows = scan_ports(cfg, host)
+    start = default_port(cfg)
+    mine = [r["port"] for r in rows if r["state"] == "ours"]
+    others = [r["port"] for r in rows if r["state"] == "other"]
+    print(f"  [panel] ports {start}..{start + len(rows) - 1} on {_open_host(host)}:")
+    for row in rows:
+        note = {"ours": "← THIS panel (yours)",
+                "other": "held by another program (not this panel)",
+                "free": "free"}[row["state"]]
+        print(f"    {row['port']}  {note}")
+    print("")
+    if mine:
+        print(f"  [panel] your panel is running — open: "
+              f"http://{_open_host(host)}:{mine[0]}/")
+        if len(mine) > 1:
+            print(f"          (more than one is running: {mine} — that is "
+                  "harmless but you can close the extras)")
+    else:
+        print("  [panel] no panel of ours is running right now. Start it with")
+        print("          Desktop: double-click Start Panel.bat   (it picks a "
+              "free port itself)")
+        print("          Terminal: python main.py panel")
+    if others:
+        print("")
+        print(f"  [panel] port(s) {others} belong to something else (another "
+              "project, a dev server).")
+        print("          That is exactly why Start Panel.bat may open on a "
+              "different port — use the URL above.")
+    print("")
+    print("  [panel] to always use one port: add to config.yaml")
+    print(f"          panel:\n            port: {start}")
+    print("          or: python main.py panel --port 9000")
+    print("  [panel] to stop a panel you cannot see: Task Manager → end "
+          "pythonw.exe (or Ctrl+C in its terminal)")
+    return 0
 
 
 def browser_candidates() -> list:
@@ -964,10 +1090,11 @@ def open_app_window(url: str) -> bool:
     return False
 
 
-def launch(cfg, host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> int:
+def launch(cfg, host: str = "127.0.0.1", port: "int | None" = None) -> int:
     """`--app-window`: reuse a running panel of ours, else start one and
     open it in a chromeless window. What Start Panel.bat runs."""
-    url = existing_panel_url(cfg, host)
+    port = int(port or default_port(cfg))
+    url = existing_panel_url(cfg, host, start=port)
     if url:
         open_app_window(url)
         return 0
@@ -992,6 +1119,9 @@ def _alert(title: str, text: str) -> None:
 def serve(cfg, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
           open_browser: bool = True, app_window: bool = False) -> int:
     """Start the panel. Returns a process exit code (Ctrl+C -> 130)."""
+    global RUN_TOKEN
+
+    RUN_TOKEN = uuid.uuid4().hex[:12]     # this run's identity (see probe_ours)
     hub = Hub()
     history_path = Path(cfg.work_dir) / "panel_history.json"
     runner = Runner(hub, history_path)
@@ -1007,11 +1137,14 @@ def serve(cfg, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
         except OSError as exc:
             if candidate == port + 10:
                 print(f"  [panel] could not bind {host}:{port}..{candidate} "
-                      f"({exc}) — is another panel already running?")
+                      f"({exc}) — run: python main.py panel --status")
                 return 1
     assert httpd is not None
     url = f"http://{_open_host(host)}:{chosen}/"
     write_port_file(cfg, chosen)  # the launcher reads this, not a bare scan
+    if chosen != port:
+        print(f"  [panel] port {port} was taken (another program?) — using "
+              f"{chosen}")
     print(f"  [panel] {url}  (Ctrl+C stops it)")
     print("  [panel] every button runs the real CLI — same behavior as "
           "the terminal")
@@ -1051,8 +1184,12 @@ def _main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--config", help="path to config.yaml")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
-                        help=f"port (default {DEFAULT_PORT})")
+    parser.add_argument("--port", type=int, default=None,
+                        help=f"port (default: panel.port in config.yaml, "
+                             f"else {DEFAULT_PORT})")
+    parser.add_argument("--status", action="store_true",
+                        help="show who owns each port of the usual range, "
+                             "and the URL to open")
     parser.add_argument("--host", default="127.0.0.1",
                         help="bind address (127.0.0.1 = this machine only)")
     parser.add_argument("--no-browser", action="store_true", dest="no_browser",
@@ -1063,16 +1200,27 @@ def _main(argv: list[str] | None = None) -> int:
                              "Start Panel.bat runs)")
     args = parser.parse_args(argv)
     cfg = load_config(args.config)
+    if args.status:
+        return panel_status(cfg, host=args.host)
     if args.app_window:
         try:
-            return launch(cfg, host=args.host, port=args.port)
+            rc = launch(cfg, host=args.host, port=args.port)
         except Exception as exc:  # noqa: BLE001 - pythonw has no console
             _alert("Start Panel",
                    "The panel could not start:\n\n"
                    f"{exc!r}\n\nRun this in a terminal to see the details:"
                    "\n\n    venv\\Scripts\\python.exe panel.py --app-window")
             return 1
-    return serve(cfg, host=args.host, port=args.port,
+        if rc not in (0, 130):
+            # pythonw has no console: a silent exit looks like "nothing
+            # happened" and the owner falls back to typing URLs by hand.
+            _alert("Start Panel",
+                   "The panel could not start (exit " + str(rc) + ").\n\n"
+                   "Run this in a terminal to see the details:\n\n"
+                   "    venv\\Scripts\\python.exe panel.py --app-window\n\n"
+                   "or: python main.py panel --status")
+        return rc
+    return serve(cfg, host=args.host, port=args.port or default_port(cfg),
                  open_browser=not args.no_browser)
 
 
