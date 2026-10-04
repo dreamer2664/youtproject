@@ -1855,10 +1855,13 @@ def cmd_errors(cfg, args) -> int:
 
 def cmd_panel(cfg, args) -> int:
     """The click-only panel: one local page, big buttons, no typing."""
-    from panel import serve
+    import panel
 
-    return serve(cfg, host=args.host, port=args.port,
-                 open_browser=not args.no_browser)
+    if getattr(args, "status", False):
+        return panel.panel_status(cfg, host=args.host)
+    return panel.serve(cfg, host=args.host,
+                       port=args.port or panel.default_port(cfg),
+                       open_browser=not args.no_browser)
 
 
 def cmd_browser(cfg, args) -> int:
@@ -2663,12 +2666,15 @@ def main() -> int:
 
     p = sub.add_parser("panel",
                        help="click-only control panel in your browser")
-    p.add_argument("--port", type=int, default=8765,
-                   help="port (default 8765)")
+    p.add_argument("--port", type=int, default=None,
+                   help="port (default: panel.port in config.yaml, "
+                        "else 8765)")
     p.add_argument("--host", default="127.0.0.1",
                    help="bind address (127.0.0.1 = this machine only)")
     p.add_argument("--no-browser", action="store_true", dest="no_browser",
                    help="don't open the browser window")
+    p.add_argument("--status", action="store_true",
+                   help="which port holds what, and the URL to open")
 
     p = sub.add_parser("nightbatch",
                        help="unattended nightly run: clip + generate + park + "

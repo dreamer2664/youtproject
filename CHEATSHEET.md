@@ -249,6 +249,7 @@ python main.py autopost --publish --title "..." --desc "..."
 ```powershell
 # Windows: just double-click  Start Panel.bat   (no terminal, app-style window)
 python main.py panel                 # same thing by hand; opens your browser
+python main.py panel --status              # who owns each port + the URL to open
 python main.py panel --port 9000     # pin the port (8765, else next free)
 python main.py panel --no-browser    # start it, open the page yourself
 ```
