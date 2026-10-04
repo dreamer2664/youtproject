@@ -303,6 +303,44 @@ schtasks /Create /TN "youtproject night batch" /TR "\"%~dp0Night Batch.bat\"" /S
 Tick *"Wake the computer to run this task"* in Task Scheduler if the PC
 sleeps. From Telegram: `/night` starts it, `/night dry` shows the plan.
 
+## 7.7. From bed: `/go` and the overnight wake task
+
+```powershell
+# In Telegram, from your phone:
+/go                 # default night: 3 clips + stats meeting + review + top 5
+/go 4 2             # 4 clips + 2 videos
+/go later           # queue only - runs at the next wake/boot
+/go dry             # show the plan, spend nothing
+/go status          # queued? what did last night do?
+
+# On the PC (once): the overnight worker
+schtasks /Create /TN "youtproject overnight" /TR "\"%~dp0Wake and Run.bat\"" /SC DAILY /ST 01:00 /F
+```
+
+Then Task Scheduler → the task → tick **"Wake the computer to run this
+task"** and **"Run task as soon as possible after a scheduled start is
+missed"**. Hibernating PC = true overnight run; fully shutdown PC = it runs at
+the next boot. `Start Bot.bat` keeps the bot listening while the PC is on.
+
+Do it by hand (same thing the task does):
+
+```powershell
+python main.py wakeup --sleep-after     # inbox pass + pending /go + hibernate
+python main.py wakeup --dry-run         # what would run
+python main.py nightbatch --if-requested   # just the pending request, if any
+```
+
+Just the second meeting (rank finished clips, pick what to post):
+
+```powershell
+python main.py meeting review                 # everything new since the last review
+python main.py meeting review --since 2026-10-04T21:00:00 --top 3
+python main.py meeting review --clip c-ab12cd34-01
+python main.py meeting review --dry-run       # agenda only, spend nothing
+```
+
+Nothing here can post. Uploads stay manual.
+
 ## 8. Your phone (Telegram)
 
 ```powershell
