@@ -220,6 +220,48 @@ schtasks /Create /TN "youtproject night batch" /TR "\"%~dp0Night Batch.bat\"" /S
 sleeps). From your phone: **`/night`** starts it, **`/night dry`** previews
 the plan.
 
+### The whole night from your phone (`/go`)
+
+Send one message from bed and sleep. `/go` runs the full shift: a boardroom
+**stats meeting first**, then the clip + generate work, then a second meeting
+that **ranks the finished clips by hook and overall quality and picks what to
+post today**:
+
+```
+/go              # the default night: 3 clips, both meetings, top 5 picks
+/go 4 2          # 4 clips + 2 generated videos
+/go later        # queue it and stop — it runs at the next wake/boot
+/go dry          # print the plan, spend nothing
+/go status       # what is queued / what happened last night
+```
+
+Add `fresh` (redo everything), `nomeeting` or `noreview` to any of them.
+
+**The honest part about a PC that is off.** A powered-off PC executes nothing,
+so `/go` works by never needing it to be on *at the moment you send it*:
+Telegram holds the message, and the bot writes the job to
+`work/nightrun/request.json` before anything else — a shutdown cannot lose it.
+The **Wake and Run** task then picks it up when the machine is available:
+
+- PC hibernating → the task's *"wake the computer"* tick wakes it at 01:00,
+  does the whole shift, sends you the report, and hibernates again;
+- PC fully shut down → the task's *"run as soon as possible after a missed
+  start"* tick runs the shift at the next boot instead (turn the PC on in the
+  morning, the night's work is done and waiting).
+
+Setup (Windows, once each):
+
+```
+schtasks /Create /TN "youtproject overnight" /TR "\"%~dp0Wake and Run.bat\"" /SC DAILY /ST 01:00 /F
+```
+
+then in Task Scheduler → that task → tick **"Wake the computer to run this
+task"** and **"Run task as soon as possible after a scheduled start is
+missed"**. `Start Bot.bat` runs the bot while the PC is on; `Wake and Run.bat`
+is the overnight worker (its output goes to `work/nightrun/wake.log`). A
+hibernated PC is what makes this truly overnight — a full shutdown can only
+run it at the next power-on, which is exactly what the second tick covers.
+
 ### Phone control (Telegram, free)
 
 Text the bot a topic from your phone, get back the finished video:
@@ -284,6 +326,8 @@ Shorts, long-form and art styles without touching the config.
 | `package.py` | Upload kits + checklists + TikTok/Reels captions |
 | `jobqueue.py` | `state.json` job tracking |
 | `bot.py` | Telegram phone control (polls, renders, delivers) |
+| `nightreq.py` | the `/go` request file (`work/nightrun/request.json`) — survives a shutdown |
+| `wakeup.py` | wake/boot worker: check Telegram once, run a pending `/go`, hibernate again |
 | `panel.py` / `panel.html` | Click-only control panel (`Start Panel.bat`, or `main.py panel`) |
 | `autopost.py` | Buffer autopost: video hosting + TikTok/YouTube/IG drafts or scheduled posts |
 | `jarvis.py` | Channel manager brain: tasks → render + schedule + report |

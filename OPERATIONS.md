@@ -410,6 +410,64 @@ A sane starting cadence for ~8 channels (clips carry the views, per your own
 numbers): `--clips 3 --count 1` ≈ 45–60 min of unattended work producing
 ~20–30 clips + 1 generated video a night.
 
+## The phone night shift (`/go` — the whole night from bed)
+
+The night batch assumes you are at the PC or that it is already running. This
+one assumes the opposite: you text the bot from your phone right before
+sleeping, and **the PC may already be off**.
+
+What actually happens, in order:
+
+1. you send **`/go`** (defaults: 3 clips, 0 videos, stats meeting, clip
+   review, top 5). Modifiers: `/go 4 2`, `/go later`, `/go dry`,
+   `/go status`, `fresh`, `nomeeting`, `noreview`;
+2. if the bot is running, the job is written to
+   `work/nightrun/request.json` FIRST and then executed — a shutdown mid-reply
+   cannot lose it. If the PC is off, Telegram holds the message and the bot
+   reads it at the next start (`/go later` is the same thing deliberately);
+3. the overnight task runs the request: **meeting stats** (the board reads
+   your channel numbers) → clip the queued sources → **meeting review** (the
+   four seats rank every new clip on hook and overall quality and pick what
+   to post, written to `work/nightbatch/review.json`) → generate videos →
+   park new clips on Telegram;
+4. the report arrives with a **"POST THESE TODAY"** block at the top, the
+   stats summary, and what failed;
+5. `wakeup` puts the PC back to hibernate, but only if nobody has touched
+   the keyboard for 5 minutes (`--min-idle` to change, `--no-inbox` to skip
+   the Telegram pass).
+
+Scheduling it (Windows, once):
+
+    schtasks /Create /TN "youtproject overnight" /TR "\"%~dp0Wake and Run.bat\"" /SC DAILY /ST 01:00 /F
+
+Then Task Scheduler → the task → tick **"Wake the computer to run this
+task"** and **"Run task as soon as possible after a scheduled start is
+missed"**. What those two ticks buy you:
+
+- *PC hibernating* → it wakes itself at 01:00, runs the shift, reports,
+  hibernates again. This is the true overnight case.
+- *PC fully shut down* → nothing can run, but nothing is lost: the `/go` sits
+  in Telegram and in `request.json`, and the missed-start tick runs it at the
+  next boot (turn the PC on and walk away — the shift starts by itself).
+
+Honest limits, so nothing is a surprise in the morning: a machine that is
+off does not execute code, and a machine without wake-from-sleep support (or
+a laptop closed with "do nothing" lid settings) behaves like the shutdown
+case. Both cases still produce a full night's work — just at the next
+power-on instead of 01:00.
+
+Manual run, same code path:
+
+    python main.py wakeup [--sleep-after] [--min-idle 300] [--no-inbox] [--dry-run]
+    python main.py nightbatch --if-requested     # no request = exits 0, does nothing
+    python main.py meeting review [--since ISO] [--clip ID] [--top N] [--json-out PATH]
+
+Request lifecycle: `pending` → `done` (with `failed_steps` and a note even
+when steps failed, so the morning report is truthful), or left `pending` if
+the machine dies mid-run — the next wake resumes from the journal instead of
+redoing the day. `work/nightrun/wake.log` has the raw output of the task.
+Uploads stay manual; no step in this pipeline can post.
+
 ## Channel stats (snap — all your channels, one command)
 
 ```bash
