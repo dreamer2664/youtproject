@@ -177,7 +177,14 @@ def resolve_new_clips(cfg, since_ts: float, limit: int) -> list[dict]:
             continue
         if mtime >= since_ts - 120:
             found.append(cand)
-    found.sort(key=lambda c: Path(c["file"]).stat().st_mtime, reverse=True)
+
+    def _order_key(cand: dict):
+        try:
+            return (Path(cand["file"]).stat().st_mtime, str(cand.get("id")))
+        except OSError:
+            return (0.0, str(cand.get("id")))
+
+    found.sort(key=_order_key, reverse=True)   # newest first, id breaks ties
     items = []
     for cand in found[:limit]:
         kit = Path(cand.get("kit") or "")

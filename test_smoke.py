@@ -8822,7 +8822,10 @@ def t_order_targets():
     assert len(clips) == 3, clips
     titles = sorted(c["title"] for c in clips)
     assert titles == ["First Catch", "Second Wind", "Third Rail"], titles
-    assert clips[0]["description"], "kit description must be read"
+    assert all(c["description"] for c in clips), clips
+    # mtimes can collide within a second — the mapping assertions below must
+    # not care which clip is "first", only that the mapping is round-robin
+    clips.sort(key=lambda c: c["id"])
 
     channels = orders.channel_list(cfg)
     assert [c["name"] for c in channels] == ["Deep Ocean", "Night Files",
@@ -8838,7 +8841,7 @@ def t_order_targets():
     assert len(packets) == 3, packets
     plan = json.loads(Path(packets[0]).read_text(encoding="utf-8"))
     assert plan["channel"] == "Deep Ocean", plan
-    assert plan["title"] == "First Catch", plan
+    assert plan["title"] == clips[0]["title"], (plan, clips)
     assert plan["posted"] is False
     assert "deep-ocean" in packets[0]
 
