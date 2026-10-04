@@ -104,6 +104,10 @@ def parse_incoming(text: str) -> tuple[str, str]:
     low = text.lower()
     if low in ("/start", "/help"):
         return ("help", "")
+    if low == "/night":
+        return ("night", "")
+    if low.startswith("/night "):
+        return ("night", text.split(" ", 1)[1].strip())
     if low == "/queue":
         return ("queue", "")
     if low == "/status":
@@ -501,6 +505,8 @@ class PhoneBot:
                                   f"{spec['per_day']}/day, {mode}.\n"
                                   f"I'll ping every post + a digest nightly. "
                                   f"/stop halts.")
+        elif action == "night":
+            self._run_night(chat_id, arg)
         elif action == "stop":
             (self.cfg.root / "crew_stop").write_text("stop", encoding="utf-8")
             print("  [bot] stop requested")
@@ -582,6 +588,50 @@ class PhoneBot:
         self.send_message(chat_id, f"🎙️ Heard: \"{topic}\"")
         if position:
             self.send_message(chat_id, f"📥 Queued #{position + 1}")
+
+    def _run_night(self, chat_id: int, arg: str) -> None:
+        """`/night` starts tonight's unattended batch; `/night dry` previews.
+
+        The batch reports for itself when it finishes; this thread only
+        speaks up when the batch could not start or ended with failures.
+        """
+        import subprocess as _sp
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        root = _Path(__file__).resolve().parent
+        base = [_sys.executable, "-u", str(root / "main.py"), "nightbatch"]
+        low = (arg or "").strip().lower()
+        if low in ("dry", "dry-run", "preview", "plan"):
+            try:
+                res = _sp.run(base + ["--dry-run"], capture_output=True,
+                              text=True, timeout=180, cwd=str(root))
+                out = (res.stdout or res.stderr or "").strip()[-3000:]
+                self.send_message(chat_id, f"\U0001f9fe Night batch plan:\n\n{out}")
+            except Exception as exc:  # noqa: BLE001
+                self.send_message(chat_id, f"Plan failed: {exc}")
+            return
+
+        def worker() -> None:
+            try:
+                res = _sp.run(base, capture_output=True, text=True,
+                              cwd=str(root))
+                if res.returncode != 0:
+                    tail = (res.stdout or res.stderr or "").strip()[-1200:]
+                    self.send_message(
+                        chat_id,
+                        f"\u26a0\ufe0f Night batch ended rc="
+                        f"{res.returncode}.\n\n{tail}")
+            except Exception as exc:  # noqa: BLE001 - report, don't die
+                try:
+                    self.send_message(chat_id, f"\u26a0\ufe0f Night batch "
+                                               f"crashed: {exc}")
+                except TelegramError:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.send_message(chat_id, "\U0001f319 Night batch started — the "
+                                   "report lands here when it finishes.")
 
     def _send_existing(self, chat_id: int, job_ref: str) -> None:
         """Deliver an already-made video (recovery + re-send)."""

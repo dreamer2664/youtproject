@@ -851,6 +851,7 @@ def cmd_batch(cfg, args) -> int:
         images_per_scene=args.images_per_scene, no_subs=args.no_subs,
         no_gemini=args.no_gemini, style=args.style,
         keep_work=args.keep_work, keep_going=True, verbose=args.verbose,
+        image_provider=getattr(args, "image_provider", None),
     )
     results: list[tuple[str, str, str]] = []  # topic, status, detail
     for number, topic in enumerate(topics, start=1):
@@ -1014,6 +1015,7 @@ def cmd_schedule(cfg, args) -> int:
             images_per_scene=args.images_per_scene, no_subs=args.no_subs,
             no_gemini=args.no_gemini, style=args.style,
             keep_work=args.keep_work, keep_going=True, verbose=args.verbose,
+            image_provider=getattr(args, "image_provider", None),
         )
         before = {job.id for job in Queue(cfg.state_file).jobs}
         try:
@@ -1760,6 +1762,18 @@ def cmd_panel(cfg, args) -> int:
                  open_browser=not args.no_browser)
 
 
+def cmd_nightbatch(cfg, args) -> int:
+    """One unattended run: clip the queue, generate, park, report."""
+    print(BANNER)
+    from nightbatch import run
+
+    return run(cfg, clips=args.clips, count=args.count, seconds=args.seconds,
+               style=args.style, image_provider=args.image_provider,
+               max_clips=args.max_clips, push=not args.no_push,
+               report=not args.no_report, fresh=args.fresh,
+               force=args.force, dry_run=args.dry_run, date=args.date)
+
+
 def cmd_queue(cfg, args) -> int:
     print(Queue(cfg.state_file).format_table())
     return 0
@@ -1924,6 +1938,9 @@ def main() -> int:
     p.add_argument("--verbose", action="store_true")
     p.add_argument("--dry-run", action="store_true",
                    help="report what would render, then stop")
+    p.add_argument("--image-provider", dest="image_provider",
+                   default=None,
+                   help="stock | ai | free | a raw provider name")
 
     p = sub.add_parser("topics", help="view/refill the topic backlog")
     p.add_argument("--topup", action="store_true",
@@ -2236,6 +2253,34 @@ def main() -> int:
     p.add_argument("--no-browser", action="store_true", dest="no_browser",
                    help="don't open the browser window")
 
+    p = sub.add_parser("nightbatch",
+                       help="unattended nightly run: clip + generate + park + "
+                            "report (Task Scheduler)")
+    p.add_argument("--clips", type=int, default=2,
+                   help="sheet sources to clip (each ~10 min, up to 10 clips; "
+                        "default 2)")
+    p.add_argument("--count", type=int, default=2,
+                   help="videos to generate from the topic backlog "
+                        "(default 2; 0 skips)")
+    p.add_argument("--seconds", type=int, help="target length for generated "
+                                               "videos, e.g. 45")
+    p.add_argument("--style", choices=["photoreal", "cartoon", "stickman"])
+    p.add_argument("--image-provider", dest="image_provider", default=None,
+                   help="stock | ai | free | a raw provider name")
+    p.add_argument("--max-clips", type=int, default=0, dest="max_clips",
+                   help="cap clips per source (0 = the clip lane's default)")
+    p.add_argument("--no-push", action="store_true", dest="no_push",
+                   help="skip parking clips on Telegram")
+    p.add_argument("--no-report", action="store_true", dest="no_report",
+                   help="don't send the Telegram report (still prints)")
+    p.add_argument("--fresh", action="store_true",
+                   help="ignore today's journal and redo every step")
+    p.add_argument("--force", action="store_true",
+                   help="take the lock even if a run looks alive")
+    p.add_argument("--dry-run", action="store_true", dest="dry_run",
+                   help="print the plan and exit; runs nothing")
+    p.add_argument("--date", help="journal bucket (default: today, local)")
+
     p = sub.add_parser("autopost", help="post a finished video via Buffer")
     p.add_argument("file", nargs="?", help="video to post (default: newest .mp4 in out/)")
     p.add_argument("--channels", help="comma list, e.g. youtube,tiktok (default: config)")
@@ -2295,6 +2340,7 @@ def main() -> int:
         "voices": cmd_voices,
         "autopost": cmd_autopost,
         "panel": cmd_panel,
+        "nightbatch": cmd_nightbatch,
     }
     return handlers[args.command](cfg, args)
 
