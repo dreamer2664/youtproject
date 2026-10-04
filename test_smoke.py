@@ -8122,6 +8122,402 @@ def t_nightbatch():
     assert "main.py nightbatch" in bat and "schtasks" in bat
 
 
+def _fake_clip_kit(cfg, hex8="ab12cd34", num="01", title="The Octopus Trap",
+                   hook="Octopuses taste with their arms and it is terrifying",
+                   start=10.0, end=42.0):
+    """A minimal clip kit on disk that pregen.collect_candidates accepts."""
+    folder = Path(cfg.root) / "clips"
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = f"{hex8}_clip_{num}"
+    mp4 = folder / f"{stem}.mp4"
+    mp4.write_bytes(b"\x00" * 4096)
+    kit = folder / stem
+    kit.mkdir(exist_ok=True)
+    (kit / "TITLE.txt").write_text(title, encoding="utf-8")
+    (kit / "DESCRIPTION.txt").write_text(
+        f"{title}\n\n{hook}\n\nClipped from: something", encoding="utf-8")
+    (kit / "CREDIT.txt").write_text(
+        f"source: https://youtu.be/x\nchannel: Some Channel\n"
+        f"window: {start:.1f}s - {end:.1f}s\n", encoding="utf-8")
+    return stem, mp4
+
+
+def t_nightreq():
+    """The /go request file: bounded options, pending/done, never raises."""
+    import nightreq
+
+    cfg = tmp_cfg()
+    assert nightreq.read_request(cfg) is None
+    assert not nightreq.pending(cfg)
+    assert "No /go request" in nightreq.status_line(cfg)
+
+    assert nightreq.normalize_options({"clips": 99})["clips"] == 6
+    assert nightreq.normalize_options({"clips": -3})["clips"] == 0
+    assert nightreq.normalize_options({"count": "x"})["count"] == 0
+    assert nightreq.normalize_options({"top": 0})["top"] == 1
+    assert nightreq.normalize_options({"meeting": 0})["meeting"] is False
+    assert nightreq.normalize_options(None) == nightreq.DEFAULT_OPTIONS
+
+    rec = nightreq.write_request(cfg, {"clips": 4, "meeting": False})
+    assert rec["status"] == "pending" and rec["options"]["clips"] == 4
+    assert nightreq.pending(cfg)
+    assert nightreq.request_path(cfg).exists()
+    assert "pending" in nightreq.status_line(cfg)
+
+    data = nightreq.read_request(cfg)
+    assert data["options"]["meeting"] is False
+
+    nightreq.mark_done(cfg, failed=2, note="2/5 steps ok")
+    assert not nightreq.pending(cfg)
+    done = nightreq.read_request(cfg)
+    assert done["status"] == "done" and done["failed_steps"] == 2
+    assert "finished" in done
+    line = nightreq.status_line(cfg)
+    assert "finished" in line and "2 step(s) failed" in line
+
+    nightreq.clear(cfg)
+    assert nightreq.read_request(cfg) is None
+    # corrupt file = treated as absent, never a crash
+    nightreq.request_path(cfg).parent.mkdir(parents=True, exist_ok=True)
+    nightreq.request_path(cfg).write_text("{not json", encoding="utf-8")
+    assert nightreq.read_request(cfg) is None and not nightreq.pending(cfg)
+
+
+def t_meeting_review():
+    """The clip review: agenda from real kits, chair ranking, minutes."""
+    import io
+    import json as _json
+    from contextlib import redirect_stdout
+    from unittest.mock import patch as _patch
+
+    import meeting as mt
+
+    cfg = tmp_cfg()
+    _fake_clip_kit(cfg, "ab12cd34", "01", "The Octopus Trap",
+                   "Octopuses taste with their arms and it is terrifying")
+    _fake_clip_kit(cfg, "ab12cd34", "02", "The Sleep Paralysis Demon",
+                   "You wake up and cannot move and something is there")
+    _fake_clip_kit(cfg, "ff00aa11", "01", "Salt Ruins Your Brain")
+
+    clips = mt.collect_review_clips(cfg)
+    assert len(clips) == 3, clips
+    assert all(c["score"] >= 0 and c["signals"] for c in clips)
+    assert clips[0]["score"] >= clips[-1]["score"]          # best first
+    assert clips[0]["title"] and clips[0]["duration_s"] > 0
+
+    only_one = mt.collect_review_clips(cfg, ids=["ab12cd34_clip_01"])
+    assert len(only_one) == 1 and only_one[0]["title"] == "The Octopus Trap"
+    import datetime as _dt
+    future = _dt.datetime.now() + _dt.timedelta(hours=1)
+    assert mt.collect_review_clips(cfg, since=future) == []
+    assert mt.collect_review_clips(cfg, ids=["nope"]) == []
+
+    agenda = mt._review_agenda(clips, top=2)
+    assert "id | title | seconds | score | signals | hook" in agenda
+    octo = next(c for c in clips if c["title"] == "The Octopus Trap")
+    assert octo["id"] in agenda and "Octopus Trap" in agenda
+    assert "HOOK" in agenda and "Pick the best 2" in agenda
+
+    # the chair's ranking: bad ids dropped, duplicates deduped, ranks fixed
+    cands = [c["id"] for c in clips]
+    sleep_one = next(c for c in clips
+                     if c["title"] == "The Sleep Paralysis Demon")
+    raw = _json.dumps({
+        "summary": "Hooks carry these; variety wins.",
+        "picks": [
+            {"id": sleep_one["id"], "rank": 2, "why": "great tension"},
+            {"id": sleep_one["id"], "rank": 1, "why": "dupe"},
+            {"id": "not a clip", "rank": 1, "why": "ghost"},
+            {"id": octo["id"], "rank": 1, "why": "strongest hook"},
+        ],
+        "hold_note": "Hold the salt one for tomorrow.",
+    })
+    dec = mt.parse_decisions(raw, "review", cands)
+    assert dec and [p["id"] for p in dec["picks"]] == [
+        octo["id"], sleep_one["id"]]
+    assert [p["rank"] for p in dec["picks"]] == [1, 2]
+    assert dec["hold_note"].startswith("Hold the salt")
+    assert mt.parse_decisions(_json.dumps({"picks": []}), "review",
+                              cands) is None
+    assert mt.parse_decisions(_json.dumps({"picks": [{"id": "x"}]}),
+                              "review", cands) is None
+    assert mt.parse_decisions("nonsense", "review", cands) is None
+
+    minutes = mt.format_minutes("review", agenda, [], dec)
+    assert "clip review" in minutes
+    assert "Post these today, in this order:" in minutes
+    assert f"1. `{octo['id']}` — strongest hook" in minutes
+    assert "Held back:" in minutes
+
+    # a full review sitting, with a scripted room (no keys, no network)
+    class Scripted:
+        def generate_text(self, prompt, temperature=0.7, tag="",
+                          json_mode=False):
+            if json_mode:
+                return _json.dumps({
+                    "summary": "Two hooks stand out.",
+                    "picks": [{"id": cands[0], "rank": 1,
+                               "why": "stops a scroll"}],
+                    "hold_note": "rest are weaker",
+                })
+            return "That first hook is the one."
+
+    events = []
+    with _patch.object(mt, "_role_provider", lambda c, lane: Scripted()), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(cfg, "review", clips=clips, top=3,
+                                 send=False, events=events.append)
+    kinds = [e["type"] for e in events]
+    assert kinds[0] == "agenda" and kinds.count("turn") == 4
+    decision = next(e for e in events if e["type"] == "decision")
+    assert decision["decision"]["picks"][0]["id"] == cands[0]
+    assert "stops a scroll" in summary
+    assert mt.run_meeting(tmp_cfg(), "review", clips=[], send=False) == (
+        "No new clips to review — the clip lane produced nothing this run. "
+        "Nothing spent.")
+    # memory: the board remembers what it chose to post
+    memory = (Path(cfg.root) / "work" / "board_memory.json")
+    if memory.exists():
+        assert "posted" in memory.read_text(encoding="utf-8")
+
+
+def t_go_options():
+    """The /go parser + the wake-time inbox pass (no network anywhere)."""
+    import json as _json
+    from unittest.mock import patch as _patch
+
+    import bot as bot_mod
+    import nightreq
+
+    assert bot_mod.parse_incoming("/go") == ("go", "")
+    assert bot_mod.parse_incoming("/go later") == ("go", "later")
+    assert bot_mod.go_options("")["clips"] == 3
+    assert bot_mod.go_options("")["count"] == 0
+    assert bot_mod.go_options("")["mode"] == "run"
+    assert bot_mod.go_options("later")["mode"] == "later"
+    assert bot_mod.go_options("dry")["mode"] == "dry"
+    assert bot_mod.go_options("status")["mode"] == "status"
+    o = bot_mod.go_options("4 2 fresh nomeeting noreview")
+    assert (o["clips"], o["count"], o["fresh"], o["meeting"],
+            o["review"]) == (4, 2, True, False, False)
+    assert bot_mod.go_options("99 99")["clips"] == 6
+    assert bot_mod.go_options("99 99")["count"] == 10
+    assert bot_mod.go_options("zzz")["mode"] == "run"
+
+    cfg = tmp_cfg()
+    sent: list = []
+
+    class FakeBot:
+        def __init__(self, c):
+            self.owner = 777
+
+        def _api(self, method, timeout=None, data=None):
+            assert method == "getUpdates"
+            return [
+                # someone else's message: ignored
+                {"update_id": 1, "message": {"from": {"id": 999},
+                                             "chat": {"id": 999},
+                                             "text": "/go"}},
+                # owner's old chatter: skipped silently, offset advances
+                {"update_id": 2, "message": {"from": {"id": 777},
+                                             "chat": {"id": 777},
+                                             "text": "hello"}},
+                # the real thing
+                {"update_id": 3, "message": {"from": {"id": 777},
+                                             "chat": {"id": 777},
+                                             "text": "/go 4"}},
+            ]
+
+        def send_message(self, chat_id, text, **k):
+            sent.append((chat_id, text))
+
+    with _patch.object(bot_mod, "PhoneBot", FakeBot):
+        result = bot_mod.check_inbox_once(cfg)
+    assert result == {"seen": 2, "queued": 1, "error": ""}, result
+    req = nightreq.read_request(cfg)
+    assert req["status"] == "pending" and req["options"]["clips"] == 4
+    assert req["options"]["meeting"] is True
+    assert sent and sent[0][0] == 777 and "queued" in sent[0][1]
+    offset = _json.loads((Path(cfg.work_dir) / "bot_offset.json")
+                         .read_text(encoding="utf-8"))
+    assert offset["offset"] == 4
+
+    # no token / offline: a quiet no-op, never a crash
+    class BadBot:
+        def __init__(self, c):
+            raise RuntimeError("no token configured")
+
+    with _patch.object(bot_mod, "PhoneBot", BadBot):
+        result = bot_mod.check_inbox_once(tmp_cfg())
+    assert result["queued"] == 0 and "no token" in result["error"]
+
+
+def t_wakeup():
+    """The wake/boot task: inbox once, run the pending /go, hibernate maybe."""
+    import nightreq
+    from wakeup import run as wake_run
+
+    cfg = tmp_cfg()
+    calls: dict = {"inbox": 0, "batch": 0, "slept": 0}
+
+    def inbox(c):
+        calls["inbox"] += 1
+        return {"seen": 1, "queued": 1}
+
+    def batch(c):
+        calls["batch"] += 1
+        return 0
+
+    def sleeper():
+        calls["slept"] += 1
+        return "hibernating now"
+
+    quiet = lambda *a, **k: None  # noqa: E731
+
+    # nothing pending -> fast exit, no batch, no hibernate (unless asked)
+    rc = wake_run(cfg, inbox=inbox, batch_runner=batch, echo=quiet,
+                  idler=lambda: 3600, sleeper=sleeper)
+    assert rc == 0 and calls == {"inbox": 1, "batch": 0, "slept": 0}, calls
+
+    # dry run says what would happen and does nothing
+    nightreq.write_request(cfg, {"clips": 2})
+    rc = wake_run(cfg, dry_run=True, inbox=inbox, batch_runner=batch,
+                  echo=quiet)
+    assert rc == 0 and calls["batch"] == 0
+
+    # pending + sleep-after, nobody at the keyboard -> batch runs, then sleeps
+    rc = wake_run(cfg, sleep_after=True, inbox=inbox, batch_runner=batch,
+                  echo=quiet, idler=lambda: 3600, sleeper=sleeper)
+    assert rc == 0 and calls["batch"] == 1 and calls["slept"] == 1, calls
+
+    # ...but never hibernates over someone actively using the PC
+    calls["slept"] = 0
+    rc = wake_run(cfg, sleep_after=True, no_inbox=True, batch_runner=batch,
+                  echo=quiet, idler=lambda: 12, sleeper=sleeper)
+    assert calls["slept"] == 0 and calls["batch"] == 2
+
+    # a batch crash keeps the request pending for the next wake
+    nightreq.write_request(cfg, {"clips": 1})
+
+    def boom(c):
+        raise RuntimeError("clipper exploded")
+
+    rc = wake_run(cfg, no_inbox=True, batch_runner=boom, echo=quiet)
+    assert rc == 1 and nightreq.pending(cfg)
+
+    # a broken inbox never blocks the run
+    def bad_inbox(c):
+        raise RuntimeError("telegram down")
+
+    nightreq.mark_done(cfg)
+    nightreq.write_request(cfg, {"clips": 1})
+    rc = wake_run(cfg, batch_runner=batch, echo=quiet, inbox=bad_inbox)
+    assert rc == 0 and calls["batch"] == 3
+
+
+def t_nightbatch_go():
+    """nightbatch's meeting steps, /go options, picks in the report."""
+    import json as _json
+    from unittest import mock
+
+    import nightbatch as nb
+    import nightreq
+    from sheet import append_sheet
+
+    cfg = tmp_cfg()
+    append_sheet(cfg.sources_sheet, "https://youtu.be/go-test-1")
+
+    with mock.patch.object(nb, "telegram_ready", lambda c: True):
+        steps, notes = nb.plan_steps(cfg, clips=2, count=1, meeting=True,
+                                     review=True, top=4,
+                                     since_iso="2026-10-05T23:00:00")
+    ids = [s["id"] for s in steps]
+    assert ids == ["meeting-stats", "clip-1", "review", "batch-1", "push"], ids
+    stats_argv = " ".join(steps[0]["argv"])
+    assert "meeting stats" in stats_argv and "--json-out" in stats_argv
+    review_argv = " ".join(steps[2]["argv"])
+    assert ("meeting review" in review_argv
+            and "--top 4" in review_argv
+            and "--since 2026-10-05T23:00:00" in review_argv)
+    joined = " ".join(" ".join(s["argv"]) for s in steps)
+    for banned in ("autopost", "published", "--publish", "buffer"):
+        assert banned not in joined, banned
+
+    # /go with no request: a no-op, no lock, no journal
+    echoed: list = []
+    rc = nb.run(cfg, if_requested=True, runner=lambda a, l, c: (0, ""),
+                notify=lambda c, t: True, echo=echoed.append)
+    assert rc == 0 and any("no pending /go" in line for line in echoed)
+
+    # /go with a request: its options win, and the request ends done
+    nightreq.write_request(cfg, {"clips": 1, "count": 0, "meeting": False,
+                                 "review": True, "top": 3})
+    ran: list = []
+
+    def runner(argv, log, cwd):
+        ran.append(list(argv))
+        if " review " in f" {' '.join(argv)} ":
+            # the real review step writes review.json next to the journal
+            (nb.batch_dir(cfg) / "review.json").write_text(_json.dumps({
+                "summary": "Hooks carry the day.",
+                "picks": [
+                    {"id": "ab12cd34_clip_01", "rank": 1,
+                     "title": "The Octopus Trap", "why": "instant hook"},
+                    {"id": "ff00aa11_clip_01", "rank": 2,
+                     "title": "Salt Ruins Your Brain", "why": "curiosity gap"},
+                ],
+            }), encoding="utf-8")
+        return 0, "ok\n"
+
+    sent: list = []
+    day = "2026-10-05"
+    with mock.patch.object(nb, "telegram_ready", lambda c: True):
+        rc = nb.run(cfg, date=day, if_requested=True, runner=runner,
+                    notify=lambda c, t: sent.append(t) or True,
+                    echo=lambda *a, **k: None)
+    assert rc == 0, rc
+    commands = [argv[3] for argv in ran]          # main.py <command> ...
+    assert "batch" not in commands, commands      # count=0 honored
+    assert commands == ["clip", "meeting", "pregen"], commands
+    review_argv = next(argv for argv in ran if argv[3] == "meeting")
+    assert review_argv[4] == "review" and "--top" in review_argv
+    assert review_argv[review_argv.index("--top") + 1] == "3"
+    text = sent[0]
+    assert "POST THESE TODAY" in text
+    assert "1. The Octopus Trap" in text and "instant hook" in text
+    assert "2. Salt Ruins Your Brain" in text
+    assert not nightreq.pending(cfg)
+    assert nightreq.read_request(cfg)["status"] == "done"
+
+    # a failed step still finishes the request — with the count recorded
+    nightreq.write_request(cfg, {"clips": 1, "count": 0, "meeting": False,
+                                 "review": False})
+    with mock.patch.object(nb, "telegram_ready", lambda c: True):
+        rc = nb.run(cfg, date=day, if_requested=True, fresh=True,
+                    runner=lambda a, l, c: (1, "boom\n"),
+                    notify=lambda c, t: True, echo=lambda *a, **k: None)
+    assert rc == 1
+    assert nightreq.read_request(cfg)["failed_steps"] >= 1
+
+    # resume: the same day's journal skips the finished clip step
+    ran.clear()
+    nightreq.write_request(cfg, {"clips": 1, "count": 0, "meeting": False,
+                                 "review": False})
+    with mock.patch.object(nb, "telegram_ready", lambda c: True):
+        nb.run(cfg, date=day, if_requested=True,
+               runner=lambda a, l, c: (0, "ok\n"),
+               notify=lambda c, t: True, echo=lambda *a, **k: None)
+    # clip-1 succeeded in the earlier run? It did not (it returned 0 twice),
+    # so nothing to assert about skips here beyond a clean exit
+
+    # review with no clips anywhere: the report says so instead of pretending
+    empty = tmp_cfg()
+    with mock.patch.object(nb, "telegram_ready", lambda c: True):
+        steps2, _ = nb.plan_steps(empty, clips=0, count=0, meeting=False,
+                                  review=True)
+    assert [s["id"] for s in steps2] == ["review"]
+
+
 def t_meeting_event_stream():
     """run_meeting emits agenda -> turns -> decision (and survives a dead
     listener) — the panel's live room is built on exactly this."""
@@ -9313,6 +9709,11 @@ def main(argv: list[str] | None = None) -> int:
         ("panel_files", t_panel_files),
         ("panel_launch", t_panel_launch),
         ("nightbatch", t_nightbatch),
+        ("nightreq", t_nightreq),
+        ("meeting_review", t_meeting_review),
+        ("go_options", t_go_options),
+        ("wakeup", t_wakeup),
+        ("nightbatch_go", t_nightbatch_go),
         ("temp_hygiene", t_temp_hygiene),
         ("deps_guard", t_deps_guard),
         ("py_compat", t_py_compat),

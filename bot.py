@@ -42,6 +42,12 @@ MAX_CAPTION = 1000        # ... and file captions at 1024
 HELP_TEXT = """🎬 Send me any topic and I'll render a vertical video for it.
 
 Commands:
+/go — the whole night shift, from bed: boardroom meets on the stats, clips
+     your queue, then the boardroom ranks the finished clips by hook and
+     quality and picks what to post. The report lands here.
+     /go later — queue it and shut the PC down; it runs at the next
+     wake/boot. /go dry — show the plan first. /go status — where is it?
+     /go 4 2 — 4 clip sources + 2 generated videos (defaults: 3 and 0).
 /status — what I'm rendering right now + uptime
 /queue — the render history table
 /keys — API usage: what's left, when quotas refill
@@ -89,6 +95,118 @@ _SPOKEN_STOPS = ("stop", "stop it", "stopp", "stop everything",
                  "stop the video", "stop rendering")
 
 
+def go_options(arg: str) -> dict:
+    """Parse /go arguments (pure, tested).
+
+    /go [later|dry|status] [N sources] [M videos] [fresh] [nomeeting]
+        [noreview]
+    """
+    opts = {"mode": "run", "clips": 3, "count": 0, "meeting": True,
+            "review": True, "top": 5, "fresh": False}
+    numbers: list[int] = []
+    for token in (arg or "").split():
+        low = token.lower()
+        if low in ("later", "sleep", "queue"):
+            opts["mode"] = "later"
+        elif low in ("dry", "dry-run", "preview", "plan"):
+            opts["mode"] = "dry"
+        elif low in ("status", "?"):
+            opts["mode"] = "status"
+        elif low == "fresh":
+            opts["fresh"] = True
+        elif low == "nomeeting":
+            opts["meeting"] = False
+        elif low == "noreview":
+            opts["review"] = False
+        else:
+            try:
+                numbers.append(int(token))
+            except ValueError:
+                continue
+    if numbers:
+        opts["clips"] = max(0, min(6, numbers[0]))
+    if len(numbers) > 1:
+        opts["count"] = max(0, min(10, numbers[1]))
+    return opts
+
+
+def check_inbox_once(cfg, limit: int = 30) -> dict:
+    """One getUpdates pass for the wake/boot task (PC was off).
+
+    Anything actionable (/go, /night) becomes a pending request; every
+    other old message is skipped silently — no reply spam from the past.
+    Only the owner's messages count. Never raises.
+    """
+    import json as _json
+
+    import nightreq
+
+    result = {"seen": 0, "queued": 0, "error": ""}
+    try:
+        bot = PhoneBot(cfg)
+    except Exception as exc:  # noqa: BLE001 - no token, no inbox
+        result["error"] = str(exc)[:200]
+        return result
+
+    offset_file = Path(cfg.work_dir) / "bot_offset.json"
+    offset = 0
+    try:
+        offset = int(_json.loads(offset_file.read_text(encoding="utf-8"))
+                     ["offset"])
+    except Exception:  # noqa: BLE001
+        offset = 0
+    try:
+        updates = bot._api("getUpdates", timeout=0,
+                           data={"offset": offset, "timeout": 0,
+                                 "allowed_updates": ["message"]}) or []
+    except Exception as exc:  # noqa: BLE001 - offline wake is a no-op
+        result["error"] = str(exc)[:200]
+        return result
+
+    for update in updates[:limit]:
+        offset = int(update.get("update_id", offset)) + 1
+        message = update.get("message") or {}
+        sender = (message.get("from") or {}).get("id")
+        chat_id = (message.get("chat") or {}).get("id")
+        if sender != bot.owner or chat_id is None:
+            continue
+        result["seen"] += 1
+        action, arg = parse_incoming(message.get("text") or "")
+        if action == "go":
+            opts = go_options(arg)
+            mode = opts.pop("mode")
+            opts.pop("fresh", None)
+            if mode == "status":
+                continue  # nobody is watching; skip quietly
+            nightreq.write_request(cfg, opts, source="wake")
+            result["queued"] += 1
+            try:
+                bot.send_message(
+                    chat_id,
+                    "\U0001f305 Saw your /go while the PC was off — "
+                    "queued, and it's running now.")
+            except TelegramError:
+                pass
+        elif action == "night":
+            nightreq.write_request(
+                cfg, {"clips": 2, "count": 2, "meeting": False,
+                      "review": False}, source="wake")
+            result["queued"] += 1
+            try:
+                bot.send_message(chat_id,
+                                 "\U0001f319 /night queued from while the "
+                                 "PC was off — running now.")
+            except TelegramError:
+                pass
+    try:
+        offset_file.parent.mkdir(parents=True, exist_ok=True)
+        offset_file.write_text(_json.dumps({"offset": offset}),
+                               encoding="utf-8")
+    except OSError:
+        pass
+    return result
+
+
 def parse_incoming(text: str) -> tuple[str, str]:
     """Pure command parser (unit-tested). Returns (action, argument).
 
@@ -104,6 +222,10 @@ def parse_incoming(text: str) -> tuple[str, str]:
     low = text.lower()
     if low in ("/start", "/help"):
         return ("help", "")
+    if low == "/go":
+        return ("go", "")
+    if low.startswith("/go "):
+        return ("go", text.split(" ", 1)[1].strip())
     if low == "/night":
         return ("night", "")
     if low.startswith("/night "):
@@ -505,6 +627,8 @@ class PhoneBot:
                                   f"{spec['per_day']}/day, {mode}.\n"
                                   f"I'll ping every post + a digest nightly. "
                                   f"/stop halts.")
+        elif action == "go":
+            self._go(chat_id, arg)
         elif action == "night":
             self._run_night(chat_id, arg)
         elif action == "stop":
@@ -588,6 +712,102 @@ class PhoneBot:
         self.send_message(chat_id, f"🎙️ Heard: \"{topic}\"")
         if position:
             self.send_message(chat_id, f"📥 Queued #{position + 1}")
+
+    def _go(self, chat_id: int, arg: str) -> None:
+        """`/go` — the whole night shift, from the phone.
+
+        Boardroom stats meeting -> clip the queue -> boardroom ranks the
+        clips and picks what to post -> everything lands back here. The
+        request is written to work/nightrun/request.json FIRST, so it
+        survives you shutting the PC down; `/go later` queues it without
+        starting, and the wake/boot task picks it up.
+        """
+        import nightreq
+
+        opts = go_options(arg)
+        mode = opts.pop("mode")
+        fresh = bool(opts.pop("fresh"))
+
+        if mode == "status":
+            lines = [nightreq.status_line(self.cfg)]
+            try:
+                import nightbatch
+
+                if nightbatch.lock_path(self.cfg).exists():
+                    lines.append("⚙️ A batch looks alive on the PC right "
+                                 "now (lock file present).")
+            except Exception:  # noqa: BLE001
+                pass
+            self.send_message(chat_id, "\n".join(lines))
+            return
+
+        if mode == "dry":
+            import subprocess as _sp
+            import sys as _sys
+            from pathlib import Path as _Path
+
+            root = _Path(__file__).resolve().parent
+            argv = [_sys.executable, "-u", str(root / "main.py"),
+                    "nightbatch", "--dry-run", "--meeting", "--review",
+                    "--clips", str(opts["clips"]), "--count", str(opts["count"])]
+            try:
+                res = _sp.run(argv, capture_output=True, text=True,
+                              timeout=180, cwd=str(root))
+                out = (res.stdout or res.stderr or "").strip()[-3200:]
+                self.send_message(chat_id, f"\U0001f9fe Night plan:\n\n{out}")
+            except Exception as exc:  # noqa: BLE001
+                self.send_message(chat_id, f"Plan failed: {exc}")
+            return
+
+        nightreq.write_request(self.cfg, opts, source="bot")
+        if mode == "later":
+            self.send_message(
+                chat_id,
+                f"\U0001f319 Queued: {opts['clips']} clip source(s), "
+                f"{opts['count']} video(s), boardroom before and after.\n"
+                "It runs the moment the PC is awake again (wake task or "
+                "next boot) — the report lands here. Sweet dreams.")
+            return
+
+        # mode == "run": queue + start now (the request is the source of
+        # truth; the subprocess re-reads it via --if-requested)
+        import subprocess as _sp
+        import sys as _sys
+        from pathlib import Path as _Path
+
+        root = _Path(__file__).resolve().parent
+        argv = [_sys.executable, "-u", str(root / "main.py"),
+                "nightbatch", "--if-requested"]
+        if fresh:
+            argv.append("--fresh")
+
+        def worker() -> None:
+            try:
+                res = _sp.run(argv, capture_output=True, text=True,
+                              timeout=4 * 3600, cwd=str(root))
+                if res.returncode != 0:
+                    tail = (res.stdout or res.stderr or "").strip()[-1200:]
+                    self.send_message(
+                        chat_id,
+                        f"\u26a0\ufe0f Night shift ended rc={res.returncode}"
+                        f".\n\n{tail}")
+            except Exception as exc:  # noqa: BLE001 - report, don't die
+                try:
+                    self.send_message(chat_id,
+                                      f"\u26a0\ufe0f Night shift crashed: "
+                                      f"{exc}")
+                except TelegramError:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.send_message(
+            chat_id,
+            f"\U0001f319 Night shift started: boardroom \u2192 "
+            f"{opts['clips']} clip source(s) \u2192 boardroom picks the "
+            f"best ones \u2192 report here.\n"
+            f"Roughly {opts['clips'] * 11 + 10} minutes. You can put your "
+            "phone down — and if you'd rather shut the PC down right now, "
+            "send /go later instead next time: it waits for the next boot.")
 
     def _run_night(self, chat_id: int, arg: str) -> None:
         """`/night` starts tonight's unattended batch; `/night dry` previews.

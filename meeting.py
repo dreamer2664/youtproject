@@ -215,7 +215,19 @@ signature — just what you say out loud."""
 
 def build_minutes_prompt(agenda: str, transcript: str, kind: str) -> str:
     """The chair closes the meeting (pure, tested)."""
-    if kind == "pick":
+    if kind == "review":
+        shape = ('Return ONLY JSON: {"summary": "<2-3 sentences: the '
+                 'ranking logic>", "picks": [{"id": "<clip id, exactly as '
+                 'in the table>", "rank": 1, "why": "<one sentence: hook '
+                 '+ overall>"}, ...], "hold_note": "<one sentence for the '
+                 'clips you did not pick>"}')
+        instruction = ("Rank the finished clips for today's uploads. The "
+                       "id must be one of the clip ids above, exactly. "
+                       "Order them strongest first: the owner posts them "
+                       "in this order and uploads them by hand. Rank on "
+                       "hook strength first, then overall quality. Do not "
+                       "pick near-identical clips from the same source.")
+    elif kind == "pick":
         shape = ('Return ONLY JSON: {"choice": "<one candidate URL, '
                  'EXACTLY as written in the meeting data>", "reason": '
                  '"<one sentence>"}')
@@ -310,6 +322,34 @@ def parse_decisions(raw: str, kind: str,
                 return None
             out["topic"] = topic[:160]
         return out
+    if kind == "review":
+        picks_raw = data.get("picks")
+        if not isinstance(picks_raw, list):
+            return None
+        picks, seen = [], set()
+        for item in picks_raw:
+            if not isinstance(item, dict):
+                continue
+            choice = str(item.get("id") or item.get("clip") or "").strip()
+            match = _match_candidate(choice, candidates or [])
+            if match is None or match in seen:
+                continue
+            seen.add(match)
+            try:
+                rank = int(item.get("rank") or 0)
+            except (TypeError, ValueError):
+                rank = 0
+            picks.append({"id": match, "rank": rank,
+                          "why": str(item.get("why") or item.get("reason")
+                                     or "").strip()[:300]})
+        if not picks:
+            return None
+        picks.sort(key=lambda p: p["rank"] if p["rank"] > 0 else 10 ** 6)
+        for i, pick in enumerate(picks, start=1):
+            pick["rank"] = i
+        return {"summary": str(data.get("summary") or "").strip()[:600],
+                "picks": picks,
+                "hold_note": str(data.get("hold_note") or "").strip()[:300]}
     decisions = data.get("decisions")
     if not isinstance(decisions, list):
         return None
@@ -325,8 +365,8 @@ def format_minutes(kind: str, agenda: str, turns: list[dict],
                    decision: dict | None) -> str:
     """The minutes file body (pure, tested)."""
     now = datetime.now().astimezone()
-    title = {"pick": "source pick", "act": "board action"}.get(
-        kind, "stats review")
+    title = {"pick": "source pick", "act": "board action",
+             "review": "clip review"}.get(kind, "stats review")
     lines = [f"# Boardroom — {now:%Y-%m-%d %H:%M} — {title}", "",
              "## Present", ""]
     lines += [f"- {role['name']} {role['emoji']} ({role['lane']})"
@@ -346,6 +386,20 @@ def format_minutes(kind: str, agenda: str, turns: list[dict],
         else:
             lines.append("*No valid decision — the chair's pick did not "
                          "name a candidate.*")
+    elif kind == "review":
+        if decision:
+            lines.append(decision.get("summary") or "")
+            lines.append("")
+            lines.append("**Post these today, in this order:**")
+            lines.append("")
+            for pick in decision["picks"]:
+                lines.append(f"{pick['rank']}. `{pick['id']}` — {pick['why']}")
+            if decision.get("hold_note"):
+                lines.append("")
+                lines.append(f"*Held back:* {decision['hold_note']}")
+        else:
+            lines.append("*No valid ranking could be parsed from the "
+                         "chair's summary.*")
     elif kind == "act":
         if decision:
             if decision["action"] == "clip":
@@ -581,10 +635,93 @@ def latest_minutes(cfg: Config) -> Path | None:
     return max(files, key=recency)
 
 
+# ------------------------------------------------------------- clip review
+REVIEW_SHOWN_MAX = 12       # agenda rows shown to the room (by score)
+REVIEW_DEFAULT_TOP = 5      # how many clips the room is asked to pick
+
+
+def collect_review_clips(cfg: Config, since: "datetime | None" = None,
+                         ids: list[str] | None = None) -> list[dict]:
+    """Finished clips to review, best-score first (never raises).
+
+    Reuses pregen's collector (kit titles, CREDIT windows, transcript
+    hooks) + virality scoring — the same numbers the phone scorecard
+    shows, so the room judges what the owner sees elsewhere.
+    """
+    from pregen import collect_candidates, score_candidates
+
+    try:
+        cands = score_candidates(collect_candidates(cfg))
+    except Exception:  # noqa: BLE001 - no clips is a normal outcome
+        return []
+    if ids:
+        wanted = {str(i).strip().lower() for i in ids if str(i).strip()}
+
+        def _hit(c: dict) -> bool:
+            if str(c.get("id", "")).lower() in wanted:
+                return True
+            kit = str(c.get("kit", ""))
+            return bool(kit) and Path(kit).name.lower() in wanted
+
+        cands = [c for c in cands if _hit(c)]
+    if since is not None:
+        cutoff = since.timestamp()
+        kept = []
+        for c in cands:
+            try:
+                if Path(c["file"]).stat().st_mtime >= cutoff:
+                    kept.append(c)
+            except (OSError, KeyError):
+                continue
+        cands = kept
+    return sorted(cands, key=lambda c: (-int(c.get("score") or 0),
+                                        float(c.get("duration_s") or 0)))
+
+
+def _review_agenda(clips: list[dict], top: int) -> str:
+    """The table the room ranks from (pure, tested)."""
+    shown = clips[:REVIEW_SHOWN_MAX]
+    lines = [
+        f"CLIPS FINISHED THIS RUN: {len(clips)} "
+        f"(showing the top {len(shown)} by score).",
+        "",
+        "Each clip below is already cut, captioned and titled. Judge it "
+        "the way a scroller would:",
+        "- HOOK: the first line (the 'hook' column) — does it stop a "
+        "scroll in about a second?",
+        "- OVERALL: payoff, pacing, title. A strong hook with no payoff "
+        "loses; so does a great payoff behind a slow first line.",
+        "- Variety: two near-identical clips from the same source compete "
+        "with each other — keep the stronger one.",
+        "",
+        "id | title | seconds | score | signals | hook",
+    ]
+    for c in shown:
+        sig = c.get("signals") or {}
+        sig_txt = ",".join(f"{k}:{v}" for k, v in sig.items())
+        hook = " ".join(str(c.get("hook_text") or "").split())[:110]
+        title = " ".join(str(c.get("title") or "").split())[:80]
+        lines.append(f"{c.get('id')} | {title} | "
+                     f"{float(c.get('duration_s') or 0):.0f}s | "
+                     f"{int(c.get('score') or 0)}/100 | {sig_txt} | "
+                     f"{hook or '(no transcript hook)'}")
+    if len(clips) > len(shown):
+        rest = ", ".join(str(c.get("id")) for c in clips[len(shown):])
+        lines.append("")
+        lines.append("Lower-scored (not shown, still eligible if named): "
+                     + rest)
+    lines.append("")
+    lines.append(f"Pick the best {min(max(1, int(top)), len(clips))} "
+                 "clip(s) to post today, ranked strongest first. The "
+                 "owner uploads by hand — this ranking IS the upload plan.")
+    return "\n".join(lines)
+
+
 def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
                 rounds: int | None = None, render: bool = False,
                 send: bool = True, say=None, executor=None,
-                events=None) -> str:
+                events=None, clips: list[dict] | None = None,
+                top: int = REVIEW_DEFAULT_TOP) -> str:
     """Hold one meeting. Returns a summary string. Never raises.
 
     kind="act" is the autonomous lane: the room commits to ONE action
@@ -606,9 +743,10 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
             events({"type": etype, **payload})
         except Exception:  # noqa: BLE001 - a listener never kills a meeting
             pass
-    if kind not in ("stats", "pick", "act"):
-        return f"Unknown meeting kind {kind!r} (stats, pick or act)."
-    rounds = rounds or cfg.meeting_rounds
+    if kind not in ("stats", "pick", "act", "review"):
+        return (f"Unknown meeting kind {kind!r} "
+                "(stats, pick, act or review).")
+    rounds = rounds or (1 if kind == "review" else cfg.meeting_rounds)
     try:
         if kind == "stats":
             agenda = _with_memory(cfg, _stats_agenda(cfg))
@@ -617,6 +755,19 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
                         "about it today? One video per day per channel is "
                         "the current plan — challenge it if the data says "
                         "so.")
+        elif kind == "review":
+            clips = list(clips or [])
+            if not clips:
+                return ("No new clips to review — the clip lane produced "
+                        "nothing this run. Nothing spent.")
+            candidates = [str(c.get("id")) for c in clips]
+            agenda = _with_memory(cfg, _review_agenda(clips, top))
+            question = ("Which clips do we post today, and in what order? "
+                        "Rank the strongest first: judge the HOOK (does "
+                        "the first line stop a scroll?), then the payoff, "
+                        "pacing and title. Name exact clip ids from the "
+                        "table; variety beats three cuts of the same "
+                        "moment.")
         elif kind == "act":
             candidates = _pick_candidates(cfg, urls or [])
             agenda = _with_memory(cfg, _act_agenda(cfg, candidates))
@@ -642,8 +793,12 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
     except MeetingError as exc:
         return str(exc)
 
+    if kind == "review":
+        cand_list = list(candidates or [])
+    else:
+        cand_list = [c[0] for c in (candidates or [])]
     emit("agenda", kind=kind, question=question, text=agenda,
-         candidates=[c[0] for c in (candidates or [])])
+         candidates=cand_list)
 
     # -- the room speaks ---------------------------------------------------
     turns: list[dict] = []
@@ -684,8 +839,12 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
     decision = None
     chair = _role_provider(cfg, cfg.ai_provider)
     if chair is not None:
-        cand_urls = ([c[0] for c in candidates]
-                     if kind in ("pick", "act") else None)
+        if kind == "review":
+            cand_urls = list(candidates or [])
+        elif kind in ("pick", "act"):
+            cand_urls = [c[0] for c in candidates]
+        else:
+            cand_urls = None
         prompt = build_minutes_prompt(agenda, _transcript_text(turns), kind)
         for attempt in (1, 2):
             try:
@@ -713,6 +872,11 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
             remember(cfg, "stats",
                      (decision.get("summary") or "")
                      + (f" Decisions: {joined}" if joined else ""))
+        elif kind == "review":
+            picks = ", ".join(p["id"] for p in decision["picks"])
+            remember(cfg, "review",
+                     f"posted {picks} — "
+                     f"{(decision.get('summary') or '')[:200]}")
         elif kind == "act":
             if decision["action"] == "clip":
                 remember(cfg, "act", f"clip {decision['url']} — "
@@ -762,8 +926,8 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
         say(f"  [meeting] could not write minutes ({exc})")
 
     header = (f"📋 Boardroom {now:%Y-%m-%d}: "
-              + {"pick": "source pick", "act": "board action"}.get(
-                  kind, "stats review"))
+              + {"pick": "source pick", "act": "board action",
+                 "review": "clip review"}.get(kind, "stats review"))
     if kind == "pick" and decision:
         summary = (f"{header}\n\nToday's source: {decision['choice']}\n"
                    f"Why: {decision['reason']}")
@@ -778,6 +942,13 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
         summary = f"{header}\n\n{body}\nWhy: {decision['reason']}"
         if decision.get("result"):
             summary += f"\n{decision['result']}"
+    elif kind == "review" and decision:
+        picks = "\n".join(
+            f"{p['rank']}. {p.get('title') or p['id']} — {p['why']}"
+            for p in decision["picks"])
+        summary = f"{header}\n\n{decision.get('summary', '')}\n\nPost these today:\n{picks}"
+        if decision.get("hold_note"):
+            summary += f"\nHeld back: {decision['hold_note']}"
     elif kind == "stats" and decision:
         summary = (f"{header}\n\n{decision.get('summary', '')}\n\n"
                    "Decisions:\n"
