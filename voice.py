@@ -11,6 +11,7 @@ from pathlib import Path
 
 import requests
 
+import keypool
 from config import Config
 
 WHISPER_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
@@ -45,7 +46,7 @@ def transcribe(cfg: Config, path: Path) -> str:
     length comes from the local file (ffprobe when available, 0 otherwise —
     bookkeeping must never fail a transcription).
     """
-    keys = cfg.groq_api_keys
+    keys = keypool.live("groq", cfg.groq_api_keys)
     if not keys:
         raise RuntimeError("no Groq API keys")
     import keystats
@@ -75,6 +76,8 @@ def transcribe(cfg: Config, path: Path) -> str:
             except ValueError:
                 return ""
         last = f"HTTP {response.status_code}: {response.text[:120]}"
+        if response.status_code in (401, 403):
+            keypool.dead("groq", key)  # revoked: skip it in every lane
         if response.status_code not in (429, 401, 403):
             break
     raise RuntimeError(f"transcription failed ({last})")

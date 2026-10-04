@@ -10,6 +10,7 @@ Both return the same Script object, so the rest of the pipeline does not care.
 from __future__ import annotations
 
 import json
+import keypool
 import random
 import re
 import time
@@ -401,7 +402,7 @@ class GeminiProvider:
 
     def _try_model(self, model: str, payload: dict, tag: str = "script") -> tuple[dict | None, int, str]:
         """One model, with retries across keys. Returns (result, status, error)."""
-        keys = list(self.api_keys)
+        keys = keypool.live("gemini", self.api_keys)
         last_status = 0
         last_error = ""
         # 429 budget: every key gets one immediate shot (spent per-key quota
@@ -455,6 +456,10 @@ class GeminiProvider:
             # different accounts, so one's revocation is no verdict on the
             # others). All rejected -> fatal; _post raises with a hint.
             if response.status_code in (400, 401, 403):
+                # A payload-shaped 400 must not kill the key; a key-shaped
+                # one ("API key not valid") is death — see key_dead_like.
+                if keypool.key_dead_like(response.status_code, response.text):
+                    keypool.dead("gemini", key)
                 keys.pop(0)
                 if keys:
                     print(f"  [{tag}] Gemini key ...{key[-4:]} rejected — "

@@ -30,6 +30,45 @@ FAIL = 0
 FAILURES: list[str] = []
 
 
+_TMP_REGISTRY: list[str] = []
+
+
+def _mkdtemp(prefix: str = "youttest_") -> str:
+    """mkdtemp that registers the tree, so the run can clean up after itself."""
+    path = tempfile.mkdtemp(prefix=prefix)
+    _TMP_REGISTRY.append(path)
+    return path
+
+
+def _clean_temp_dirs(run_started: float = 0.0) -> None:
+    """Run-end hygiene: remove the temp trees THIS run created.
+
+    A full suite run creates ~190 trees and nothing removed them, so the
+    temp filesystem grew until it filled — which then surfaced as random
+    unrelated failures (ENOSPC in pregen, log writes silently producing
+    zero bytes; hit live 2026-10-04). This deletes the run's registered
+    trees, plus unregistered youttest_* dirs older than 2h (crashed runs
+    — a concurrent live run's trees are fresh, so they survive). Never
+    fails the suite. Set KEEP_TEST_TMP=1 to keep the trees for debugging.
+    """
+    import os
+    import shutil
+    import time
+
+    if os.environ.get("KEEP_TEST_TMP"):
+        return
+    while _TMP_REGISTRY:
+        shutil.rmtree(_TMP_REGISTRY.pop(), ignore_errors=True)
+    now = time.time()
+    for entry in Path(tempfile.gettempdir()).glob("youttest_*"):
+        try:
+            mtime = entry.stat().st_mtime
+        except OSError:
+            continue
+        if mtime < now - 2 * 3600:
+            shutil.rmtree(entry, ignore_errors=True)
+
+
 def check(name: str, fn) -> None:
     global PASS, FAIL
     try:
@@ -48,7 +87,7 @@ def tmp_cfg(**overrides):
     """A Config rooted in a fresh temp dir (nothing touches the repo)."""
     from config import load_config
 
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     cfg_path = tmp / "config.yaml"
     if overrides:
         import yaml
@@ -92,7 +131,7 @@ def t_config_no_shared_mutation():
     """One Config's overrides must never leak into another (or DEFAULTS)."""
     from config import DEFAULTS, load_config
 
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     missing = tmp / "sub" / "config.yaml"  # does not exist -> pure defaults
     cfg1 = load_config(missing)
     cfg1.data["video"]["style"] = "cartoon"
@@ -209,7 +248,7 @@ def t_subtitles():
         write_srt,
     )
 
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     narr = ["Hello world this is a test", "Second scene here"]
     timings = [[(0.0, 0.3), (0.3, 0.6), (0.6, 0.9), (0.9, 1.2), (1.2, 1.5), (1.5, 1.8)], []]
     cues = build_cues(narr, timings, [0.0, 5.0], [5.0, 5.0], max_chars_for("portrait"), 0.25)
@@ -284,7 +323,7 @@ def t_cta_rotation():
 def t_topics_clean():
     from topics import _clean, load_backlog, pop_topic, save_backlog
 
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_")) / "backlog.txt"
+    tmp = Path(_mkdtemp()) / "backlog.txt"
     save_backlog(tmp, ["alpha", "beta"])
     assert load_backlog(tmp) == ["alpha", "beta"]
     assert pop_topic(tmp) == "alpha"
@@ -304,7 +343,7 @@ def t_topics_norepeat():
     assert is_same_topic("why cats stare at walls", "Why cats stare at walls?")
     assert not is_same_topic("why cats stare at walls", "why cats hate water")
     assert not is_same_topic("the ship", "the shop")  # short: exact only
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_")) / "backlog.txt"
+    tmp = Path(_mkdtemp()) / "backlog.txt"
     save_backlog(tmp, ["The secret language of trees", "Why octopuses have three hearts"])
     used = ["secret language of trees!"]
     assert pop_fresh_topic(tmp, used) == "Why octopuses have three hearts"
@@ -344,7 +383,7 @@ def t_package():
     )
     assert "#shark" in caption and "#fyp" in caption
 
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     (tmp / "v.mp4").write_bytes(b"fakevideo")
     (tmp / "v.jpg").write_bytes(b"fakejpg")
     (tmp / "v.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\nHi\n")
@@ -378,7 +417,7 @@ def t_package():
 def t_audiofx():
     from audiofx import ensure_assets
 
-    assets = ensure_assets(Path(tempfile.mkdtemp(prefix="youttest_")))
+    assets = ensure_assets(Path(_mkdtemp()))
     for key in ("music_loop", "whoosh", "pop"):
         assert assets[key].exists() and assets[key].stat().st_size > 1000, key
 
@@ -386,7 +425,7 @@ def t_audiofx():
 def t_queue():
     from jobqueue import Queue
 
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_")) / "state.json"
+    tmp = Path(_mkdtemp()) / "state.json"
     queue = Queue(tmp)
     job = queue.add("sharks")
     assert queue.get(job.id[:6]).id == job.id  # prefix lookup
@@ -608,7 +647,7 @@ def t_parts_kit():
     from parts import (build_part_description, build_part_srt,
                        write_part_kit)
 
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     clip = tmp / "ab12_part_01.mp4"
     clip.write_bytes(b"fake")
     src = {"title": "Source Vid", "channel": "Chan", "url": "http://x"}
@@ -699,7 +738,7 @@ def t_caption_overlap():
     assert normalize_word_timings([]) == [] and normalize_word_timings(None) == []
 
     # cached transcripts from before the fix are repaired on load
-    tmp = Path(_tf.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     cache = tmp / "c.json"
     cache.write_text(_json.dumps({"version": TRANSCRIPT_CACHE_VERSION,
                                   "words": old}), encoding="utf-8")
@@ -713,7 +752,7 @@ def t_caption_overlap():
         return int(h) * 3600 + int(m) * 60 + float(s)
 
     for sample in (old, words, loaded):
-        ass = build_clip_ass(sample, 10.0, tmp_cfg(), Path(_tf.mkdtemp()),
+        ass = build_clip_ass(sample, 10.0, tmp_cfg(), Path(_mkdtemp()),
                              None).read_text(encoding="utf-8")
         events = [l.split(",", 9) for l in ass.splitlines()
                   if l.startswith("Dialogue")]
@@ -847,7 +886,7 @@ def t_longform():
     import tempfile as _tf
     from pathlib import Path
 
-    tmp = Path(_tf.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     srt = build_longform_srt(words_over(60), 60.0, tmp / "c.srt")
     assert srt and srt.exists()
     for line in srt.read_text(encoding="utf-8").splitlines():
@@ -883,7 +922,7 @@ def t_longform_lane():
                          transcript_cache_path)
     from config import load_config
 
-    tmp = Path(_tf.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     cfg = load_config(None)  # defaults; paths re-rooted below
     cfg.data["paths"]["work_dir"] = str(tmp / "work")
     cfg.data["video"]["format"] = "portrait"
@@ -2421,7 +2460,7 @@ def t_sub_highlight():
                                   [0.0], [2.0], 0.0)
     assert events and "0000D7FF" in events[0].text
     # Outline scales with font_scale; explicit outline stays absolute.
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     scaled = write_ass(events, tmp / "s.ass", "portrait", 1080, 1920,
                        style={"scale": 2.0})
     assert ",1,6,0," in scaled.read_text(encoding="utf-8")
@@ -2465,7 +2504,7 @@ def t_top_video():
     assert "#2" in desc and "#1" in desc and "youtu.be/x" in desc
     assert "0:01" in desc           # #2 starts after its 1.4s card
     assert "0:23" in desc           # 1.4+20s+1.4=22.8 -> rounds to 0:23
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     card = make_card(1, 2, "the very best moment", tmp / "card.png")
     assert card.exists()
     from PIL import Image
@@ -2525,7 +2564,7 @@ def t_sub_position():
     import types
 
     ev = [types.SimpleNamespace(start=0.0, end=1.0, text="hello")]
-    p = Path(tempfile.mkdtemp(prefix="youttest_")) / "a.ass"
+    p = Path(_mkdtemp()) / "a.ass"
     write_ass(ev, p, "portrait", 1080, 1920, style={"position": "bottom"})
     assert ",2,60,60,300,1" in p.read_text(encoding="utf-8")
     write_ass(ev, p, "portrait", 1080, 1920)
@@ -2614,7 +2653,7 @@ def t_subpreview():
     trio = preview_trio(frame, {})
     assert set(trio) == {"top", "middle", "bottom"}
     assert len(set(trio.values())) == 3
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     paths = save_trio(tmp, frame, {"font": "Arial"})
     assert len(paths) == 3 and all(p.exists() for p in paths)
     assert (tmp / "subpreview_top.png").stat().st_size > 1000
@@ -2628,7 +2667,7 @@ def t_reclaim_interrupted():
     from main import _reclaim_interrupted
     from topics import load_backlog, save_backlog
 
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     queue = Queue(tmp / "state.json")
     ghost = queue.add("why octopuses have three hearts")
     twin = queue.add("why octopuses have three hearts")   # duplicate ghost
@@ -2694,7 +2733,7 @@ def t_mux_builder():
     from assembler import _build_mux_cmd, _drawtext_font_arg, _ffmpeg_has_filter
 
     cfg = tmp_cfg()
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     base = dict(
         concat_txt=tmp / "concat.txt", audio_txt=tmp / "audio.txt",
         out_path=tmp / "out.mp4", cfg=cfg, total_seconds=10.0, cuts=[5.0],
@@ -3022,7 +3061,7 @@ def t_azure_budget():
     else:
         raise AssertionError("unknown model should refuse")
 
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     prov = AzureOpenAIProvider(
         endpoint="https://x.openai.azure.com", api_key="k", deployment="mini",
         model="gpt-4o-mini", ledger_path=tmp / "azure_spend.jsonl")
@@ -3360,7 +3399,7 @@ def t_progress_bar():
     top = progress_ass_line(10.0, 1080, 1920, position="top")
     assert "\\move(-1080,0,0,0,0,10000)" in top, top
     # write_ass carries it as the final event.
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     out = write_ass([], tmp / "t.ass", "portrait", 1080, 1920, progress=line)
     text = out.read_text(encoding="utf-8")
     assert "PlayResX: 1080" in text and "PlayResY: 1920" in text
@@ -4893,7 +4932,7 @@ def t_clip_cookies():
 def t_clip_cookies_status():
     from clipper import cookie_status
 
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     # A real export: comment header + cookie lines.
     good = tmp / "cookies.txt"
     good.write_text(
@@ -6609,7 +6648,7 @@ def t_image_402_fails_over_fast():
     import images
 
     cfg = tmp_cfg()
-    dest = Path(tempfile.mkdtemp(prefix="youttest_")) / "img.jpg"
+    dest = Path(_mkdtemp()) / "img.jpg"
     resp = Mock(status_code=402, text="payment required")
     resp.headers = {}
     with patch("images._wait_for_slot", lambda *a, **k: None), \
@@ -6712,7 +6751,7 @@ def t_ledger_tags():
         {"safe": True, "relevant": True, "reason": ""})
     try:
         cfg.data["ai"]["pexels_api_key"] = "pk"
-        dest = Path(tempfile.mkdtemp(prefix="youttest_")) / "img.jpg"
+        dest = Path(_mkdtemp()) / "img.jpg"
         stock.pexels_fetch("ocean scene", dest, cfg, seed=1, attempts=1)
     finally:
         director.plan_query = real_plan
@@ -6745,6 +6784,163 @@ def t_ledger_tags():
     gem2 = [e for e in events if e.get("p") == "gemini"
             and e.get("tag") == "vision"]
     assert len(gem2) == len(gem) + 1, gem2
+
+
+def t_meeting_act_wiring():
+    """`meeting act` wires run_meeting's ONE-argument executor correctly.
+
+    Regression guard: main.py passed the raw two-arg _execute_board_action,
+    so every board action died inside run_meeting's try/except as
+    "missing 1 required positional argument" — the act lane could never
+    execute anything, while the direct-call tests (t_board_action_*)
+    stayed green because they bypass the wiring entirely.
+    """
+    import argparse
+
+    import main as main_mod
+    import meeting as meeting_mod
+
+    cfg = tmp_cfg()
+    captured = {}
+
+    def fake_run(cfg_, kind, urls=None, rounds=None, render=False,
+                 send=True, say=None, executor=None):
+        captured["executor"] = executor
+        captured["kind"] = kind
+        return "fake summary"
+
+    real_run = meeting_mod.run_meeting
+    meeting_mod.run_meeting = fake_run
+    try:
+        args = argparse.Namespace(kind="act", url=None, rounds=None,
+                                  render=False, no_send=True, add=None,
+                                  dry_run=False)
+        rc = main_mod.cmd_meeting(cfg, args)
+    finally:
+        meeting_mod.run_meeting = real_run
+    assert rc == 0 and captured.get("kind") == "act"
+    executor = captured.get("executor")
+    assert executor is not None
+    # run_meeting calls back with exactly ONE argument (the decision dict).
+    seen = {}
+    real_exec = main_mod._execute_board_action
+    main_mod._execute_board_action = lambda cfg_, decision: (
+        seen.update(decision) or "done")
+    try:
+        out = executor({"action": "none", "reason": "r"})
+    finally:
+        main_mod._execute_board_action = real_exec
+    assert out == "done", out
+    assert seen == {"action": "none", "reason": "r"}, seen
+
+
+def t_keypool_memory():
+    """One dead-key memory shared by every lane (2026-09-21 fix, generalized).
+
+    Before: a 401'd key was re-tried by every fresh provider instance —
+    one wasted round-trip per call, per lane, all run long (the voiceover
+    lane alone had the fix). Now: keypool remembers, and 429/quota stays
+    live because a rate-limited key refills.
+    """
+    from unittest.mock import Mock, patch
+
+    import keypool
+    from groq import GroqProvider
+    from scriptgen import GeminiProvider
+
+    keypool.reset()
+    try:
+        # live(): strips, de-dupes, drops the dead — order preserved.
+        assert keypool.live("x", [" a ", "a", "", None, "b"]) == ["a", "b"]
+        keypool.dead("x", "a")
+        assert keypool.live("x", [" a ", "b"]) == ["b"]
+        assert keypool.is_dead("x", " a ") is True
+        keypool.reset()
+        assert keypool.live("x", ["a"]) == ["a"]
+
+        # 401/403 condemn a key; a 400 only when the body blames the key.
+        assert keypool.key_dead_like(401, "nope") is True
+        assert keypool.key_dead_like(403, "") is True
+        assert keypool.key_dead_like(
+            400, '{"error": {"message": "API key not valid"}}') is True
+        assert keypool.key_dead_like(400, "Failed to validate JSON") is False
+        assert keypool.key_dead_like(429, "slow down") is False
+        assert keypool.key_dead_like(500, "boom") is False
+
+        def ok():
+            response = Mock(status_code=200)
+            response.json.return_value = {
+                "choices": [{"message": {"content": "hello"}}]}
+            return response
+
+        # Groq: the next INSTANCE skips the dead key (before: retried it).
+        with patch("requests.post",
+                   side_effect=[Mock(status_code=401, text="bad"), ok()]) as post:
+            result = GroqProvider(api_keys=["dead1", "live1"])._complete(
+                "hi", temperature=0.0, json_mode=False, tag="t")
+        assert result == "hello" and post.call_count == 2
+        assert keypool.is_dead("groq", "dead1")
+        with patch("requests.post", return_value=ok()) as post:
+            result = GroqProvider(api_keys=["dead1", "live1"])._complete(
+                "hi", temperature=0.0, json_mode=False, tag="t")
+        assert result == "hello" and post.call_count == 1
+        assert post.call_args.kwargs["headers"] == {
+            "Authorization": "Bearer live1"}
+
+        # Gemini: same memory; a JSON-mode-shaped 400 must NOT kill the key.
+        def gok():
+            response = Mock(status_code=200)
+            response.json.return_value = {"candidates": []}
+            return response
+
+        with patch("requests.post",
+                   side_effect=[Mock(status_code=401,
+                                     text="API key not valid"), gok()]) as post:
+            result, status, _ = GeminiProvider(
+                api_key=["dead2", "live2"])._try_model("m", {}, tag="t")
+        assert result is not None and post.call_count == 2
+        assert keypool.is_dead("gemini", "dead2")
+        with patch("requests.post", return_value=gok()) as post:
+            result, status, _ = GeminiProvider(
+                api_key=["dead2", "live2"])._try_model("m", {}, tag="t")
+        assert result is not None and post.call_count == 1
+        with patch("requests.post",
+                   return_value=Mock(status_code=400,
+                                     text="Failed to validate JSON")):
+            GeminiProvider(api_key=["live3"])._try_model("m", {}, tag="t")
+        assert keypool.is_dead("gemini", "live3") is False
+    finally:
+        keypool.reset()
+
+
+def t_key_env_aliases():
+    """Every provider accepts its natural env names; lists de-dupe.
+
+    `export PIXABAY_API_KEY=...` used to be silently ignored (only the
+    plural spelling was read) — same for DeepSeek/ElevenLabs/YouTube —
+    while Gemini/Groq took both spellings. And duplicate keys in a list
+    survived, so the same key got tried twice per call.
+    """
+    import os
+    from unittest.mock import patch
+
+    cfg = tmp_cfg()
+    with patch.dict(os.environ, {"PIXABAY_API_KEY": "pb-single",
+                                 "DEEPSEEK_API_KEY": "ds-single",
+                                 "ELEVENLABS_API_KEY": "el-single",
+                                 "YOUTUBE_API_KEY": "yt-single"}):
+        assert cfg.pixabay_api_keys == ["pb-single"]
+        assert cfg.deepseek_api_keys == ["ds-single"]
+        assert cfg.elevenlabs_api_keys == ["el-single"]
+        assert cfg.youtube_api_keys == ["yt-single"]
+    cfg.data["ai"]["gemini_api_keys"] = [" g1 ", "g1", "", "g2"]
+    cfg.data["ai"]["groq_api_keys"] = ["k1", "k1", "k2"]
+    for name in ("GEMINI_API_KEYS", "GEMINI_API_KEY", "GROQ_API_KEYS",
+                 "GROQ_API_KEY", "PIXABAY_API_KEY", "DEEPSEEK_API_KEY",
+                 "ELEVENLABS_API_KEY", "YOUTUBE_API_KEY"):
+        os.environ.pop(name, None)
+    assert cfg.gemini_api_keys == ["g1", "g2"], cfg.gemini_api_keys
+    assert cfg.groq_api_keys == ["k1", "k2"], cfg.groq_api_keys
 
 
 def t_chat_tools():
@@ -6924,6 +7120,9 @@ def t_gemini_keys():
             api_key=["a", "b"])._try_model("m", {}, tag="t")
     assert result is None and status == 401 and post.call_count == 2
     # All keys 429 -> failover after one try per key (5 keys = 5 calls).
+    import keypool
+
+    keypool.reset()  # the all-401 block above buried a/b in the shared memory
     with patch("requests.post", return_value=Mock(status_code=429,
                                                   text="x")) as post, \
             patch("time.sleep", return_value=None):
@@ -7206,6 +7405,38 @@ def t_crew():
     said = []
     daily_digest(tmp_cfg(), state, None, said.append)
     assert "2 (1 live, 1 draft)" in said[0] and state["digests"] == [today]
+
+
+def t_temp_hygiene():
+    """Run-end temp sweep: this run's trees go, fresh foreign ones stay."""
+    import os
+    import time as _time
+
+    base = Path(tempfile.gettempdir())
+    mine = Path(_mkdtemp())                  # registered -> this run's
+    (mine / "f.bin").write_bytes(b"x")
+    stale = base / "youttest_hygiene_stale"  # unregistered + old
+    keep = base / "youttest_hygiene_keep"    # unregistered + fresh
+    for d in (stale, keep):
+        d.mkdir(exist_ok=True)
+    old = _time.time() - 3 * 3600
+    os.utime(stale, (old, old))              # a crashed earlier run's tree
+    os.environ.pop("KEEP_TEST_TMP", None)
+    _clean_temp_dirs()
+    assert not mine.exists(), "this run's tree must go"
+    assert not stale.exists(), ">2h leftovers must go too"
+    assert keep.exists(), "a fresh foreign tree must stay (concurrent run)"
+    # Escape hatch: KEEP_TEST_TMP skips the sweep entirely.
+    keep2 = Path(_mkdtemp())
+    os.environ["KEEP_TEST_TMP"] = "1"
+    try:
+        _clean_temp_dirs()
+        assert keep2.exists() and _TMP_REGISTRY
+    finally:
+        os.environ.pop("KEEP_TEST_TMP", None)
+    _TMP_REGISTRY.clear()
+    keep2.rmdir()
+    keep.rmdir()
 
 
 def t_crew_watch():
@@ -7503,7 +7734,7 @@ def t_pygarnish():
                            parse_sub_file)
 
     cfg = tmp_cfg()
-    tmp = Path(tempfile.mkdtemp(prefix="youttest_"))
+    tmp = Path(_mkdtemp())
     srt = tmp / "t.srt"
     srt.write_text(
         "1\n00:00:01,000 --> 00:00:02,500\nHello world\n\n"
@@ -8162,6 +8393,7 @@ def main(argv: list[str] | None = None) -> int:
         ("longform_top", t_longform_top),
         ("meeting", t_meeting),
         ("meeting act", t_meeting_act),
+        ("meeting_act_wiring", t_meeting_act_wiring),
         ("sheet", t_sheet),
         ("longform_lane", t_longform_lane),
         ("cutpoints", t_cutpoints),
@@ -8216,6 +8448,7 @@ def main(argv: list[str] | None = None) -> int:
         ("gemini_sandwich", t_gemini_sandwich),
         ("autopost_builders", t_autopost_builders),
         ("groq_rotation", t_groq_rotation),
+        ("keypool_memory", t_keypool_memory),
         ("script_chain_groq", t_script_chain_groq),
         ("slugify", t_slugify),
         ("encoder_setting", t_encoder_setting),
@@ -8264,10 +8497,12 @@ def main(argv: list[str] | None = None) -> int:
         ("voice", t_voice),
         ("gemini_keys", t_gemini_keys),
         ("elevenlabs", t_elevenlabs),
+        ("key_env_aliases", t_key_env_aliases),
         ("youtube", t_youtube),
         ("crew", t_crew),
         ("crew_watch", t_crew_watch),
         ("key_pools", t_key_pools),
+        ("temp_hygiene", t_temp_hygiene),
         ("deps_guard", t_deps_guard),
         ("py_compat", t_py_compat),
         ("thumbnail_variants", t_thumbnail_filter_variants),
@@ -8279,21 +8514,27 @@ def main(argv: list[str] | None = None) -> int:
         ("pregen_bot", t_pregen_bot),
     ]
     print("youtproject offline smoke tests (no network, no keys, no FFmpeg)\n")
-    if only:
-        print(f"filter: {only!r} (python test_smoke.py <name-fragment> to "
-              "narrow; no argument = everything)\n")
-    matched = [t for t in tests if not only or only in t[0]]
-    if not matched:
-        print(f"No test group matches {only!r}.")
-        return 1
-    for name, fn in matched:
-        check(name, fn)
-    print(f"\n{PASS} passed, {FAIL} failed.")
-    if FAILURES:
-        print("Failures:", ", ".join(FAILURES))
-        return 1
-    print("All green — core logic is healthy.")
-    return 0
+    import time as _time
+
+    started = _time.time()
+    try:
+        if only:
+            print(f"filter: {only!r} (python test_smoke.py <name-fragment> to "
+                  "narrow; no argument = everything)\n")
+        matched = [t for t in tests if not only or only in t[0]]
+        if not matched:
+            print(f"No test group matches {only!r}.")
+            return 1
+        for name, fn in matched:
+            check(name, fn)
+        print(f"\n{PASS} passed, {FAIL} failed.")
+        if FAILURES:
+            print("Failures:", ", ".join(FAILURES))
+            return 1
+        print("All green — core logic is healthy.")
+        return 0
+    finally:
+        _clean_temp_dirs(started)
 
 
 if __name__ == "__main__":

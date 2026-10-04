@@ -13,6 +13,7 @@ import json
 import requests
 
 import keystats
+import keypool
 
 from config import Config
 from scriptgen import GeminiProvider
@@ -132,7 +133,7 @@ class OpenAICompatProvider(GeminiProvider):
         if messages is None:
             messages = [{"role": "user", "content": prompt}]
         models = [self.model] + [m for m in self.FALLBACK_MODELS if m != self.model]
-        keys = list(self.api_keys)
+        keys = keypool.live(self.name, self.api_keys)
         last_error = "no keys tried"
         for model in models:
             body: dict = {
@@ -216,6 +217,7 @@ class OpenAICompatProvider(GeminiProvider):
                     return (content, []) if raw else content
                 last_error = f"HTTP {status}: {text[:160]}"
                 if status in (401, 403):
+                    keypool.dead(self.name, key)  # every lane skips it now
                     print(f"  [{tag}] {self.name} key ...{key[-4:]} rejected — "
                           f"dropping it for this run")
                     keys.pop(index)

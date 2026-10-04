@@ -1387,7 +1387,12 @@ def cmd_meeting(cfg, args) -> int:
         return 0
     from meeting import run_meeting
 
-    executor = _execute_board_action if args.kind == "act" else None
+    # run_meeting calls back with ONE argument (the decision dict) — wrap
+    # the (cfg, args) signature, or every board action dies inside its
+    # try/except as "missing 1 required positional argument" (live bug,
+    # found 2026-10-04: `meeting act` could never execute anything).
+    executor = ((lambda decision: _execute_board_action(cfg, decision))
+                if args.kind == "act" else None)
     print(run_meeting(cfg, args.kind, urls=args.url or [],
                       rounds=args.rounds, render=args.render,
                       send=not args.no_send, executor=executor))

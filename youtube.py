@@ -16,6 +16,7 @@ from urllib.parse import parse_qs, urlparse
 import requests
 
 import keystats
+import keypool
 
 API = "https://www.googleapis.com/youtube/v3/{}"
 # 403 reasons worth burning the next key on (quota, rate, or a project
@@ -107,7 +108,7 @@ class YouTubeClient:
         return ""
 
     def _get(self, method: str, params: dict, cost: int = COST_LIST) -> dict:
-        keys = list(self.keys)
+        keys = keypool.live("youtube", self.keys)
         last = "no keys tried"
         while keys:
             key = keys.pop(0)
@@ -136,6 +137,7 @@ class YouTubeClient:
             # -> fatal at once, no key will fix it.
             if response.status_code == 400:
                 if reason == "keyInvalid":
+                    keypool.dead("youtube", key)  # remembered process-wide
                     print(f"  [yt] key ...{key[-4:]} invalid — trying next key")
                     continue
                 raise RuntimeError(f"YouTube rejected the request: {last}")

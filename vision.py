@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import keypool
 import threading
 
 import requests
@@ -97,7 +98,7 @@ def check_image(body: bytes, query: str, cfg: Config,
     """
     if not cfg.vision_qc or not body:
         return dict(PASS)
-    keys = [k for k in cfg.gemini_api_keys if k]
+    keys = keypool.live("gemini", cfg.gemini_api_keys)
     if not keys:
         return dict(PASS)
     digest = hashlib.sha1(
@@ -138,6 +139,8 @@ def check_image(body: bytes, query: str, cfg: Config,
                 tok = 0
             keystats.bump("gemini", key, req=1, tok=tok, tag="vision")
             if resp.status_code in (400, 401, 403):  # key problem: next key
+                if keypool.key_dead_like(resp.status_code, resp.text):
+                    keypool.dead("gemini", key)
                 continue
             if resp.status_code == 404:              # dead ID: next model
                 break
@@ -186,7 +189,7 @@ def subject_x(body: bytes, cfg: Config) -> float | None:
     """
     if not body:
         return None
-    keys = [k for k in cfg.gemini_api_keys if k]
+    keys = keypool.live("gemini", cfg.gemini_api_keys)
     if not keys:
         return None
     mime = "image/png" if body[:8] == b"\x89PNG\r\n\x1a\n" else "image/jpeg"
@@ -213,6 +216,8 @@ def subject_x(body: bytes, cfg: Config) -> float | None:
                 continue
             keystats.bump("gemini", key, req=1, tag="vision")
             if resp.status_code in (400, 401, 403):
+                if keypool.key_dead_like(resp.status_code, resp.text):
+                    keypool.dead("gemini", key)
                 continue
             if resp.status_code == 404:
                 break

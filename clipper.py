@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import keypool
 import re
 import shlex
 import shutil
@@ -674,6 +675,7 @@ def _whisper_request(path: Path, keys: list[str],
     seconds = chunk audio length, ledgered so `keys` can show the ~8h/day
     audio pool (the binding Groq quota for clip/parts lanes).
     """
+    keys = keypool.live("groq", keys)  # dead keys stay dead (keypool)
     last = "no keys tried"
     for key in keys:
         try:
@@ -703,6 +705,8 @@ def _whisper_request(path: Path, keys: list[str],
                 last = "non-JSON reply"
                 continue
         last = f"HTTP {response.status_code}: {response.text[:120]}"
+        if response.status_code in (401, 403):
+            keypool.dead("groq", key)  # revoked: skip it in every lane
         if response.status_code not in (429, 401, 403):
             break
     raise ClipError(f"transcription failed ({last})")
@@ -939,7 +943,7 @@ def _frame_ok(jpeg: bytes, cfg: Config) -> bool:
     """One frame -> usable verdict (fail-open True on any error)."""
     if not cfg.vision_qc:
         return True
-    keys = [k for k in cfg.gemini_api_keys if k]
+    keys = keypool.live("gemini", cfg.gemini_api_keys)
     if not keys:
         return True
     from vision import MODELS, URL
@@ -969,6 +973,8 @@ def _frame_ok(jpeg: bytes, cfg: Config) -> bool:
             # the image-pick checks (vision.py), so `keys --month` can
             # answer "how much did QC burn" vs "how much did scripting".
             keystats.bump("gemini", key, req=1, tag="vision")
+            if keypool.key_dead_like(resp.status_code, resp.text):
+                keypool.dead("gemini", key)
             if resp.status_code == 200:
                 try:
                     text = (resp.json()["candidates"][0]["content"]
