@@ -1991,6 +1991,14 @@ def cmd_desktop(cfg, args) -> int:
         books = desktop.load_playbooks(cfg)
         print(f"  learned       : {len(lessons)} lesson(s), "
               f"{len(books)} playbook(s) in work/desktop/")
+        check = desktop.connection_check(cfg, backend=args.backend)
+        if check["ok"]:
+            title = (check.get("title") or "").strip()
+            where = ((f"{title}  ({check['url']})"
+                      if title else (check["url"] or "(no page)")))
+            print(f"  connection    : ✅ connected — {where}")
+        else:
+            print(f"  connection    : ❌ {check['error']}")
         return 0
 
     if args.action == "data" and args.goal:
@@ -1999,6 +2007,9 @@ def cmd_desktop(cfg, args) -> int:
     if args.action in ("text", "shot") and args.goal:
         return _print_page(cfg, args.goal[0], args.action, args.backend,
                            args.out if hasattr(args, "out") else None)
+
+    if args.action in ("text", "shot") and not args.goal:
+        return _peek_current(cfg, args.action, args.backend)
 
     if args.action == "go":
         goal = " ".join(args.goal).strip()
@@ -2040,6 +2051,23 @@ def _print_channel_data(cfg, ref: str, backend: str | None) -> int:
     for key in ("subscribers", "videos", "views_seen"):
         if data.get(key):
             print(f"    {key:<12}: {data[key]}")
+    return 0
+
+
+def _peek_current(cfg, action: str, backend: str | None) -> int:
+    """`desktop shot|text` with no URL: look at the page already open."""
+    import desktop
+
+    got = desktop.peek(cfg, backend=backend, note=f"desktop-{action}")
+    if not got.get("ok"):
+        print(f"  [desktop] ❌ {got.get('error')}")
+        return 1
+    print(f"  {got.get('title')}  ({got.get('url')})")
+    if action == "shot":
+        print(f"  screenshot: {got.get('shot')}")
+        return 0
+    print("")
+    print((got.get("text") or "")[:4000])
     return 0
 
 

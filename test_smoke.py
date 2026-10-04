@@ -9109,6 +9109,66 @@ def t_snap_empty_channel():
         res2["errors"]
 
 
+def t_desktop_connection_check():
+    """status must answer "is it ready?" by connecting, never by guessing."""
+    import argparse
+    import io
+    from contextlib import redirect_stdout
+
+    import desktop
+    import main as main_mod
+
+    cfg = tmp_cfg()
+
+    # reachable: reports the page it found
+    page = {"https://studio.youtube.com/": {
+        "title": "YouTube Studio", "text": "", "elements": []}}
+    drv = ScriptedDriver(pages=page, url="https://studio.youtube.com/")
+    got = desktop.connection_check(cfg, driver=drv)
+    assert got["ok"] and got["title"] == "YouTube Studio", got
+    assert "studio.youtube.com" in got["url"], got
+
+    # unreachable: the error is the actionable one, not a traceback
+    class Dead(ScriptedDriver):
+        def start(self):
+            raise RuntimeError(
+                "could not reach your browser at http://127.0.0.1:9222 — "
+                "start it with Desktop Chrome.bat first (the window with "
+                "the debug port). Opera GX, Edge, Chrome, Brave, Vivaldi "
+                "all work; Edge is already on every Windows machine.")
+
+    got = desktop.connection_check(cfg, driver=Dead())
+    assert got["ok"] is False and "Desktop Chrome.bat" in got["error"], got
+
+    # status prints the live verdict (offline in CI this is the honest ❌)
+    ns = argparse.Namespace(action="status", goal=[], backend=None,
+                            max_hands=False, max_steps=None, no_hands=False,
+                            url=None)
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = main_mod.cmd_desktop(cfg, ns)
+    assert rc == 0, rc
+    assert "connection" in buf.getvalue(), buf.getvalue()
+
+
+def t_desktop_peek_current():
+    """`desktop shot|text` with no URL looks at the page already open."""
+    import desktop
+
+    cfg = tmp_cfg()
+    page = {"https://studio.youtube.com/": {
+        "title": "Studio home", "text": "Channel dashboard 1.2K views",
+        "elements": [{"i": 0, "tag": "button", "role": "button",
+                      "name": "Create"}]}}
+    drv = ScriptedDriver(pages=page, url="https://studio.youtube.com/")
+    got = desktop.peek(cfg, driver=drv, note="test-peek")
+    assert got["ok"] and got["title"] == "Studio home", got
+    assert got["shot"] and Path(got["shot"]).exists(), got
+    assert "dashboard" in got["text"], got
+    # peek never navigates away from wherever the user is
+    assert drv.url() == "https://studio.youtube.com/", drv.url()
+
+
 def t_desktop_channels():
     """The runtime channel store: normalize, add, dedupe, remove, merge."""
     import desktop
@@ -10404,6 +10464,8 @@ def main(argv: list[str] | None = None) -> int:
         ("desktop_bot_wiring", t_desktop_bot_wiring),
         ("desktop_launcher_browsers", t_desktop_launcher_browsers),
         ("desktop_channels", t_desktop_channels),
+        ("desktop_connection_check", t_desktop_connection_check),
+        ("desktop_peek_current", t_desktop_peek_current),
         ("desktop_settings_override", t_desktop_settings_override),
         ("desktop_no_post_apis", t_desktop_no_post_apis),
         ("temp_hygiene", t_temp_hygiene),
