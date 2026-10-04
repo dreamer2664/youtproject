@@ -9769,6 +9769,65 @@ def t_order_cli():
         assert lane in res.stdout, lane
 
 
+def t_process_no_console_kwargs():
+    """Console-mode media tools must not pop a window from the GUI panel."""
+    from unittest.mock import patch
+
+    import process_utils
+
+    actual = process_utils.no_console_kwargs()
+    if process_utils.os.name == "nt":
+        assert actual == {"creationflags":
+                          process_utils.subprocess.CREATE_NO_WINDOW}, actual
+    else:
+        assert actual == {}, actual
+
+    # Exercise the Windows branch even on Linux CI; always use the real
+    # Windows flag value so the contract is checked, not just truthiness.
+    with patch.object(process_utils.os, "name", "nt"), \
+         patch.object(process_utils.subprocess, "CREATE_NO_WINDOW",
+                      0x08000000, create=True):
+        assert process_utils.no_console_kwargs() == {
+            "creationflags": 0x08000000}
+
+
+def t_ffmpeg_windows_no_window_calls():
+    """The real FFmpeg runner and clip probe forward the Windows flag."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import assembler
+    import clipper
+
+    expected = {"creationflags": 0x08000000}
+    seen = {}
+
+    class _Proc:
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return "", ""
+
+    def popen(*args, **kwargs):
+        seen["popen"] = kwargs
+        return _Proc()
+
+    with patch.object(assembler, "no_console_kwargs", lambda: expected), \
+         patch.object(assembler.subprocess, "Popen", popen):
+        assembler.run(["ffmpeg", "-version"], "smoke-test")
+    assert seen["popen"].get("creationflags") == 0x08000000, seen
+
+    def run(*args, **kwargs):
+        seen["run"] = kwargs
+        return SimpleNamespace(stderr="Video: h264, 1920x1080, 30 fps",
+                               stdout="", returncode=1)
+
+    with patch.object(clipper, "no_console_kwargs", lambda: expected), \
+         patch.object(clipper.subprocess, "run", run):
+        assert clipper.probe_dims(Path("fixture.mp4")) == (1920, 1080)
+    assert seen["run"].get("creationflags") == 0x08000000, seen
+
+
 def t_order_runner_accepts_strings():
     """Regression: order passed str(log), but default_runner used .parent.
 
@@ -10994,6 +11053,8 @@ def main(argv: list[str] | None = None) -> int:
         ("order_plan", t_order_plan),
         ("order_targets", t_order_targets),
         ("order_cli", t_order_cli),
+        ("process_no_console_kwargs", t_process_no_console_kwargs),
+        ("ffmpeg_windows_no_window_calls", t_ffmpeg_windows_no_window_calls),
         ("order_runner_accepts_strings", t_order_runner_accepts_strings),
         ("order_dry_run_and_viral_plan", t_order_dry_run_and_viral_plan),
         ("desktop_safety", t_desktop_safety),

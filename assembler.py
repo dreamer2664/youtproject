@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 from config import Config
+from process_utils import no_console_kwargs
 
 # Kept silence at the START/END of each TTS clip after trimming the
 # engine's baked-in padding. edge-tts ships ~0.10s head + ~0.30s tail of
@@ -110,7 +111,8 @@ def run(cmd: list[str], what: str, heartbeat_every: float = 30.0) -> None:
     """
     start = time.monotonic()
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True)
+                            stderr=subprocess.PIPE, text=True,
+                            **no_console_kwargs())
     while True:
         try:
             _, err = proc.communicate(timeout=heartbeat_every)
@@ -156,6 +158,7 @@ def ffprobe_duration(path: Path) -> float:
         ],
         capture_output=True,
         text=True,
+        **no_console_kwargs(),
     )
     if out.returncode != 0:
         raise AssemblyError(f"ffprobe could not read {path.name}: {out.stderr.strip()}")
@@ -277,6 +280,7 @@ def _encoder_selftest(name: str) -> bool:
         probe = subprocess.run(
             ["ffmpeg", "-hide_banner", "-encoders"],
             capture_output=True, text=True, timeout=15,
+            **no_console_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -288,6 +292,7 @@ def _encoder_selftest(name: str) -> bool:
              "-i", "testsrc=duration=1:size=320x240:rate=10",
              "-c:v", encoder, *_ENCODER_ARGS[name][1], "-f", "null", "-"],
             capture_output=True, timeout=60,
+            **no_console_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -879,6 +884,7 @@ def _ffmpeg_has_filter(name: str) -> bool:
             ["ffmpeg", "-hide_banner", "-filters"],
             capture_output=True,
             text=True,
+            **no_console_kwargs(),
         )
     except OSError:
         return False
@@ -912,6 +918,7 @@ def _drawtext_font_arg() -> str | None:
         out = subprocess.run(
             ["fc-list", ":", "family"],
             capture_output=True, text=True, timeout=15,
+            **no_console_kwargs(),
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -946,6 +953,7 @@ def drawtext_selftest(cfg: Config) -> bool | None:
              "-i", f"color=c=black:s={cfg.width}x{cfg.height}:d=1",
              "-frames:v", "1", str(bg)],
             capture_output=True,
+            **no_console_kwargs(),
         )
         if res.returncode != 0 or not bg.exists():
             return False
@@ -960,6 +968,7 @@ def drawtext_selftest(cfg: Config) -> bool | None:
                 ["ffmpeg", "-y", "-loglevel", "error", "-loop", "1",
                  "-i", str(bg), *extra, "-frames:v", "1", str(out)],
                 capture_output=True,
+                **no_console_kwargs(),
             )
             if res.returncode != 0 or not out.exists():
                 return False

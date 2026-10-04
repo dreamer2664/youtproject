@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from process_utils import no_console_kwargs
+
 CARD_SECONDS = 1.4
 
 
@@ -133,7 +135,8 @@ def build_top_video(plan: list[dict], out_path: Path, cfg,
            "-filter_complex", fc, "-map", "[outv]", "-map", "[outa]",
            *resolve_encoder_args(cfg.encoder), "-c:a", "aac", "-b:a", "160k",
            "-movflags", "+faststart", str(out_path)]
-    subprocess.run(cmd, check=True, capture_output=True)
+    subprocess.run(cmd, check=True, capture_output=True,
+                   **no_console_kwargs())
     return out_path
 
 

@@ -188,7 +188,9 @@ output live, and one job runs at a time. The Publish section drives the same
 **uploads gate**: with `uploads: off` a Run stages everything and stops
 before any publish click; the header shows `uploads off`/`uploads ON` at all
 times, and with ON the Run button asks before it starts. The panel itself
-contains no upload code. If something else already holds port
+contains no upload code. On Windows, FFmpeg/ffprobe runs without opening a
+separate console for every probe/render; the app's progress and reports stay
+in the panel log. If something else already holds port
 8765 (an older local project, a dev server) the panel takes the next free
 port and opens *that* window, saying so in the console. Every panel run gets
 its own identity token, so the launcher can tell one of your projects from

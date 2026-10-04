@@ -33,6 +33,7 @@ import requests
 
 from assembler import ffprobe_duration, resolve_encoder_args
 from config import Config
+from process_utils import no_console_kwargs
 from subtitles import build_karaoke_events, filter_args, sub_style_from_cfg, write_ass
 
 MAX_CLIPS_DEFAULT = 10
@@ -298,7 +299,8 @@ def fmt_progress(done: int, total: int, speed: float,
 def probe_dims(src: Path) -> tuple[int, int]:
     """(width, height) via ffmpeg's own stream line (ffprobe-free)."""
     out = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(src)],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True,
+                         **no_console_kwargs())
     match = re.search(r", (\d{2,5})x(\d{2,5})[ ,]",
                       out.stderr or "")
     if not match:
@@ -313,7 +315,7 @@ def extract_audio(src: Path, work_dir: Path) -> Path:
         ["ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
          "-vn", "-c:a", "libopus", "-b:a", "24k", "-ar", "16000",
          "-ac", "1", str(dest)],
-        check=True, capture_output=True)
+        check=True, capture_output=True, **no_console_kwargs())
     if not dest.exists():
         raise ClipError("audio extraction produced nothing")
     return dest
@@ -634,7 +636,7 @@ def transcribe_words(audio: Path, cfg: Config,
                         ["ffmpeg", "-y", "-loglevel", "error",
                          "-ss", f"{offset:.3f}", "-t", f"{length:.3f}",
                          "-i", str(audio), "-c:a", "copy", str(chunk_path)],
-                        check=True, capture_output=True)
+                        check=True, capture_output=True, **no_console_kwargs())
                 print(f"  [clip] transcribing {int(offset//60)}:"
                       f"{int(offset%60):02d}-"
                       f"{int((offset+length)//60)}:"
@@ -1048,7 +1050,7 @@ def extract_frame(src: Path, when: float, dest: Path) -> bytes:
         ["ffmpeg", "-y", "-loglevel", "error",
          "-ss", f"{when:.3f}", "-i", str(src),
          "-frames:v", "1", "-q:v", "4", str(dest)],
-        check=True, capture_output=True)
+        check=True, capture_output=True, **no_console_kwargs())
     return dest.read_bytes()
 
 
@@ -1237,7 +1239,8 @@ def render_clip(src: Path, cand: Candidate, words: list[dict],
         "-threads", "4", "-c:a", "aac", "-b:a", "160k",
         "-movflags", "+faststart", str(out_path),
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    subprocess.run(cmd, check=True, capture_output=True,
+                   **no_console_kwargs())
     return out_path
 
 

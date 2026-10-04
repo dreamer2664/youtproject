@@ -22,6 +22,8 @@ from __future__ import annotations
 import io
 from pathlib import Path
 
+from process_utils import no_console_kwargs
+
 SAMPLE_TEXT = "Why zebras have stripes - the REAL reason"
 HIGHLIGHT_WORD = "REAL"        # the word shown in karaoke gold
 
@@ -174,7 +176,8 @@ def probe_duration(src: Path) -> float:
         out = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "csv=p=0", str(src)],
-            check=True, capture_output=True, text=True, timeout=30)
+            check=True, capture_output=True, text=True, timeout=30,
+            **no_console_kwargs())
         return float(out.stdout.strip())
     except Exception:  # noqa: BLE001 - preview must never crash on this
         return 0.0

@@ -28,6 +28,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from process_utils import no_console_kwargs
+
 SILENCE_DB = -30          # quieter than this counts as a pause
 SILENCE_MIN = 0.2         # shortest silence silencedetect reports (s)
 PAUSE_ONLY_MIN = 0.45     # a pause with no sentence end must be this long
@@ -189,7 +191,8 @@ def detect_silences(src: Path, duration: float = 0.0,
            "-f", "null", "-"]
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
-                              timeout=600, errors="replace")
+                              timeout=600, errors="replace",
+                              **no_console_kwargs())
     except Exception:  # noqa: BLE001 - pauses are an upgrade, not a need
         return []
     return parse_silences(proc.stderr or "", duration)
