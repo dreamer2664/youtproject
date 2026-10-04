@@ -249,7 +249,7 @@ python main.py autopost --publish --title "..." --desc "..."
 ```powershell
 # Windows: just double-click  Start Panel.bat   (no terminal, app-style window)
 python main.py panel                 # same thing by hand; opens your browser
-python main.py panel --port 9000     # if 8765 is busy
+python main.py panel --port 9000     # pin the port (8765, else next free)
 python main.py panel --no-browser    # start it, open the page yourself
 ```
 
@@ -270,6 +270,11 @@ What each button actually runs (nothing new — same commands as above):
 One job at a time, output streams live, `■ stop` stops it. The panel binds
 127.0.0.1 (this machine only) and **cannot post** — there is no button for
 publishing anywhere in it.
+
+Port 8765 already taken by something else (an older project)? The launcher
+probes `/api/state` to recognise *this* panel, then opens the port it really
+bound — it can never open a stranger's page, and a second double-click just
+re-opens the existing window.
 
 ---
 

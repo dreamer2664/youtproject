@@ -176,7 +176,10 @@ the next queued one), the **boardroom** (run it, dry-run it, read minutes,
 or chat with any seat), plus snapshots, keys, queue, kits, errors.
 Every button runs exactly the command you would have typed, streams its
 output live, and one job runs at a time. No button here can post anything —
-uploading stays manual, by design.
+uploading stays manual, by design. If something else already holds port
+8765 (an older local project, a dev server), the panel quietly takes the
+next free port and opens *that* window — the launcher recognises its own
+server by probing `/api/state`, so it can never show you another program.
 
 ```
 python main.py panel                  # the same thing from a terminal

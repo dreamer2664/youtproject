@@ -7838,9 +7838,15 @@ def t_panel_files():
                    'id="links-pending"', 'id="chat-send"'):
         assert needle in html, needle
     bat = (root / "Start Panel.bat").read_text(encoding="utf-8")
-    for needle in ("panel.py --no-browser", "msedge.exe", "chrome.exe",
-                   "pythonw.exe", "--app=%URL%"):
+    for needle in ("panel.py --app-window", "pythonw.exe", 'start "" /min'):
         assert needle in bat, needle
+    # NO bare "is the port open?" check: that is what opened the owner's
+    # OLDER project's window on 2026-10-04 (both projects used 8765).
+    assert "TcpClient" not in bat
+    pysrc = (root / "panel.py").read_text(encoding="utf-8")
+    for needle in ("--app-window", "probe_ours", "existing_panel_url",
+                   "panel_port.txt", "msedge.exe", "chrome.exe", "--app="):
+        assert needle in pysrc, needle
     res = subprocess.run(
         [sys.executable, str(root / "main.py"), "panel", "--help"],
         capture_output=True, text=True, timeout=120, cwd=str(root))
@@ -7854,6 +7860,147 @@ def t_panel_files():
         capture_output=True, text=True, timeout=120, cwd=str(root))
     assert res.returncode == 0, res.stderr[-300:]
     assert "--no-browser" in res.stdout and "--host" in res.stdout
+    assert "--app-window" in res.stdout
+
+
+def t_panel_launch():
+    """The launcher must identify OUR panel — never open a stranger's window.
+
+    Regression, 2026-10-04: the owner also runs an older project on the
+    same port range; Start Panel.bat checked only "does 8765 answer?",
+    so a double-click skipped our server and opened the OTHER project.
+    """
+    import json as _json
+    import threading
+    import time as _time
+    import unittest.mock as mock
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    import panel
+
+    class _Base(BaseHTTPRequestHandler):
+        body = b"{}"
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(self.body)))
+            self.end_headers()
+            self.wfile.write(self.body)
+
+        def log_message(self, *a):  # keep the suite quiet
+            pass
+
+    class Foreign(_Base):                     # the older project's server
+        body = b'{"ok": true, "project": "older-board"}'
+
+    class Ours(_Base):                        # /api/state exactly as we serve
+        body = _json.dumps({"snapshot": {"keys": {}},
+                            "runner": {}}).encode()
+
+    def spin(handler):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        return srv, srv.server_address[1]
+
+    cfg = tmp_cfg()
+    foreign, fport = spin(Foreign)
+    ours, oport = spin(Ours)
+    try:
+        assert panel.probe_ours("127.0.0.1", fport) is False   # not ours
+        assert panel.probe_ours("127.0.0.1", oport) is True    # ours
+
+        # The exact bug: a stranger on the recorded port opens NO window.
+        panel.write_port_file(cfg, fport)
+        assert panel.read_port_file(cfg) == fport
+        assert panel.existing_panel_url(cfg) is None
+
+        # Our own live panel -> its URL, and NOT a second server.
+        panel.write_port_file(cfg, oport)
+        url = f"http://127.0.0.1:{oport}/"
+        assert panel.existing_panel_url(cfg) == url
+        opened = []
+        with mock.patch.object(panel, "open_app_window",
+                               lambda u: opened.append(u) or True), \
+             mock.patch.object(panel, "serve",
+                               side_effect=AssertionError("must not start")):
+            assert panel.launch(cfg) == 0
+        assert opened == [url], opened
+
+        # Dead panel behind the port file -> cold start, app window mode.
+        ours.shutdown(); ours.server_close()
+        assert panel.existing_panel_url(cfg) is None
+        started = []
+        with mock.patch.object(panel, "open_app_window",
+                               lambda u: opened.append(u) or True), \
+             mock.patch.object(panel, "serve",
+                               lambda *a, **k: started.append(k) or 0):
+            assert panel.launch(cfg) == 0
+        assert started and started[0]["app_window"] is True
+        assert started[0]["open_browser"] is False
+    finally:
+        foreign.shutdown(); foreign.server_close()
+
+    # A LIVE stranger on the recorded port -> WE start our own panel.
+    foreign2, f2port = spin(Foreign)
+    try:
+        panel.write_port_file(cfg, f2port)
+        opened2, started2 = [], []
+        with mock.patch.object(panel, "open_app_window",
+                               lambda u: opened2.append(u) or True), \
+             mock.patch.object(panel, "serve",
+                               lambda *a, **k: started2.append(k) or 0):
+            assert panel.launch(cfg) == 0
+        assert started2 and not opened2, (started2, opened2)
+    finally:
+        foreign2.shutdown(); foreign2.server_close()
+
+    # open_app_window: --app= where a Chromium browser exists, tab otherwise.
+    argv = []
+
+    class FakeProc:
+        def __init__(self, cmd, **kwargs):
+            argv.append(cmd)
+
+    with mock.patch.object(panel, "browser_candidates",
+                           lambda: ["msedge.exe"]), \
+         mock.patch.object(panel.subprocess, "Popen", FakeProc):
+        assert panel.open_app_window("http://127.0.0.1:9999/") is True
+    assert argv and argv[0][1] == "--app=http://127.0.0.1:9999/", argv
+    tabs = []
+    with mock.patch.object(panel, "browser_candidates", lambda: []), \
+         mock.patch.object(panel.webbrowser, "open",
+                           lambda u: tabs.append(u) or True):
+        assert panel.open_app_window("http://127.0.0.1:9999/") is False
+    assert tabs == ["http://127.0.0.1:9999/"]
+
+    # serve() records the port it REALLY bound (and its window follows it):
+    # 45990 is "taken" by a stranger, so everything must say 45991.
+    seen = {}
+
+    class FakeHTTPD:
+        def __init__(self, addr, handler):
+            _host, p = addr
+            if p == 45990:
+                raise OSError("address in use")
+            seen["port"] = p
+
+        def serve_forever(self):
+            seen["file"] = panel.read_port_file(cfg)
+
+        def server_close(self):
+            seen["closed"] = True
+
+    with mock.patch.object(panel, "ThreadingHTTPServer", FakeHTTPD), \
+         mock.patch.object(panel, "open_app_window",
+                           lambda u: seen.setdefault("url", u) or True):
+        rc = panel.serve(cfg, host="127.0.0.1", port=45990,
+                         open_browser=False, app_window=True)
+        assert rc == 0, rc
+        _time.sleep(0.6)       # the window timer (0.4s) must land in-patch
+    assert seen.get("port") == 45991 and seen.get("file") == 45991, seen
+    assert seen.get("url") == "http://127.0.0.1:45991/", seen
+    assert seen.get("closed") and panel.read_port_file(cfg) is None
 
 
 def t_meeting_event_stream():
@@ -9045,6 +9192,7 @@ def main(argv: list[str] | None = None) -> int:
         ("panel_chat", t_panel_chat),
         ("panel_state", t_panel_state),
         ("panel_files", t_panel_files),
+        ("panel_launch", t_panel_launch),
         ("temp_hygiene", t_temp_hygiene),
         ("deps_guard", t_deps_guard),
         ("py_compat", t_py_compat),
