@@ -403,6 +403,8 @@ def t_bot_parser():
     assert parse_incoming("sharks")[0] == "topic"
     assert parse_incoming("/weird") == ("help", "")
     assert parse_incoming("/new ")[0] == "help"
+    assert parse_incoming("/night") == ("night", "")
+    assert parse_incoming("/night dry") == ("night", "dry")
 
 
 # --------------------------------------------------------------------------
@@ -8003,6 +8005,123 @@ def t_panel_launch():
     assert seen.get("closed") and panel.read_port_file(cfg) is None
 
 
+def t_nightbatch():
+    """Night batch: plan, run/resume/fresh, lock, report — all offline."""
+    import subprocess
+    from unittest import mock
+
+    import nightbatch as nb
+    from sheet import append_sheet
+
+    cfg = tmp_cfg()
+    append_sheet(cfg.sources_sheet, "https://youtu.be/nb-test-1")
+
+    with mock.patch.object(nb, "telegram_ready", lambda c: True):
+        steps, notes = nb.plan_steps(cfg, clips=2, count=2, seconds=45,
+                                     style="cartoon", image_provider="stock",
+                                     max_clips=6)
+    assert [s["id"] for s in steps] == ["clip-1", "batch-1", "push"], steps
+    clip = " ".join(steps[0]["argv"])
+    assert "clip --sheet 1" in clip and "--max-clips 6" in clip
+    gen = " ".join(steps[1]["argv"])
+    assert ("batch --count 2" in gen and "--seconds 45" in gen
+            and "--style cartoon" in gen and "--image-provider stock" in gen)
+    # This lane can NEVER post: no publish verbs anywhere in any step.
+    joined = " ".join(" ".join(s["argv"]) for s in steps)
+    for banned in ("autopost", "published", "--publish", "buffer"):
+        assert banned not in joined, banned
+    # clips are capped by what the sheet actually holds
+    with mock.patch.object(nb, "telegram_ready", lambda c: False):
+        steps2, notes2 = nb.plan_steps(cfg, clips=5, count=0)
+    assert [s["id"] for s in steps2] == ["clip-1"]
+    assert any("Telegram not configured" in n for n in notes2)
+    # an empty sheet means no clip step, and the note says why
+    empty = tmp_cfg()
+    with mock.patch.object(nb, "telegram_ready", lambda c: True):
+        steps3, notes3 = nb.plan_steps(empty, clips=2, count=1)
+    assert steps3 and all(s["kind"] != "clip" for s in steps3)
+    assert any("no queued sources" in n for n in notes3)
+
+    # -- run: fake runner; the batch step fails ONCE, then succeeds --
+    calls: list = []
+    fail_once = {"pending": True}
+
+    def runner(argv, log, cwd):
+        calls.append(argv)
+        Path(log).parent.mkdir(parents=True, exist_ok=True)
+        Path(log).write_text("fake step output\n", encoding="utf-8")
+        if "batch" in argv and fail_once["pending"]:
+            fail_once["pending"] = False
+            return 1, "boom: fake quota error\n"
+        return 0, "fine\n"
+
+    sent: list = []
+    quiet = lambda *a, **k: None  # noqa: E731
+    day = "2026-10-05"
+    with mock.patch.object(nb, "telegram_ready", lambda c: True):
+        rc = nb.run(cfg, clips=2, count=2, date=day, runner=runner,
+                    notify=lambda c, txt: sent.append(txt) or True, echo=quiet)
+    assert rc == 1, rc                       # batch-1 failed
+    assert len(calls) == 3, calls            # clip, batch, push
+    assert not nb.lock_path(cfg).exists()    # lock released even on failure
+    journal = nb.load_journal(nb.journal_path(cfg, day))
+    assert journal["steps"]["clip-1"]["status"] == "done"
+    assert journal["steps"]["batch-1"]["status"] == "failed"
+    assert sent and "2/3 steps ok" in sent[0]
+    assert "generate 2 video(s)" in sent[0]          # the failed step, by name
+    assert "boom: fake quota error" in sent[0]       # its last log line
+    assert "Nothing was posted" in sent[0]
+    assert "work/nightbatch/logs" in sent[0]
+
+    # -- resume: done steps skipped, the failed one retried, now green --
+    calls.clear()
+    with mock.patch.object(nb, "telegram_ready", lambda c: True):
+        rc2 = nb.run(cfg, clips=2, count=2, date=day, runner=runner,
+                     notify=lambda c, txt: True, echo=quiet)
+    assert rc2 == 0, rc2
+    assert len(calls) == 1 and "batch" in calls[0], calls
+    journal = nb.load_journal(nb.journal_path(cfg, day))
+    assert journal["steps"]["batch-1"]["status"] == "done"
+
+    # -- fresh: ignores the journal, redoes everything --
+    calls.clear()
+    with mock.patch.object(nb, "telegram_ready", lambda c: True):
+        nb.run(cfg, clips=2, count=2, date=day, fresh=True, runner=runner,
+               notify=lambda c, txt: True, echo=quiet)
+    assert len(calls) == 3, calls
+
+    # -- lock: one runner at a time; --force overrides; release works --
+    ok1, _ = nb.acquire_lock(cfg)
+    assert ok1
+    ok2, msg = nb.acquire_lock(cfg)
+    assert not ok2 and "night batch" in msg
+    ok3, _ = nb.acquire_lock(cfg, force=True)
+    assert ok3
+    nb.release_lock(cfg)
+    assert not nb.lock_path(cfg).exists()
+    calls.clear()
+    nb.acquire_lock(cfg)
+    rc3 = nb.run(cfg, date=day, runner=runner, echo=quiet)
+    assert rc3 == 2 and not calls              # refused while locked
+    nb.release_lock(cfg)
+
+    # -- dry run: prints the plan, runs nothing, leaves no lock --
+    calls.clear()
+    rc4 = nb.run(cfg, clips=1, count=1, date=day, dry_run=True,
+                 runner=runner, echo=quiet)
+    assert rc4 == 0 and not calls and not nb.lock_path(cfg).exists()
+
+    # -- the CLI and the launcher really exist --
+    root = Path(__file__).resolve().parent
+    res = subprocess.run(
+        [sys.executable, str(root / "main.py"), "nightbatch", "--help"],
+        capture_output=True, text=True, timeout=120, cwd=str(root))
+    assert res.returncode == 0, res.stderr[-300:]
+    assert "--dry-run" in res.stdout and "--fresh" in res.stdout
+    bat = (root / "Night Batch.bat").read_text(encoding="utf-8")
+    assert "main.py nightbatch" in bat and "schtasks" in bat
+
+
 def t_meeting_event_stream():
     """run_meeting emits agenda -> turns -> decision (and survives a dead
     listener) — the panel's live room is built on exactly this."""
@@ -9193,6 +9312,7 @@ def main(argv: list[str] | None = None) -> int:
         ("panel_state", t_panel_state),
         ("panel_files", t_panel_files),
         ("panel_launch", t_panel_launch),
+        ("nightbatch", t_nightbatch),
         ("temp_hygiene", t_temp_hygiene),
         ("deps_guard", t_deps_guard),
         ("py_compat", t_py_compat),

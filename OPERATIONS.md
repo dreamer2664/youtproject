@@ -368,6 +368,48 @@ list), `/clip <id>` (pull one here). Delivery uses Telegram's own copy
 Files over 48 MB are skipped with a reason (Telegram caps bot files at
 50 MB).
 
+## The night batch (unattended runs)
+
+When you run several channels, the per-video minutes stop being the problem —
+sitting at the PC is. `nightbatch` is one command that does the day's work on
+its own:
+
+    python main.py nightbatch [--clips N] [--count M] [--seconds S]
+                              [--style STYLE] [--image-provider ROUTE]
+                              [--dry-run] [--fresh] [--force] [--no-push]
+
+Order of work: clip the next queued sources from the sheet → generate M videos
+from the backlog → park the new clips on Telegram (`pregen --push`) → send you
+a Telegram report (steps, durations, new file counts, failures with the last
+log line). Uploads stay manual; nothing here can post.
+
+Robustness, because it is meant to run at 01:30 while you sleep:
+
+- every step is its own subprocess with its own log under
+  `work/nightbatch/logs/` — one crash can't kill the rest;
+- the journal `work/nightbatch/<date>.json` is updated after EVERY step, so
+  re-running the same day resumes: done steps are skipped, failed ones retried
+  (`--fresh` redoes everything);
+- a lock file refuses a second batch at the same time (a crashed run's lock
+  goes stale after 6 h, or take it with `--force`);
+- the report names failures with the failing log's last line, so you know
+  whether it was quota, network or a dud source.
+
+Schedule it (Windows, once):
+
+    schtasks /Create /TN "youtproject night batch" /TR "\"%~dp0Night Batch.bat\"" /SC DAILY /ST 01:30 /F
+
+Then open Task Scheduler → the task → tick **"Wake the computer to run this
+task"** and **"Run task as soon as possible after a scheduled start is
+missed"**. A laptop that sleeps plugged-in will wake, batch, and go back to
+sleep. Check `work/nightbatch/console.log` for the raw output.
+
+From the phone: `/night` starts it, `/night dry` previews the plan.
+
+A sane starting cadence for ~8 channels (clips carry the views, per your own
+numbers): `--clips 3 --count 1` ≈ 45–60 min of unattended work producing
+~20–30 clips + 1 generated video a night.
+
 ## Channel stats (snap — all your channels, one command)
 
 ```bash

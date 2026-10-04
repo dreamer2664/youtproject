@@ -190,6 +190,36 @@ python main.py panel --host 0.0.0.0   # reachable from your phone on the LAN (re
 `sources/sheet.csv` is the links list the panel manages; the board and the
 clip lanes already read it, so nothing is duplicated anywhere.
 
+### The night batch (unattended)
+
+With several channels, the day's generating does not need *you* — it needs
+your PC to be on. One command runs the whole shift and reports to Telegram:
+
+```
+python main.py nightbatch                    # 2 clips + 2 videos + park + report
+python main.py nightbatch --clips 3 --count 1 --seconds 45 --image-provider stock
+python main.py nightbatch --dry-run          # show the plan, spend nothing
+```
+
+It clips the next queued sources from the sheet (~10 min each, up to 10 clips
+per source), generates videos from the topic backlog, parks new clips on
+Telegram (`pregen --push`), and messages you the report. Every step runs in
+its own process with its own log (`work/nightbatch/logs/`), the journal
+(`work/nightbatch/<date>.json`) is written after each step, so re-running the
+same day resumes instead of redoing — a crash costs one step, not the night.
+**Nothing in it can post**: no Buffer, no autopost, no publish path.
+
+Windows: double-click **`Night Batch.bat`**, or schedule it once and let it
+run while you sleep:
+
+```
+schtasks /Create /TN "youtproject night batch" /TR "\"%~dp0Night Batch.bat\"" /SC DAILY /ST 01:30 /F
+```
+
+(then in Task Scheduler tick *"Wake the computer to run this task"* if the PC
+sleeps). From your phone: **`/night`** starts it, **`/night dry`** previews
+the plan.
+
 ### Phone control (Telegram, free)
 
 Text the bot a topic from your phone, get back the finished video:

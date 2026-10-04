@@ -278,6 +278,31 @@ re-opens the existing window.
 
 ---
 
+## 7.6. The night batch (unattended — for 4+ channels)
+
+```powershell
+python main.py nightbatch              # clip queue + generate + park + report
+python main.py nightbatch --dry-run    # plan only, nothing spent
+python main.py nightbatch --fresh      # redo every step (ignore the journal)
+```
+
+What one run does, in order: **clip** the next queued sheet sources (each
+≈10 min → up to 10 clips), **generate** `--count` videos from the backlog,
+**park** new clips on Telegram (`pregen --push`), **report** to Telegram.
+Steps run as separate processes with logs in `work/nightbatch/logs/`; the
+journal `work/nightbatch/<date>.json` makes re-runs resume (done steps are
+skipped). One runner at a time — the lock refuses a second batch (`--force`
+overrides). It cannot post anything.
+
+Windows: double-click `Night Batch.bat`, or schedule nightly:
+
+```powershell
+schtasks /Create /TN "youtproject night batch" /TR "\"%~dp0Night Batch.bat\"" /SC DAILY /ST 01:30 /F
+```
+
+Tick *"Wake the computer to run this task"* in Task Scheduler if the PC
+sleeps. From Telegram: `/night` starts it, `/night dry` shows the plan.
+
 ## 8. Your phone (Telegram)
 
 ```powershell
