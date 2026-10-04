@@ -2148,6 +2148,10 @@ def cmd_order(cfg, args) -> int:
     order = orders.parse_order(text)
     if args.channels:
         order["channels"] = args.channels
+    if getattr(args, "dry_run", False):
+        order["dry"] = True
+    if getattr(args, "plan_only", False):
+        order["plan_only"] = True
     print(BANNER)
     print(orders.plan_text(cfg, order))
     if args.plan_only:

@@ -9760,13 +9760,104 @@ def t_order_cli():
     assert res.returncode == 0, (res.returncode, res.stdout[-500:],
                                  res.stderr[-500:])
     assert "Only Channel" in res.stdout, res.stdout[-800:]
-    assert "staged only" in res.stdout, res.stdout[-800:]
+    assert "PLAN ONLY: nothing runs" in res.stdout, res.stdout[-800:]
 
     res = subprocess.run([_sys.executable, "main.py", "--help"],
                          capture_output=True, text=True, timeout=60,
                          cwd=str(root))
     for lane in ("order", "desktop", "browser"):
         assert lane in res.stdout, lane
+
+
+def t_order_runner_accepts_strings():
+    """Regression: order passed str(log), but default_runner used .parent.
+
+    Before the fix, the step returned rc=-1 with
+    AttributeError("'str' object has no attribute 'parent'") before the
+    subprocess was even started. Paths and strings are both valid inputs.
+    """
+    import io
+    import sys
+    from contextlib import redirect_stdout
+
+    from nightbatch import default_runner
+
+    cfg = tmp_cfg()
+    log = cfg.root / "work" / "post" / "runner-smoke.log"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc, tail = default_runner(
+            [sys.executable, "-c", "print('runner-path-ok')"],
+            str(log), str(cfg.root))
+    assert rc == 0, tail
+    assert "runner-path-ok" in tail and "runner-path-ok" in buf.getvalue()
+    assert "runner-path-ok" in log.read_text(encoding="utf-8")
+
+    # The other caller's native Path form remains supported too.
+    rc, tail = default_runner(
+        [sys.executable, "-c", "print('runner-path-object-ok')"],
+        log, cfg.root)
+    assert rc == 0 and "runner-path-object-ok" in tail, tail
+
+
+def t_order_dry_run_and_viral_plan():
+    """CLI flags and "most viral" preference must be visible and honest."""
+    import argparse
+    import io
+    from contextlib import redirect_stdout
+    from unittest.mock import patch
+
+    import main as main_mod
+    import orders
+
+    sentence = ("get a link from the database, get 5 clips and post them in "
+                "5 channels, choose the most viral ones")
+    cfg = tmp_cfg(desktop={"uploads": "on", "channels": [
+        {"name": "One", "studio_url": "https://studio.youtube.com/channel/UC1"},
+        {"name": "Two", "studio_url": "https://studio.youtube.com/channel/UC2"},
+        {"name": "Three", "studio_url": "https://studio.youtube.com/channel/UC3"},
+        {"name": "Four", "studio_url": "https://studio.youtube.com/channel/UC4"},
+        {"name": "Five", "studio_url": "https://studio.youtube.com/channel/UC5"},
+    ]})
+    order = orders.parse_order(sentence)
+    assert order["viral_requested"] is True
+    plan = orders.plan_text(cfg, order)
+    assert "Viral preference noted" in plan and "does not over-generate" in plan
+    assert "separate pre-gen virality score" in plan
+
+    # CLI --dry-run must alter the printed plan as well as execution args.
+    captured = {}
+
+    def fake_execute(got_cfg, got_order, dry_run=False):
+        captured.update(order=got_order, dry_run=dry_run)
+        return {"ok": True, "report": "dry-run test stub"}
+
+    args = argparse.Namespace(text=[sentence], channels=0,
+                              plan_only=False, dry_run=True)
+    buf = io.StringIO()
+    with patch.object(orders, "execute", fake_execute), \
+         redirect_stdout(buf):
+        rc = main_mod.cmd_order(cfg, args)
+    out = buf.getvalue()
+    assert rc == 0 and captured["dry_run"] is True, captured
+    assert captured["order"]["dry"] is True, captured
+    assert "5. no posting this run" in out and "5. POST: enabled" not in out, out
+    assert "DRY RUN still performs the clip/generate/stage steps" in out, out
+    assert "Use --plan-only for a no-work preview" in out, out
+    assert "Viral preference noted" in out, out
+
+    # --plan-only dominates, and never calls the runner/executor.
+    args = argparse.Namespace(text=[sentence], channels=0,
+                              plan_only=True, dry_run=False)
+    buf = io.StringIO()
+    with patch.object(orders, "execute",
+                      side_effect=AssertionError("plan-only must not execute")), \
+         redirect_stdout(buf):
+        rc = main_mod.cmd_order(cfg, args)
+    out = buf.getvalue()
+    assert rc == 0 and "PLAN ONLY: nothing runs" in out, out
+    assert "normal run would publish (desktop.uploads: on)" in out, out
+    assert "5. POST: enabled" not in out, out
 
 
 def t_desktop_no_post_apis():
@@ -10903,6 +10994,8 @@ def main(argv: list[str] | None = None) -> int:
         ("order_plan", t_order_plan),
         ("order_targets", t_order_targets),
         ("order_cli", t_order_cli),
+        ("order_runner_accepts_strings", t_order_runner_accepts_strings),
+        ("order_dry_run_and_viral_plan", t_order_dry_run_and_viral_plan),
         ("desktop_safety", t_desktop_safety),
         ("desktop_lessons_playbooks", t_desktop_lessons_playbooks),
         ("desktop_prompt_and_parse", t_desktop_prompt_and_parse),

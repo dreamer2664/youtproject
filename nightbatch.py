@@ -230,15 +230,19 @@ def save_journal(path: Path, journal: dict) -> None:
 
 
 # -------------------------------------------------------------------- runner
-def default_runner(argv: list[str], log: Path,
-                   cwd: Path) -> tuple[int, str]:
+def default_runner(argv: list[str], log: str | Path,
+                   cwd: str | Path) -> tuple[int, str]:
     """Run one step, tee its output to console AND the log. Never raises.
 
     Returns (returncode, tail). A missing executable or a crash mid-step
     comes back as rc=-1 with the reason — the batch keeps its footing.
+    `log` and `cwd` accept Path or str: orders historically supplied strings
+    while nightbatch supplied Paths; normalize before touching `.parent`.
     """
     tail: list[str] = []
     try:
+        log = Path(log)
+        cwd = Path(cwd)
         log.parent.mkdir(parents=True, exist_ok=True)
         with log.open("w", encoding="utf-8", errors="replace") as fh:
             proc = subprocess.Popen(

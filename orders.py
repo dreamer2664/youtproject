@@ -43,7 +43,9 @@ def parse_order(text: str) -> dict:
     raw = re.sub(r"\s+", " ", (text or "").strip())
     low = raw.lower()
     order = {"raw": raw, "get_link": False, "clips": 0, "videos": 0,
-             "channels": 0, "post": True, "dry": False, "understood": []}
+             "channels": 0, "post": True, "dry": False,
+             "viral_requested": bool(re.search(r"\b(viral|virality)\b", low)),
+             "understood": []}
 
     num = r"(\d{1,2})"
     match = re.search(num + r"\s+clips?\b", low) or re.search(
@@ -123,7 +125,17 @@ def plan_text(cfg, order: dict) -> str:
                      "config.yaml, or: python main.py desktop channels add "
                      "\"Name\" <studio link>) — packets will be staged in "
                      "work/post/ only")
-    if order["post"] and not order["dry"]:
+    if order.get("plan_only"):
+        if not order["post"] or total <= 0:
+            suffix = "this order requests no posting"
+        elif not channels:
+            suffix = "no channels configured, so a normal run cannot post"
+        elif conf["uploads"]:
+            suffix = "normal run would publish (desktop.uploads: on)"
+        else:
+            suffix = "normal run would stage only (desktop.uploads: off)"
+        lines.append(f"5. PLAN ONLY: nothing runs; {suffix}")
+    elif order["post"] and not order["dry"]:
         if conf["uploads"]:
             lines.append("5. POST: enabled (desktop.uploads: on) — the "
                          "browser lane will upload and publish/schedule")
@@ -132,9 +144,26 @@ def plan_text(cfg, order: dict) -> str:
                          "the browser lane stops at the publish button")
     else:
         lines.append("5. no posting this run (staged only)")
+    if order.get("viral_requested"):
+        lines.append("")
+        lines.append("⚠️ Viral preference noted: the clipper already asks its "
+                     "moment-picker for the strongest standalone hooks/stories. "
+                     "This order does not over-generate candidates or use the "
+                     "separate pre-gen virality score to filter them; that score "
+                     "is a heuristic, not a view prediction.")
+    if order.get("plan_only"):
+        lines.append("")
+        lines.append("PLAN ONLY: no clip/generate/post steps run and no files "
+                     "are changed.")
+    elif order.get("dry"):
+        lines.append("")
+        lines.append("DRY RUN still performs the clip/generate/stage steps above "
+                     "but suppresses the browser post. Use --plan-only for a "
+                     "no-work preview; configured providers may still use "
+                     "quota during processing.")
     lines.append("")
-    lines.append("Nothing is charged and nothing is posted until the plan "
-                 "says so above.")
+    lines.append("No publish click happens unless step 5 explicitly says "
+                 "POST: enabled.")
     return "\n".join(lines)
 
 
@@ -301,7 +330,7 @@ def execute(cfg, order: dict, dry_run: bool = False, runner=None,
         log = Path(cfg.root) / "work" / "post" / f"{day}-{len(result['steps'])}.log"
         log.parent.mkdir(parents=True, exist_ok=True)
         echo(f"  [orders] ▶ {label}")
-        rc, tail = runner(argv, str(log), str(cfg.root))
+        rc, tail = runner(argv, log, cfg.root)
         result["steps"].append({"label": label, "rc": rc,
                                 "log": str(log), "tail": tail[-400:]})
         echo(f"  [orders] {'✅' if rc == 0 else '❌'} {label} (rc={rc})")
