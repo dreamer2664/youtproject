@@ -3,8 +3,9 @@
 This is the lane that does what the Data API cannot: it opens real pages,
 click, types, reads, and screenshots what it sees. Two backends:
 
-  * "chrome"  — connects to the user's REAL Chrome over the DevTools port
-                (`Desktop Chrome.bat` starts it). The window is visible: the
+  * "chrome"  — connects to the user's REAL browser over the DevTools port
+                (`Desktop Chrome.bat` starts it — any Chromium browser: Opera
+                GX, Edge, Chrome, Brave, Vivaldi). The window is visible: the
                 user watches the AI work. Logins live in that profile, so
                 Studio is reachable when the user says so.
   * "browser" — a private headless Chromium (no logins, read-only work).
@@ -357,8 +358,10 @@ class PlayDriver(BaseDriver):
                 self._browser = self._pw.chromium.connect_over_cdp(url)
             except Exception as exc:  # noqa: BLE001 - say the fix
                 raise RuntimeError(
-                    f"could not reach your Chrome at {url} — start it with "
-                    "Desktop Chrome.bat first (the window with the debug port)"
+                    f"could not reach your browser at {url} — start it with "
+                    "Desktop Chrome.bat first (the window with the debug "
+                    "port). Opera GX, Edge, Chrome, Brave, Vivaldi all work; "
+                    "Edge is already on every Windows machine."
                 ) from exc
             contexts = self._browser.contexts
             self._context = contexts[0] if contexts else self._browser.new_context()
@@ -487,6 +490,80 @@ class PlayDriver(BaseDriver):
 
 def make_driver(cfg, backend: str | None = None) -> BaseDriver:
     return PlayDriver(cfg, backend=backend)
+
+
+def find_browsers() -> list[dict]:
+    """Chromium-based browsers this machine has, best-effort (never raises).
+
+    Any of them can drive the desktop lane — Chrome, Opera GX, Edge, Brave,
+    Vivaldi, plain Chromium. Edge is the reliable fallback on Windows
+    because it ships with the OS.
+    """
+    import os
+    import shutil
+
+    found: list[dict] = []
+    seen: set[str] = set()
+
+    def add(name: str, path: str) -> None:
+        try:
+            real = os.path.expandvars(os.path.expanduser(path))
+        except Exception:  # noqa: BLE001
+            return
+        key = real.lower()
+        if key in seen or not os.path.exists(real):
+            return
+        seen.add(key)
+        found.append({"name": name, "path": real})
+
+    local = os.environ.get("LOCALAPPDATA", "")
+    pf = os.environ.get("PROGRAMFILES", "")
+    pf86 = os.environ.get("PROGRAMFILES(X86)", "")
+    windows_candidates = [
+        ("Opera GX", os.path.join(local, "Programs", "Opera GX", "opera.exe")),
+        ("Opera GX", os.path.join(local, "Programs", "Opera GX", "launcher.exe")),
+        ("Opera GX", os.path.join(pf, "Opera GX", "opera.exe")),
+        ("Opera", os.path.join(local, "Programs", "Opera", "opera.exe")),
+        ("Opera", os.path.join(local, "Programs", "Opera", "launcher.exe")),
+        ("Opera", os.path.join(pf, "Opera", "launcher.exe")),
+        ("Edge", os.path.join(pf86, "Microsoft", "Edge", "Application",
+                              "msedge.exe")),
+        ("Edge", os.path.join(pf, "Microsoft", "Edge", "Application",
+                              "msedge.exe")),
+        ("Chrome", os.path.join(pf, "Google", "Chrome", "Application",
+                                "chrome.exe")),
+        ("Chrome", os.path.join(pf86, "Google", "Chrome", "Application",
+                                "chrome.exe")),
+        ("Chrome", os.path.join(local, "Google", "Chrome", "Application",
+                                "chrome.exe")),
+        ("Brave", os.path.join(pf, "BraveSoftware", "Brave-Browser",
+                               "Application", "brave.exe")),
+        ("Brave", os.path.join(local, "Programs", "BraveSoftware",
+                               "Brave-Browser", "Application", "brave.exe")),
+        ("Vivaldi", os.path.join(local, "Vivaldi", "Application",
+                                 "vivaldi.exe")),
+        ("Vivaldi", os.path.join(pf, "Vivaldi", "Application",
+                                 "vivaldi.exe")),
+    ]
+    for name, path in windows_candidates:
+        add(name, path)
+    for name, binary in (("Chromium", "chromium"), ("Chrome", "google-chrome"),
+                         ("Opera", "opera"), ("Edge", "microsoft-edge"),
+                         ("Brave", "brave-browser"), ("Vivaldi", "vivaldi")):
+        where = shutil.which(binary)
+        if where:
+            add(name, where)
+    for name, path in (
+            ("Chrome", "/Applications/Google Chrome.app/Contents/MacOS/"
+                       "Google Chrome"),
+            ("Edge", "/Applications/Microsoft Edge.app/Contents/MacOS/"
+                     "Microsoft Edge"),
+            ("Opera GX", "/Applications/Opera GX.app/Contents/MacOS/"
+                         "Opera GX"),
+            ("Brave", "/Applications/Brave Browser.app/Contents/MacOS/"
+                      "Brave Browser")):
+        add(name, path)
+    return found
 
 
 # --------------------------------------------------------------------------

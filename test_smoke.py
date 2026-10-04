@@ -9050,6 +9050,28 @@ def t_desktop_post_one():
     assert got["ok"] is False and "file input" in got["error"], got
 
 
+def t_desktop_launcher_browsers():
+    """The launcher accepts any Chromium browser; detection never crashes."""
+    import desktop
+
+    bat = (Path(__file__).resolve().parent / "Desktop Chrome.bat").read_bytes()
+    assert bat.isascii(), "the .bat must stay ASCII (Windows cmd on CP1252)"
+    assert b"\r\n" in bat, "the .bat must keep CRLF line endings"
+    text = bat.decode("ascii")
+    for browser in ("Opera GX", "msedge.exe", "chrome.exe", "brave.exe",
+                    "vivaldi.exe", "launcher.exe"):
+        assert browser in text, browser
+    assert "remote-debugging-port=9222" in text
+    assert "youtproject-desktop" in text          # its own profile
+    assert "%~1" in text                          # explicit path wins
+
+    found = desktop.find_browsers()
+    assert isinstance(found, list)
+    for entry in found:
+        assert Path(entry["path"]).exists(), entry
+        assert entry["name"], entry
+
+
 def t_desktop_bot_wiring():
     """/look, /order and /desk parse, and the help text advertises them."""
     import bot
@@ -10234,6 +10256,7 @@ def main(argv: list[str] | None = None) -> int:
         ("desktop_loop", t_desktop_loop),
         ("desktop_post_one", t_desktop_post_one),
         ("desktop_bot_wiring", t_desktop_bot_wiring),
+        ("desktop_launcher_browsers", t_desktop_launcher_browsers),
         ("desktop_settings_override", t_desktop_settings_override),
         ("desktop_no_post_apis", t_desktop_no_post_apis),
         ("temp_hygiene", t_temp_hygiene),

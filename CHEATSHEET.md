@@ -355,7 +355,7 @@ The desktop lane itself (your own Chrome — the window you watch):
 
 ```powershell
 python main.py desktop setup        # once: install the browser engine (~120 MB)
-Desktop Chrome.bat                  # start Chrome with the debug port; log into your channels once
+Desktop Chrome.bat                  # start your Chromium browser (Opera GX/Edge/Chrome/...) with the debug port; log in once
 python main.py desktop status       # backend, uploads gate, channels, lessons/playbooks learned
 python main.py desktop go "open youtube studio and tell me how the newest video is doing"
 python main.py desktop go "…" --no-hands     # look + plan, click nothing

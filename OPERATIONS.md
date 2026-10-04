@@ -486,7 +486,7 @@ except the final publish click. From the phone it's `/order <sentence>`.
 ### The desktop agent (`desktop …`, `/desk …`)
 
     python main.py desktop setup        # once: install the browser engine
-    Desktop Chrome.bat                  # Chrome with the debug port + its own profile
+    Desktop Chrome.bat                  # Chromium browser with the debug port + its own profile
     python main.py desktop status
     python main.py desktop go "open youtube studio and tell me how the newest video is doing"
     python main.py desktop go "…" --no-hands     # plan/screenshot only
@@ -516,8 +516,9 @@ that fail twice in a row are dropped.
 - everything is in `work/desktop/logs/*.jsonl` + `work/desktop/shots/<run>/`
   (kept 14 days), so any surprise can be reconstructed screenshot by step.
 
-**Your real browser, not a robot one:** `Desktop Chrome.bat` starts Chrome
-with `--remote-debugging-port=9222` and its own profile
+**Your real browser, not a robot one:** `Desktop Chrome.bat` starts **any
+Chromium-based browser** — Opera GX (checked first), Edge, Chrome, Brave,
+Vivaldi — with `--remote-debugging-port=9222` and its own profile
 (`%USERPROFILE%\youtproject-desktop`). Log into your channels once in that
 window; after that the agent clicks in the window you can watch. Close it any
 time — nothing is lost. `desktop.backend: browser` switches to a private

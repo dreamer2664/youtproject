@@ -289,7 +289,7 @@ The driver itself:
 
 ```
 python main.py desktop setup              # one-time: the browser engine
-Desktop Chrome.bat                        # starts Chrome with the debug port
+Desktop Chrome.bat                        # starts your Chromium browser with the debug port
 python main.py desktop status             # backend, uploads gate, channels, what it learned
 python main.py desktop go "open youtube studio and tell me how the newest video is doing"
 python main.py desktop go "…" --no-hands  # plan and screenshot, click nothing
@@ -385,7 +385,7 @@ Shorts, long-form and art styles without touching the config.
 | `wakeup.py` | wake/boot worker: check Telegram once, run a pending `/go`, hibernate again |
 | `desktop.py` | the desktop agent: drives a real browser (snapshot, click, read, screenshot, gates, lessons, playbooks) |
 | `orders.py` | plain-language orders → clips + videos + channel mapping + staged packets |
-| `Desktop Chrome.bat` | starts Chrome with the debug port so the agent can drive the window you see |
+| `Desktop Chrome.bat` | starts a Chromium browser (Opera GX, Edge, Chrome, Brave, Vivaldi) with the debug port so the agent can drive the window you see |
 | `panel.py` / `panel.html` | Click-only control panel (`Start Panel.bat`, or `main.py panel`) |
 | `autopost.py` | Buffer autopost: video hosting + TikTok/YouTube/IG drafts or scheduled posts |
 | `jarvis.py` | Channel manager brain: tasks → render + schedule + report |
