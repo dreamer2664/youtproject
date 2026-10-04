@@ -290,10 +290,11 @@ The driver itself:
 ```
 python main.py desktop setup              # one-time: the browser engine
 Desktop Chrome.bat                        # starts your Chromium browser with the debug port
-python main.py desktop status             # backend, uploads gate, channels, what it learned
+python main.py desktop status             # ...and CONNECTS to the browser to prove it is ready
 python main.py desktop go "open youtube studio and tell me how the newest video is doing"
 python main.py desktop go "…" --no-hands  # plan and screenshot, click nothing
-python main.py desktop shot               # screenshot of the current page → Telegram (/desk shot)
+python main.py desktop shot               # screenshot of the page already open → Telegram (/desk shot)
+python main.py desktop text               # read the page already open (no URL = wherever you are)
 python main.py browser data @handle       # public subscriber/video numbers, no API key, no quota
 python main.py browser shot <url>         # screenshot of any allowed page
 ```

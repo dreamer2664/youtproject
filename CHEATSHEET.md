@@ -356,10 +356,11 @@ The desktop lane itself (your own Chrome — the window you watch):
 ```powershell
 python main.py desktop setup        # once: install the browser engine (~120 MB)
 Desktop Chrome.bat                  # start your Chromium browser (Opera GX/Edge/Chrome/...) with the debug port; log in once
-python main.py desktop status       # backend, uploads gate, channels, lessons/playbooks learned
+python main.py desktop status       # settings + lessons AND a live connection test (✅/❌)
 python main.py desktop go "open youtube studio and tell me how the newest video is doing"
 python main.py desktop go "…" --no-hands     # look + plan, click nothing
-python main.py desktop shot                 # screenshot of the current page
+python main.py desktop shot                 # screenshot of the page already open (no URL needed)
+python main.py desktop text                 # read the page already open (no URL needed)
 python main.py desktop stop                 # kill switch for a running task
 python main.py desktop channels             # channels the lane can post to
 python main.py desktop channels add "MicroFeed-0" UCWKpOEGAYSgCUzJL-0fO4iQ

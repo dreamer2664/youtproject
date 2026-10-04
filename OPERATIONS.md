@@ -487,10 +487,11 @@ except the final publish click. From the phone it's `/order <sentence>`.
 
     python main.py desktop setup        # once: install the browser engine
     Desktop Chrome.bat                  # Chromium browser with the debug port + its own profile
-    python main.py desktop status
+    python main.py desktop status      # connects too: ✅ connected / ❌ with the fix
     python main.py desktop go "open youtube studio and tell me how the newest video is doing"
     python main.py desktop go "…" --no-hands     # plan/screenshot only
-    python main.py desktop shot | stop
+    python main.py desktop shot        # no URL = the page already open
+    python main.py desktop text | stop
     python main.py desktop channels [add "Name" <UC…|studio link> | remove X]
 
 How the loop works: every step it takes a **snapshot** (visible elements with
@@ -524,6 +525,17 @@ Vivaldi — with `--remote-debugging-port=9222` and its own profile
 window; after that the agent clicks in the window you can watch. Close it any
 time — nothing is lost. `desktop.backend: browser` switches to a private
 headless Chromium for read-only work (no logins).
+
+**Opera and the "new tab" landmine (playwright#21812):** Playwright asking a
+CDP-connected Opera for a *new tab* can crash it. The lane therefore never
+does: it drives the tab that is already open. Two consequences you will
+notice: keep **at least one tab open** in that window (a browser with zero
+tabs gets a clear "open one and try again" instead of being killed), and a
+follow-up search **reuses the current tab** rather than spawning a new one.
+`desktop status` ends with a live connection test — `✅ connected — <page>`
+means the agent is looking at your browser right now; `❌` prints the fix.
+If Opera ever misbehaves, `Desktop Chrome.bat msedge` runs the same lane on
+Edge (already on every Windows machine).
 
 **Channels:** the lane reads two places — `desktop.channels:` in
 config.yaml (durable) and `work/desktop/channels.json`, written by
