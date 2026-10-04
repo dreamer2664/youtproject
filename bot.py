@@ -915,7 +915,8 @@ class PhoneBot:
         """`/desk` — status/shot/log/stop/uploads for the desktop agent."""
         import desktop
 
-        cmd = (arg or "status").strip().lower()
+        raw = (arg or "status").strip()
+        cmd = raw.lower()   # command words are case-free; URLs/UC ids are NOT
         if cmd in ("", "status"):
             conf = desktop.dconf(self.cfg)
             from orders import channel_list
@@ -963,6 +964,39 @@ class PhoneBot:
             tail = logs[0].read_text(encoding="utf-8").splitlines()[-20:]
             self.send_message(chat_id,
                               f"📜 {logs[0].name}\n" + "\n".join(tail)[:3300])
+            return
+        if cmd.startswith("channels"):
+            parts = raw.split()
+            word = parts[0].lower()
+            if len(parts) == 1:
+                channels = desktop.all_channels(self.cfg)
+                if not channels:
+                    self.send_message(chat_id, "No channels yet. Add one:\n"
+                                     "/desk channels add MicroFeed-0 "
+                                     "https://studio.youtube.com/channel/UC…")
+                    return
+                lines = [f"📺 {len(channels)} channel(s):"]
+                for entry in channels:
+                    lines.append(f"• {entry['name']}"
+                                 + ("  (runtime)" if entry.get("source") == "runtime" else ""))
+                self.send_message(chat_id, "\n".join(lines))
+                return
+            sub = parts[1].lower() if len(parts) > 1 else ""
+            if sub == "add" and len(parts) >= 4:
+                name, ref = " ".join(parts[2:-1]), parts[-1]
+                ok, message = desktop.add_extra_channel(self.cfg, name, ref)
+                self.send_message(chat_id,
+                                  ("✅ " if ok else "❌ ") + message)
+                return
+            if sub == "remove" and len(parts) >= 3:
+                ok, message = desktop.remove_extra_channel(self.cfg,
+                                                         " ".join(parts[2:]))
+                self.send_message(chat_id,
+                                  ("✅ " if ok else "❌ ") + message)
+                return
+            self.send_message(chat_id, "Usage: /desk channels | /desk "
+                                       "channels add <name> <studio-url> | "
+                                       "/desk channels remove <name|UC…>")
             return
         if cmd.startswith("uploads"):
             part = cmd.split()[1] if len(cmd.split()) > 1 else ""

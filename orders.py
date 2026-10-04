@@ -119,8 +119,10 @@ def plan_text(cfg, order: dict) -> str:
                      f"channel(s): " + ", ".join(
                          c["name"] for c in channels[:max(1, want)]))
     else:
-        lines.append("4. no channels configured yet (`desktop.channels:`) — "
-                     "packets will be staged in work/post/ only")
+        lines.append("4. no channels configured yet (`desktop.channels:` in "
+                     "config.yaml, or: python main.py desktop channels add "
+                     "\"Name\" <studio link>) — packets will be staged in "
+                     "work/post/ only")
     if order["post"] and not order["dry"]:
         if conf["uploads"]:
             lines.append("5. POST: enabled (desktop.uploads: on) — the "
@@ -141,15 +143,20 @@ def plan_text(cfg, order: dict) -> str:
 
 
 def channel_list(cfg) -> list[dict]:
-    """Configured channels as [{name, slug, studio_url}] (never crashes)."""
+    """Every channel the desktop lane can post to: config.yaml entries PLUS
+    runtime ones added with `desktop channels add` (deduped by channel id)."""
+    from desktop import all_channels
+
     out = []
-    for entry in dconf(cfg)["channels"]:
-        name = str(entry.get("name") or entry.get("handle") or "").strip()
+    for entry in all_channels(cfg):
+        name = str(entry.get("name") or "").strip()
         if not name:
             continue
         slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "channel"
         out.append({"name": name, "slug": slug,
-                    "studio_url": str(entry.get("studio_url") or "").strip()})
+                    "studio_url": str(entry.get("studio_url") or "").strip(),
+                    "id": str(entry.get("id") or ""),
+                    "source": str(entry.get("source") or "")})
     return out
 
 

@@ -9050,6 +9050,92 @@ def t_desktop_post_one():
     assert got["ok"] is False and "file input" in got["error"], got
 
 
+def t_desktop_channels():
+    """The runtime channel store: normalize, add, dedupe, remove, merge."""
+    import desktop
+
+    cfg = tmp_cfg(desktop={"channels": [
+        {"name": "From Config",
+         "studio_url": "https://studio.youtube.com/channel/"
+                       "UCWKpOEGAYSgCUzJL-0fO4iQ"}]})
+
+    # normalization accepts the three real-world forms
+    assert desktop.normalize_studio_url(
+        "https://studio.youtube.com/channel/UCWKpOEGAYSgCUzJL-0fO4iQ") == \
+        "https://studio.youtube.com/channel/UCWKpOEGAYSgCUzJL-0fO4iQ"
+    assert desktop.normalize_studio_url(
+        "https://www.youtube.com/channel/UC_ii4bO3c6yR3ZsWBimB17g") == \
+        "https://studio.youtube.com/channel/UC_ii4bO3c6yR3ZsWBimB17g"
+    assert desktop.normalize_studio_url("UCwD7txMJVBN7CyfiXN73wbg") == \
+        "https://studio.youtube.com/channel/UCwD7txMJVBN7CyfiXN73wbg"
+    assert desktop.normalize_studio_url("@somehandle") == ""
+    assert desktop.normalize_studio_url("") == ""
+
+    # add: by studio link and by bare id; UC case must survive
+    ok, message = desktop.add_extra_channel(
+        cfg, "clipstudio-z0", "https://studio.youtube.com/channel/"
+                              "UCwD7txMJVBN7CyfiXN73wbg")
+    assert ok, message
+    ok, message = desktop.add_extra_channel(cfg, "Clipshift-0",
+                                            "UC_ii4bO3c6yR3ZsWBimB17g")
+    assert ok, message
+    stored = desktop.load_extra_channels(cfg)
+    ids = sorted(e["id"] for e in stored)
+    assert ids == ["UC_ii4bO3c6yR3ZsWBimB17g",
+                   "UCwD7txMJVBN7CyfiXN73wbg"], ids
+
+    # a bad reference is refused with a helpful message
+    ok, message = desktop.add_extra_channel(cfg, "Nope", "@handle")
+    assert not ok and "UC" in message, message
+
+    # re-adding the same id renames instead of duplicating
+    desktop.add_extra_channel(cfg, "Clip Studios", "UCwD7txMJVBN7CyfiXN73wbg")
+    assert len(desktop.load_extra_channels(cfg)) == 2
+
+    # merge: config entry + runtime entries; a runtime id equal to a config
+    # id must NOT appear twice (config wins)
+    desktop.add_extra_channel(cfg, "Config Duplicate",
+                              "UCWKpOEGAYSgCUzJL-0fO4iQ")
+    merged = desktop.all_channels(cfg)
+    names = [c["name"] for c in merged]
+    assert "From Config" in names and "Config Duplicate" not in names, names
+    assert len(merged) == 3, names
+    assert len([c for c in merged if c["source"] == "runtime"]) == 2
+
+    # orders sees the merged list
+    import orders
+
+    listed = orders.channel_list(cfg)
+    assert [c["name"] for c in listed][0] == "From Config", listed
+    assert sorted(c["slug"] for c in listed) == [
+        "clip-studios", "clipshift-0", "from-config"], listed
+
+    # remove (runtime only), case-free matching
+    ok, message = desktop.remove_extra_channel(cfg, "clipshift")
+    assert ok, message
+    assert [c["name"] for c in desktop.load_extra_channels(cfg)] == \
+        ["Clip Studios", "Config Duplicate"]
+    ok, message = desktop.remove_extra_channel(cfg, "from config")
+    assert not ok and "runtime" in message, message   # config entries stay
+
+    # the CLI path works end to end (cmd_desktop with a Namespace)
+    import argparse
+
+    import main as main_mod
+
+    ns = argparse.Namespace(action="channels", goal=["add", "InfoSpectrum-0",
+                                                   "UCUZXRxdXZctPU2-bKSYNr3A"],
+                            backend=None, max_steps=None, no_hands=False,
+                            url=None)
+    rc = main_mod.cmd_desktop(cfg, ns)
+    assert rc == 0, rc
+    assert any(c["name"] == "InfoSpectrum-0"
+               for c in desktop.load_extra_channels(cfg))
+    ns = argparse.Namespace(action="channels", goal=[], backend=None,
+                            max_steps=None, no_hands=False, url=None)
+    assert main_mod.cmd_desktop(cfg, ns) == 0
+
+
 def t_desktop_launcher_browsers():
     """The launcher accepts any Chromium browser; detection never crashes."""
     import desktop
@@ -10257,6 +10343,7 @@ def main(argv: list[str] | None = None) -> int:
         ("desktop_post_one", t_desktop_post_one),
         ("desktop_bot_wiring", t_desktop_bot_wiring),
         ("desktop_launcher_browsers", t_desktop_launcher_browsers),
+        ("desktop_channels", t_desktop_channels),
         ("desktop_settings_override", t_desktop_settings_override),
         ("desktop_no_post_apis", t_desktop_no_post_apis),
         ("temp_hygiene", t_temp_hygiene),

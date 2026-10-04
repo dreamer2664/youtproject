@@ -92,6 +92,120 @@ def set_setting(cfg, key: str, value) -> None:
     _save_json(settings_path(cfg), data)
 
 
+def channels_path(cfg) -> Path:
+    return work_dir(cfg) / "channels.json"
+
+
+_UC_RE = re.compile(r"(UC[A-Za-z0-9_\-]{20,24})")
+
+
+def normalize_studio_url(ref: str) -> str:
+    """Turn any acceptable channel reference into a Studio upload base URL.
+
+    Accepts https://studio.youtube.com/channel/UC… ,
+    https://www.youtube.com/channel/UC… and a bare UC… id. Returns "" for
+    anything else (handles need a lookup the CLI should not fake).
+    """
+    text = (ref or "").strip()
+    if not text:
+        return ""
+    match = _UC_RE.search(text)
+    if match:
+        return f"https://studio.youtube.com/channel/{match.group(1)}"
+    return ""
+
+
+def load_extra_channels(cfg) -> list[dict]:
+    """Channels added at runtime (`desktop channels add`) — config untouched."""
+    data = _load_json(channels_path(cfg), [])
+    if not isinstance(data, list):
+        return []
+    out = []
+    for entry in data:
+        if isinstance(entry, dict) and entry.get("name") and entry.get("id"):
+            out.append({"name": str(entry["name"]), "id": str(entry["id"]),
+                        "studio_url": str(entry.get("studio_url") or ""),
+                        "added": str(entry.get("added") or "")})
+    return out
+
+
+def _save_extra_channels(cfg, entries: list[dict]) -> None:
+    _save_json(channels_path(cfg), entries)
+
+
+def add_extra_channel(cfg, name: str, ref: str) -> tuple[bool, str]:
+    """Add one channel by name + URL/id. (ok, message)."""
+    name = re.sub(r"\s+", " ", (name or "").strip())[:60]
+    if not name:
+        return False, "give the channel a name, e.g. desktop channels add \"MicroFeed-0\" <url>"
+    match = _UC_RE.search(ref or "")
+    if not match:
+        return False, ("no channel id found — paste the Studio link "
+                       "(https://studio.youtube.com/channel/UC…), the public "
+                       "channel link, or the bare UC… id")
+    cid = match.group(1)
+    studio = normalize_studio_url(cid)
+    entries = load_extra_channels(cfg)
+    for entry in entries:
+        if entry["id"] == cid:
+            entry["name"], entry["studio_url"] = name, studio
+            _save_extra_channels(cfg, entries)
+            return True, f"updated {name} ({cid})"
+    entries.append({"name": name, "id": cid, "studio_url": studio,
+                    "added": time.strftime("%Y-%m-%dT%H:%M")})
+    _save_extra_channels(cfg, entries)
+    return True, f"added {name} ({cid})"
+
+
+def remove_extra_channel(cfg, needle: str) -> tuple[bool, str]:
+    needle = (needle or "").strip().lower()
+    if not needle:
+        return False, "usage: desktop channels remove <name or UC…>"
+    entries = load_extra_channels(cfg)
+    kept = [e for e in entries
+            if needle not in e["name"].lower() and needle not in e["id"].lower()]
+    if len(kept) == len(entries):
+        return False, f"nothing in the runtime list matches {needle!r}"
+    _save_extra_channels(cfg, kept)
+    return True, f"removed {len(entries) - len(kept)} channel(s)"
+
+
+def all_channels(cfg) -> list[dict]:
+    """Config channels first, then runtime ones — deduped by channel id.
+
+    Config entries win on a clash (they are the durable home), and the
+    runtime store makes `desktop channels add` work without touching
+    config.yaml at all.
+    """
+    merged: list[dict] = []
+    seen: set[str] = set()
+    raw = (cfg.data.get("desktop") or {}) if getattr(cfg, "data", None) else {}
+    for entry in (raw.get("channels") or []):
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or entry.get("handle") or "").strip()
+        url = str(entry.get("studio_url") or "").strip()
+        match = _UC_RE.search(url)
+        cid = match.group(1) if match else ""
+        if not name and not cid:
+            continue
+        # identity: the UC id when there is one, else the NAME. Never the URL
+        # — placeholder/base studio URLs repeat across channels and deduping
+        # on them silently ate every channel after the first.
+        key = cid or ("name:" + name.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append({"name": name or cid, "id": cid, "studio_url": url,
+                       "source": "config"})
+    for entry in load_extra_channels(cfg):
+        if entry["id"] in seen:
+            continue
+        seen.add(entry["id"])
+        merged.append({**entry, "source": "runtime"})
+    return merged
+
+
 def dconf(cfg) -> dict:
     """The `desktop:` config block with safe defaults (never crashes).
 

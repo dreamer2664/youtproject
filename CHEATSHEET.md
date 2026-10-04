@@ -361,6 +361,9 @@ python main.py desktop go "open youtube studio and tell me how the newest video 
 python main.py desktop go "…" --no-hands     # look + plan, click nothing
 python main.py desktop shot                 # screenshot of the current page
 python main.py desktop stop                 # kill switch for a running task
+python main.py desktop channels             # channels the lane can post to
+python main.py desktop channels add "MicroFeed-0" UCWKpOEGAYSgCUzJL-0fO4iQ
+python main.py desktop channels remove "MicroFeed-0"    # runtime ones only
 
 python main.py browser data @handle         # public subscriber/video numbers — no API key, no quota
 python main.py browser shot <url>           # screenshot any allowed page

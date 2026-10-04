@@ -509,7 +509,10 @@ desktop:
   visibility: unlisted                     # what the lane selects in Studio
   vision: "off"                            # "on" = send the screenshot to the model too
   max_steps: 25                            # step budget per `desktop go` goal
-  channels: []                             # one entry per channel to post to
+  # one entry per channel to post to. Alternative without editing this file:
+  #   python main.py desktop channels add "Name" <studio link or UC… id>
+  # (stored in work/desktop/channels.json; both places merge, deduped by id)
+  channels: []
     # - name: "Deep Ocean"
     #   studio_url: "https://studio.youtube.com/channel/UCxxxxxxxx"
     # - name: "Night Files"

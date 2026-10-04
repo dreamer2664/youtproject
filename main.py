@@ -1932,6 +1932,44 @@ def cmd_desktop(cfg, args) -> int:
               "python main.py desktop go \"your goal\"")
         return rc
 
+    if args.action == "channels":
+        words = list(args.goal or [])
+        sub = words[0].lower() if words else "list"
+        if sub == "list" or not words:
+            channels = desktop.all_channels(cfg)
+            if not channels:
+                print("  no channels yet. Add one:")
+                print('    python main.py desktop channels add "MicroFeed-0" '
+                      "https://studio.youtube.com/channel/UC…")
+                return 0
+            print(f"  {len(channels)} channel(s) the desktop lane can post to:")
+            for entry in channels:
+                mark = "runtime" if entry.get("source") == "runtime" else "config"
+                print(f"    - {entry['name']:<24} "
+                      f"{entry.get('id') or '(no id)'}  [{mark}]")
+            return 0
+        if sub == "add":
+            if len(words) < 3:
+                print("  usage: python main.py desktop channels add "
+                      '\"Name\" https://studio.youtube.com/channel/UC…')
+                return 1
+            name, ref = " ".join(words[1:-1]), words[-1]
+            ok, message = desktop.add_extra_channel(cfg, name, ref)
+            print(f"  [desktop] {'✅' if ok else '❌'} {message}")
+            return 0 if ok else 1
+        if sub == "remove":
+            if len(words) < 2:
+                print("  usage: python main.py desktop channels remove "
+                      "<name or UC…>")
+                return 1
+            ok, message = desktop.remove_extra_channel(cfg,
+                                                       " ".join(words[1:]))
+            print(f"  [desktop] {'✅' if ok else '❌'} {message}")
+            return 0 if ok else 1
+        print("  usage: desktop channels [list | add \"Name\" <url> | "
+              "remove <name|id>]")
+        return 1
+
     if args.action == "stop":
         desktop.request_stop()
         print("  [desktop] stop requested — the running task will end "
@@ -2628,9 +2666,10 @@ def main() -> int:
                                        "the AI in your own browser")
     p.add_argument("action",
                    choices=["go", "shot", "text", "data", "setup", "stop",
-                            "status"],
+                            "status", "channels"],
                    help="go = run a free-language goal | setup = install the "
-                        "browser engine | stop = kill switch")
+                        "browser engine | stop = kill switch | channels = "
+                        "list/add/remove posting channels")
     p.add_argument("goal", nargs="*",
                    help="for `go`: the goal in plain words; for others: url/"
                         "@handle")
