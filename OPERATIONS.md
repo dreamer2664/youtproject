@@ -532,8 +532,24 @@ does: it drives the tab that is already open. Two consequences you will
 notice: keep **at least one tab open** in that window (a browser with zero
 tabs gets a clear "open one and try again" instead of being killed), and a
 follow-up search **reuses the current tab** rather than spawning a new one.
-`desktop status` ends with a live connection test — `✅ connected — <page>`
-means the agent is looking at your browser right now; `❌` prints the fix.
+`desktop status` ends with a live connection test, in three honest flavours:
+
+| you see | it means | what to do |
+|---|---|---|
+| `✅ connected — <page>` | the agent is looking at your browser right now | nothing |
+| `⚠️ your browser IS running … but a tab did not answer` | the browser is fine, one TAB is frozen/asleep/mid-reload (Studio is heavy — this is the page, not the tool) | click/refresh that tab, run it again; the message names the tab |
+| `❌ could not reach your browser at …` | nothing is listening on the debug port | double-click `Desktop Chrome.bat` first |
+
+Every page-touching call is time-boxed (attach 6s, read 8s, screenshot 15s),
+so a sleeping tab gives you a sentence in seconds instead of a command that
+hangs forever. Opera itself snoozes background tabs — if the Studio tab is in
+the background for a long while, click it once before asking for work.
+
+**Studio speaks your language:** the lane matches controls in English AND
+Italian (`Avanti`, `Titolo`, `Pubblica`, `Non elencato`, plus the
+language-independent `PUBLIC/PRIVATE/UNLISTED` attributes), so an Italian
+Studio is driven exactly like an English one — including the publish gate.
+
 If Opera ever misbehaves, `Desktop Chrome.bat msedge` runs the same lane on
 Edge (already on every Windows machine).
 

@@ -41,15 +41,23 @@ from typing import Any, Callable
 
 DEFAULT_ALLOWED = ["youtube.com", "google.com", "googleusercontent.com"]
 
-# publish family — needs desktop.uploads: on
+# publish family — needs desktop.uploads: on. Studio speaks the ACCOUNT's
+# language: the owner's UI is Italian, where the publish button says
+# "Pubblica". Missing that spelling would have let a publish click through
+# with uploads off — English alone is not a safety net.
 COMMIT_WORDS = (
     "publish", "schedule", "go live", "post", "upload", "save", "submit",
     "confirm", "send", "make public", "set public",
+    # Italian (and close cousins): publish / schedule / save / upload
+    "pubblica", "programma", "pianifica", "salva", "carica", "invia",
 )
 # never allowed, whatever the config says
 BANNED_WORDS = (
     "delete", "remove", "trash", "buy", "purchase", "pay", "checkout",
     "subscribe", "unsubscribe", "cancel", "close account", "sign out",
+    # Italian: delete / remove / buy / subscribe / cancel
+    "elimina", "rimuovi", "cancella", "acquista", "abbonati", "disdici",
+    "annulla",
 )
 
 MAX_ELEMENTS = 120
@@ -411,6 +419,7 @@ class BaseDriver:
 
 _SNAPSHOT_JS = """
 () => {
+ try {
   const out = [];
   const els = document.querySelectorAll(
     'a, button, input, textarea, select, [role="button"], [role="tab"],' +
@@ -431,7 +440,9 @@ _SNAPSHOT_JS = """
     try { el.setAttribute('data-desk-idx', String(i)); } catch (e) {}
     out.push({i: i, tag: el.tagName.toLowerCase(),
               role: el.getAttribute('role') || el.tagName.toLowerCase(),
-              name: name, disabled: !!el.disabled});
+              name: name, disabled: !!el.disabled,
+              id: (el.id || '').slice(0, 40),
+              attr: (el.getAttribute('name') || '').slice(0, 40)});
     i += 1;
     if (i >= %d) break;
   }
@@ -439,6 +450,9 @@ _SNAPSHOT_JS = """
   try { text = (document.body.innerText || '').replace(/\\s+/g, ' ').trim(); }
   catch (e) {}
   return {elements: out, text: text.slice(0, %d)};
+ } catch (err) {
+  return {elements: [], text: '', why: String(err).slice(0, 200)};
+ }
 }
 """ % (MAX_ELEMENTS, TEXT_DIGEST_CHARS)
 
@@ -451,6 +465,12 @@ class PlayDriver(BaseDriver):
         self.cfg = cfg
         self.backend = (backend or dconf(cfg)["backend"] or "chrome").lower()
         self._timeout_ms = int(timeout_ms) if timeout_ms else None
+        # Playwright's page.evaluate() takes NO timeout - that is what hung
+        # `desktop shot` on a sleeping tab. Everything page-shaped goes
+        # through bounded primitives instead (see probe/snapshot below).
+        self._probe_ms = 4000      # "is the page awake?"
+        self._snap_ms = 8000       # reading a big page
+        self._shot_ms = 15000      # a real screenshot, PNG bytes over CDP
         self._pw = None
         self._browser = None
         self._context = None
@@ -471,17 +491,11 @@ class PlayDriver(BaseDriver):
         if self.backend == "chrome":
             url = dconf(self.cfg)["cdp_url"]
             try:
-                kwargs = {}
-                if self._timeout_ms:
-                    kwargs["timeout"] = self._timeout_ms
+                kwargs = {"timeout": self._timeout_ms or 6000}
                 self._browser = self._pw.chromium.connect_over_cdp(url, **kwargs)
-            except Exception as exc:  # noqa: BLE001 - say the fix
-                raise RuntimeError(
-                    f"could not reach your browser at {url} — start it with "
-                    "Desktop Chrome.bat first (the window with the debug "
-                    "port). Opera GX, Edge, Chrome, Brave, Vivaldi all work; "
-                    "Edge is already on every Windows machine."
-                ) from exc
+            except Exception as exc:  # noqa: BLE001 - say the RIGHT fix
+                message, busy = _reach_error(url, exc)
+                raise (BrowserBusy if busy else RuntimeError)(message) from exc
             contexts = self._browser.contexts
             if not contexts or not contexts[0].pages:
                 # Playwright issue #21812: Opera (and some Chromium builds)
@@ -499,6 +513,11 @@ class PlayDriver(BaseDriver):
                 locale="en-US", viewport={"width": 1280, "height": 900},
                 extra_http_headers={"Accept-Language": "en-US,en;q=0.9"})
             self._page = self._context.new_page()
+        try:  # clicks/fills/navigation get a real ceiling too
+            self._page.set_default_timeout(15000)
+            self._page.set_default_navigation_timeout(30000)
+        except Exception:  # noqa: BLE001
+            pass
 
     def close(self) -> None:
         try:
@@ -528,10 +547,98 @@ class PlayDriver(BaseDriver):
         except Exception:  # noqa: BLE001
             return ""
 
+    @staticmethod
+    def _one_line(exc) -> str:
+        text = str(exc).strip()
+        line = text.splitlines()[0] if text else exc.__class__.__name__
+        return line[:200]
+
+    @staticmethod
+    def title_if_fast(info: dict) -> str:
+        return str(info.get("title") or "")
+
+    def probe(self) -> dict:
+        """Liveness + title of the current page, both BOUNDED. Never raises.
+
+        `page.title()` and `page.evaluate()` have no timeout in Playwright:
+        on a tab that is asleep, crashed, or mid-reload they can block
+        forever with no output. `wait_for_function` is an action and DOES
+        take a timeout, so it is the primitive everything here builds on.
+        """
+        out = {"url": "", "title": "", "alive": False, "reason": ""}
+        try:
+            out["url"] = self._page.url or ""
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            handle = self._page.wait_for_function(
+                "() => (document.title || 'about:blank')",
+                timeout=self._probe_ms, polling=250)
+            try:
+                out["title"] = str(handle.json_value() or "")
+            finally:
+                try:
+                    handle.dispose()
+                except Exception:  # noqa: BLE001
+                    pass
+            out["alive"] = True
+        except Exception as exc:  # noqa: BLE001 - a dead tab is a fact
+            out["reason"] = self._one_line(exc)
+        return out
+
     def snapshot(self) -> dict:
-        page = self._page
-        data = page.evaluate(_SNAPSHOT_JS)
-        self._snap = {"url": page.url, "title": self.title(),
+        """Indexed visible elements + text + title, BOUNDED.
+
+        Ran through `wait_for_function` because `page.evaluate` cannot time
+        out; a page that never answers returns a clear sentence instead of
+        hanging the command.
+        """
+        info = self.probe()
+        url, title = info["url"], self.title_if_fast(info)
+        if not info["alive"]:
+            self._snap = {
+                "url": url, "title": "", "elements": [], "text": "",
+                "degraded": True,
+                "reason": (f"the page did not answer in "
+                           f"{self._probe_ms // 1000}s "
+                           f"({info['reason']}) - it is probably asleep, "
+                           f"busy, or mid-reload; click the tab once and "
+                           f"retry")}
+            return self._snap
+        data = None
+        last = ""
+        for attempt in range(2):
+            try:
+                handle = self._page.wait_for_function(
+                    _SNAPSHOT_JS, timeout=self._snap_ms, polling=250)
+                try:
+                    data = handle.json_value()
+                finally:
+                    try:
+                        handle.dispose()
+                    except Exception:  # noqa: BLE001
+                        pass
+                break
+            except Exception as exc:  # noqa: BLE001
+                last = self._one_line(exc)
+                if attempt == 0:
+                    time.sleep(0.6)   # it was probably just navigating
+        if not isinstance(data, dict):
+            self._snap = {
+                "url": url, "title": title, "elements": [], "text": "",
+                "degraded": True,
+                "reason": (f"the page kept navigating or its JS never "
+                           f"answered within {self._snap_ms // 1000}s "
+                           f"({last}) - bring the tab to the front and "
+                           f"retry")}
+            return self._snap
+        if data.get("why"):
+            self._snap = {
+                "url": url, "title": title, "elements": [], "text": "",
+                "degraded": True,
+                "reason": f"the page refused to be read: {data['why']}"}
+            return self._snap
+        self._snap = {"url": url, "title": title,
                       "elements": data.get("elements") or [],
                       "text": data.get("text") or ""}
         return self._snap
@@ -624,7 +731,8 @@ class PlayDriver(BaseDriver):
 
     def screenshot(self, path: Path) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._page.screenshot(path=str(path), full_page=False)
+        self._page.screenshot(path=str(path), full_page=False,
+                              timeout=self._shot_ms, animations="disabled")
         return str(path)
 
 
@@ -800,21 +908,76 @@ def _bump_playbook_failure(cfg, playbook: dict) -> None:
     _save_json(playbooks_path(cfg), entries)
 
 
-def _resolve_named(snapshot: dict, name: str, role: str = "") -> int | None:
-    """Find the index of the element whose name matches (exact, then sub)."""
+# Studio runs in the ACCOUNT's language (the owner's is Italian), so every
+# deterministic control matches several spellings. Matching tries exact names
+# first, then substrings, so English keeps working exactly as before.
+LABELS = {
+    "next": ("Next", "Avanti"),
+    "title": ("Add a title", "title", "Titolo", "Aggiungi un titolo"),
+    "description": ("Add a description", "description", "Descrizione",
+                    "Aggiungi una descrizione"),
+    "public": ("Public", "Pubblica", "Pubblico", "PUBLIC"),
+    "private": ("Private", "Privato", "PRIVATE"),
+    "unlisted": ("Unlisted", "Non elencato", "Non in elenco", "UNLISTED"),
+    "publish": ("Publish", "Pubblica"),
+    "schedule": ("Schedule", "Programma", "Pianifica"),
+    "save": ("Save", "Salva", "Salva come bozza"),
+}
+
+
+def _seen_controls(snapshot: dict, limit: int = 10) -> str:
+    """What the page actually showed — so a failure can be pasted back."""
+    names: list[str] = []
+    for el in (snapshot.get("elements") or []):
+        if el.get("tag") not in ("button", "a", "input", "label"):
+            continue
+        name = str(el.get("name") or "").strip()[:40]
+        if name and name not in names:
+            names.append(name)
+        if len(names) >= limit:
+            break
+    return ", ".join(names) or "(nothing readable)"
+
+
+def _resolve_named(snapshot: dict, name, role: str = "", last: bool = False,
+                   attr: bool = False) -> int | None:
+    """Find the index of an element by name (exact first, then substring).
+
+    `name` may be one spelling or a tuple of them (LABELS: English +
+    Italian). `last=True` prefers the BOTTOM-most match — in Italian the
+    visibility radio and the publish button are both "Pubblica", and the
+    button is always further down the dialog. `attr=True` also matches the
+    id/name attributes, which are language-independent (Studio's radios
+    carry name="PUBLIC" whatever the label says).
+    """
     elements = snapshot.get("elements") or []
-    wanted = (name or "").strip().lower()
+    wanted = [str(w).strip().lower()
+              for w in ((name,) if isinstance(name, str) else name)]
+    wanted = [w for w in wanted if w]
     if not wanted:
         return None
-    for el in elements:                       # exact name wins
-        if (el.get("name") or "").strip().lower() == wanted:
-            return int(el["i"])
-    matches = [el for el in elements
-               if wanted and wanted in (el.get("name") or "").lower()
-               and (not role or el.get("role") == role or el.get("tag") == role)]
-    if len(matches) >= 1:
-        return int(matches[0]["i"])
-    return None
+
+    def hit(el: dict, exact: bool) -> bool:
+        keys = [(el.get("name") or "").lower()]
+        if attr:
+            keys += [(el.get("id") or "").lower(),
+                     (el.get("attr") or "").lower()]
+        for want in wanted:
+            for key in keys:
+                if not key:
+                    continue
+                if (key == want) if exact else (want in key):
+                    return True
+        return False
+
+    found = [el for el in elements if hit(el, True)]
+    if not found:
+        found = [el for el in elements if hit(el, False)
+                 and (not role or el.get("role") == role
+                      or el.get("tag") == role)]
+    if not found:
+        return None
+    return int(found[-1 if last else 0]["i"])
 
 
 # --------------------------------------------------------------------------
@@ -1166,8 +1329,10 @@ def page_look(cfg, url: str, backend: str | None = None,
     ok, reason = domain_allowed(cfg, url)
     if not ok:
         return {"ok": False, "error": reason, "url": url}
-    drv, owns = _open(cfg, url, backend, driver)
+    drv = None
+    owns = False
     try:
+        drv, owns = _open(cfg, url, backend, driver)
         drv.goto(url)
         snap = drv.snapshot()
         shot = None
@@ -1177,10 +1342,76 @@ def page_look(cfg, url: str, backend: str | None = None,
                 "text": snap.get("text") or "", "shot": shot,
                 "elements": len(snap.get("elements") or [])}
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)[:300], "url": url}
+        return {"ok": False, "error": str(exc)[:300], "url": url,
+                "alive": isinstance(exc, BrowserBusy)}
     finally:
-        if owns:
-            drv.close()
+        if owns and drv is not None:
+            try:
+                drv.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+class BrowserBusy(RuntimeError):
+    """The browser is running but a tab would not answer (frozen/asleep).
+
+    Kept as its own type so callers can say the honest thing: this is not
+    "no browser", it is "one tab is stuck" — different fix, different mark.
+    """
+
+
+def cdp_http_info(url: str, timeout: float = 2.0) -> dict:
+    """Ask the browser's OWN http endpoint what it is. Bounded, never raises.
+
+    This answers in milliseconds even when a tab is frozen solid, which is
+    exactly what Playwright's attach cannot do. That difference is the whole
+    diagnosis: browser up + attach fails = a stuck tab, not a missing
+    browser. Returns {} when nothing answers.
+    """
+    import json as _json
+    import urllib.request
+
+    base = (url or "").strip().rstrip("/")
+    if not base:
+        return {}
+    out: dict = {}
+    try:
+        with urllib.request.urlopen(base + "/json/version", timeout=timeout) as resp:
+            data = _json.loads(resp.read().decode("utf-8", "replace"))
+        if isinstance(data, dict):
+            out["browser"] = str(data.get("Browser") or "")
+    except Exception:  # noqa: BLE001 - nothing listening is a normal answer
+        return {}
+    try:
+        with urllib.request.urlopen(base + "/json/list", timeout=timeout) as resp:
+            pages = _json.loads(resp.read().decode("utf-8", "replace"))
+        if isinstance(pages, list):
+            tabs = [p for p in pages if isinstance(p, dict)]
+            out["tabs"] = len(tabs)
+            out["pages"] = [str(p.get("title") or p.get("url") or "")[:60]
+                            for p in tabs if p.get("type") == "page"][:5]
+    except Exception:  # noqa: BLE001 - version already answered
+        pass
+    return out
+
+
+def _reach_error(cdp_url: str, exc: Exception) -> tuple[str, bool]:
+    """The right sentence for a failed attach: missing browser vs stuck tab."""
+    info = cdp_http_info(cdp_url)
+    if info:
+        who = info.get("browser") or "Chromium"
+        tabs = info.get("tabs")
+        pages = info.get("pages") or []
+        where = f" ({tabs} tab(s)" + (f": {', '.join(pages)}" if pages else "") + ")" \
+            if tabs is not None else ""
+        return ((f"your browser IS running ({who}{where}) but a tab did not "
+                 "answer, so the agent could not attach — a page that is "
+                 "stuck, asleep, or still loading does that. Close or refresh "
+                 "that tab, then try again."), True)
+    return ((f"could not reach your browser at {cdp_url} — start it with "
+             "Desktop Chrome.bat first (the window with the debug port). "
+             "Opera GX, Edge, Chrome, Brave, Vivaldi all work; Edge is "
+             "already on every Windows machine."), False)
 
 
 def connection_check(cfg, backend: str | None = None,
@@ -1193,42 +1424,110 @@ def connection_check(cfg, backend: str | None = None,
     from hanging the command.
     """
     owns = driver is None
+    info: dict = {}
     if owns:
-        driver = PlayDriver(cfg, backend=backend, timeout_ms=timeout_ms)
-    try:
-        driver.start()
-        snap = driver.snapshot()
-        return {"ok": True, "url": snap.get("url") or "",
-                "title": snap.get("title") or ""}
-    except Exception as exc:  # noqa: BLE001 - status must always answer
-        return {"ok": False, "error": str(exc)[:240]}
-    finally:
-        if owns:
+        info = cdp_http_info(dconf(cfg)["cdp_url"])
+    # retry only when NOTHING answered: the browser may still be starting up.
+    # A browser that answers http but refuses the attach has a stuck tab, and
+    # retrying that just wastes six more seconds.
+    attempts = 2 if (owns and not info) else 1
+    last_error = "could not reach the browser"
+    for attempt in range(attempts):
+        if owns or driver is None:
+            drv = PlayDriver(cfg, backend=backend, timeout_ms=timeout_ms)
+        else:
+            drv = driver
+        try:
+            drv.start()
+            probe = getattr(drv, "probe", None)
+            if callable(probe):
+                info = probe() or {}
+                return {"ok": True, "url": info.get("url") or "",
+                        "title": info.get("title") or "",
+                        "page_answers": bool(info.get("alive")),
+                        "reason": info.get("reason") or ""}
+            snap = drv.snapshot()
+            return {"ok": True, "url": snap.get("url") or "",
+                    "title": snap.get("title") or "",
+                    "page_answers": not snap.get("degraded"),
+                    "reason": snap.get("reason") or ""}
+        except Exception as exc:  # noqa: BLE001 - status must always answer
+            last_error = str(exc)[:240]
             try:
-                driver.close()
+                drv.close()
             except Exception:  # noqa: BLE001
                 pass
+            if attempt + 1 < attempts:
+                time.sleep(1.5)
+    return {"ok": False, "error": last_error, "alive": bool(info),
+            "browser": info.get("browser") or "", "tabs": info.get("tabs"),
+            "pages": info.get("pages") or []}
 
 
 def peek(cfg, backend: str | None = None, driver: BaseDriver | None = None,
-         note: str = "peek") -> dict:
-    """Screenshot + read the CURRENT page (no navigation) — /desk shot."""
-    drv, owns = _open(cfg, "", backend, driver)
+         note: str = "peek", progress=None, with_shot: bool = True) -> dict:
+    """Screenshot + read the CURRENT page (no navigation) — /desk shot.
+
+    Every step is bounded: a tab that is asleep, busy, or mid-reload comes
+    back as a sentence (degraded) instead of hanging the command. The
+    screenshot is attempted even then — it rides CDP, not the page's JS.
+    """
+    def say(message: str) -> None:
+        if progress:
+            try:
+                progress(message)
+            except Exception:  # noqa: BLE001
+                pass
+
+    drv = None
+    owns = False
     try:
-        snap = drv.snapshot()
-        path = work_dir(cfg) / "shots" / f"{note}-{time.strftime('%H%M%S')}.png"
-        shot = None
+        drv, owns = _open(cfg, "", backend, driver)
+        say("connected — reading the page")
+        snap: dict = {}
+        why = ""
+        busy = False
         try:
-            shot = drv.screenshot(path)
-        except Exception:  # noqa: BLE001
-            pass
-        return {"ok": True, "url": snap.get("url"), "title": snap.get("title"),
-                "text": snap.get("text") or "", "shot": shot}
+            snap = drv.snapshot()
+        except Exception as exc:  # noqa: BLE001
+            busy = isinstance(exc, BrowserBusy)
+            why = str(exc).strip().splitlines()[0][:200] if str(exc).strip() \
+                else exc.__class__.__name__
+        shot = None
+        if with_shot:      # `text` does not pay for a PNG it will not use
+            path = work_dir(cfg) / "shots" / f"{note}-{time.strftime('%H%M%S')}.png"
+            say("taking the screenshot")
+            try:
+                shot = drv.screenshot(path)
+            except Exception as exc:  # noqa: BLE001
+                busy = busy or isinstance(exc, BrowserBusy)
+                if not why:
+                    msg = str(exc).strip()
+                    why = msg.splitlines()[0][:200] if msg else exc.__class__.__name__
+        text = snap.get("text") or ""
+        # degraded = the snapshot itself said so, or the read FAILED (why).
+        # An answered-but-empty page (about:blank) is not degraded.
+        degraded = bool(snap.get("degraded")) or (not snap and bool(why))
+        busy = busy or bool(snap.get("degraded"))
+        out = {"ok": True, "url": snap.get("url") or "",
+               "title": snap.get("title") or "", "text": text, "shot": shot,
+               "degraded": degraded, "alive": busy,
+               "reason": snap.get("reason") or why or ""}
+        if degraded and not shot and not text:
+            out["ok"] = False
+            out["error"] = out["reason"] or "the page did not answer"
+        return out
     except Exception as exc:  # noqa: BLE001
-        return {"ok": False, "error": str(exc)[:300]}
+        msg = str(exc).strip()
+        return {"ok": False, "alive": isinstance(exc, BrowserBusy),
+                "error": msg.splitlines()[0][:300] if msg
+                else exc.__class__.__name__}
     finally:
-        if owns:
-            drv.close()
+        if owns and drv is not None:
+            try:
+                drv.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 _KMB = r"([\d.,]+)\s*([KMB]?)"
@@ -1327,29 +1626,35 @@ def post_one(cfg, driver: BaseDriver, item: dict, channel: dict,
 
         # 1. file input
         file_target = None
-        for el in snap.get("elements") or []:
-            if el.get("tag") == "input":
+        for el in snap.get("elements") or []:      # the tagged one first
+            if el.get("name") == "(file upload)":
                 file_target = int(el["i"])
                 break
         if file_target is None:
-            result["error"] = "no file input found on the upload page"
+            for el in snap.get("elements") or []:
+                if el.get("tag") == "input":
+                    file_target = int(el["i"])
+                    break
+        if file_target is None:
+            result["error"] = ("no file input found on the upload page - "
+                               "the page showed: " + _seen_controls(snap))
             return result
         driver.set_input_files(file_target, str(item.get("file")))
         time.sleep(pause)
         snap = driver.snapshot()
         shoot("1-file")
 
-        # 2. title / description (Studio's dialog exposes named textboxes)
-        for label, value in (("title", title), ("description", description)):
-            index = _resolve_named(snap, label) or _resolve_named(
-                snap, f"Add a {label}")
+        # 2. title / description — Studio speaks the account's language,
+        #    so both spellings are tried (LABELS)
+        for key, value in (("title", title), ("description", description)):
+            index = _resolve_named(driver.snapshot(), LABELS[key])
             if index is not None and value:
                 driver.fill(index, value[:4900])
         shoot("2-meta")
 
         # 3. Next ×3 (Details -> Video elements -> Checks -> Visibility)
         for attempt in range(3):
-            index = _resolve_named(driver.snapshot(), "Next")
+            index = _resolve_named(driver.snapshot(), LABELS["next"])
             if index is None:
                 break
             driver.click(index)
@@ -1357,20 +1662,26 @@ def post_one(cfg, driver: BaseDriver, item: dict, channel: dict,
         shoot("3-next")
 
         # 4. visibility
-        want = {"public": "Public", "private": "Private",
-                "unlisted": "Unlisted"}.get(conf["visibility"], "Unlisted")
-        index = _resolve_named(driver.snapshot(), want)
+        key = {"public": "public", "private": "private",
+               "unlisted": "unlisted"}.get(conf["visibility"], "unlisted")
+        index = _resolve_named(driver.snapshot(), LABELS[key], attr=True)
         if index is not None:
             driver.click(index)
         shoot("4-visibility")
 
         # 5. the commit
         snap = driver.snapshot()
-        commit_index = (_resolve_named(snap, "Publish")
-                        or _resolve_named(snap, "Schedule")
-                        or _resolve_named(snap, "Save"))
+        # role="button" so the identically-named visibility radio can never
+        # be clicked instead; last=True = the one in the dialog footer
+        commit_index = None
+        for key in ("publish", "schedule", "save"):
+            commit_index = _resolve_named(snap, LABELS[key], role="button",
+                                          last=True)
+            if commit_index is not None:
+                break
         if commit_index is None:
-            result["error"] = "no publish/save button found"
+            result["error"] = ("no publish/save button found - the page "
+                               "showed: " + _seen_controls(snap))
             return result
         commit_name = driver.element_name(commit_index)
         verdict, why = classify_click(cfg, commit_name, {})

@@ -1991,14 +1991,22 @@ def cmd_desktop(cfg, args) -> int:
         books = desktop.load_playbooks(cfg)
         print(f"  learned       : {len(lessons)} lesson(s), "
               f"{len(books)} playbook(s) in work/desktop/")
+        print("  [desktop] connecting to your browser…")
         check = desktop.connection_check(cfg, backend=args.backend)
-        if check["ok"]:
+        if not check["ok"]:
+            # ⚠️ = the browser is there but a tab froze; ❌ = no browser at all
+            mark = "⚠️" if check.get("alive") else "❌"
+            print(f"  connection    : {mark} {check['error']}")
+        elif check.get("page_answers", True):
             title = (check.get("title") or "").strip()
             where = ((f"{title}  ({check['url']})"
                       if title else (check["url"] or "(no page)")))
             print(f"  connection    : ✅ connected — {where}")
         else:
-            print(f"  connection    : ❌ {check['error']}")
+            print("  connection    : ⚠️ connected, but the page did not "
+                  f"answer ({check.get('reason') or 'busy'})")
+            print("                  the browser itself is fine — click the "
+                  "tab once (Opera snoozes background tabs) and retry")
         return 0
 
     if args.action == "data" and args.goal:
@@ -2058,10 +2066,22 @@ def _peek_current(cfg, action: str, backend: str | None) -> int:
     """`desktop shot|text` with no URL: look at the page already open."""
     import desktop
 
-    got = desktop.peek(cfg, backend=backend, note=f"desktop-{action}")
+    got = desktop.peek(cfg, backend=backend, note=f"desktop-{action}",
+                       progress=lambda msg: print(f"  [desktop] {msg}…"),
+                       with_shot=(action == "shot"))
     if not got.get("ok"):
-        print(f"  [desktop] ❌ {got.get('error')}")
+        mark = "⚠️" if got.get("alive") else "❌"
+        print(f"  [desktop] {mark} {got.get('error')}")
         return 1
+    if got.get("degraded"):
+        print("  [desktop] ⚠️ the page did not answer "
+              f"({got.get('reason') or 'busy'}) — nothing readable was sent "
+              "back")
+        print("            the browser is fine: click the tab once (Opera "
+              "snoozes background tabs) and retry")
+        if got.get("shot"):
+            print(f"  screenshot: {got.get('shot')}")
+        return 0
     print(f"  {got.get('title')}  ({got.get('url')})")
     if action == "shot":
         print(f"  screenshot: {got.get('shot')}")
@@ -2080,7 +2100,8 @@ def _print_page(cfg, url: str, action: str, backend: str | None,
     got = desktop.page_look(cfg, url, backend=backend or "browser",
                             shot_path=shot)
     if not got.get("ok"):
-        print(f"  [desktop] ❌ {got.get('error')}")
+        mark = "⚠️" if got.get("alive") else "❌"
+        print(f"  [desktop] {mark} {got.get('error')}")
         return 1
     print(f"  {got.get('title')}  ({got.get('url')})")
     if action == "shot":
