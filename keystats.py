@@ -36,12 +36,11 @@ LIMITS = {
         "tz": "pac"},
     "groq": {
         "title": "GROQ",
-        "day": 14400, "unit": "requests", "shared": True,
+        "day": 14400, "unit": "requests",
         "audio_day": 28800,
-        "rule": "ONE POOL PER ACCOUNT (org-level): all its keys share "
-                "~1,000 req/day per model, 6k tokens/min, ~8h Whisper "
-                "audio · add a card (free) = Developer tier, 10x · "
-                "resets midnight UTC",
+        "rule": "One pool per account/org: its keys share ~1,000 req/day "
+                "per model, 6k tokens/min, ~8h Whisper audio · separately "
+                "owned accounts have separate pools · resets midnight UTC",
         "tz": "utc"},
     "openrouter": {
         "title": "OPENROUTER",
@@ -94,6 +93,10 @@ ADVICE = {
         "Powers: Whisper transcription (the stack's binding constraint, "
         "~8h audio/day) + fast LLM answers (Llama/Qwen/gpt-oss) + "
         "boardroom Producer.",
+        "Configured key split: the first groq_transcription_percent of "
+        "the ordered list (default 90%) is Whisper-only; the remainder is "
+        "the late Groq text fallback after the whole Gemini pool. Set the "
+        "percent to 0 for captions-first, 100 for Whisper-only.",
         "ADDING CAPACITY: extra keys on the SAME account add NOTHING "
         "(org-level pool). Separate accounts each get a pool (gray "
         "zone). The legit move: add a credit card — the Developer tier "
@@ -338,7 +341,7 @@ def _fmt_audio(seconds: int) -> str:
     return f"{secs}s"
 
 
-def _keys_note(count: int, shared: bool) -> str:
+def _keys_note(count: int, shared: bool, provider: str = "") -> str:
     """Header suffix explaining what N keys actually buy (pure, tested).
 
     The multi-key truth (CAPACITY.md, re-verified 2026-10-02): Groq and
@@ -350,6 +353,9 @@ def _keys_note(count: int, shared: bool) -> str:
     """
     if count < 2:
         return ""
+    if provider == "groq":
+        return (f"  ·  {count} keys, ACCOUNT-level pools — keys on one "
+                f"account share it; separately owned accounts do not")
     if shared:
         return (f"  ·  {count} keys, ONE shared pool — the extra keys add "
                 f"no capacity")
@@ -384,7 +390,12 @@ def build_status(cfg, now: datetime | None = None) -> str:
         if not masks:
             continue
         lines.append(f"{spec['title']}  ·  {spec['rule']}"
-                     + _keys_note(len(masks), bool(spec.get("shared"))))
+                     + _keys_note(len(masks), bool(spec.get("shared")),
+                                  provider))
+        if provider == "groq":
+            lines.append(
+                f"  key split: Whisper×{len(cfg.groq_transcription_api_keys)}"
+                f" / text fallback×{len(cfg.groq_llm_api_keys)}")
         for mask in masks:
             row = day.get(mask) or {"req": 0, "tok": 0, "chars": 0,
                                         "units": 0, "audio": 0}
@@ -424,6 +435,10 @@ def build_status(cfg, now: datetime | None = None) -> str:
                     tok_txt = (f"~{tok // 1000}k" if tok >= 1000
                                else f"~{tok}")
                     lines[-1] += f"   {tok_txt} tok est"
+                if provider == "groq" and spec.get("audio_day"):
+                    lines.append(
+                        f"    Whisper audio: {_fmt_audio(row['audio'])} / "
+                        f"~{_fmt_audio(spec['audio_day'])} per account today")
         if spec.get("shared"):
             total = sum((day.get(m) or {}).get("req", 0) for m in masks)
             _, reset, label = _window(provider, now)
@@ -436,7 +451,8 @@ def build_status(cfg, now: datetime | None = None) -> str:
                 lines.append(f"  {'audio pool':<12} "
                              f"{_fmt_audio(audio_used)} / "
                              f"~{_fmt_audio(spec['audio_day'])} today")
-        elif len(masks) > 1 and spec.get("day") and provider != "elevenlabs":
+        elif (len(masks) > 1 and spec.get("day")
+              and provider not in ("elevenlabs", "groq")):
             # PER-KEY pools (Gemini, YouTube, Pexels, Pixabay): with a wall
             # of keys the individual rows are unreadable and the number
             # that actually gates the day is the aggregate. This is
@@ -444,6 +460,9 @@ def build_status(cfg, now: datetime | None = None) -> str:
             # ElevenLabs is skipped: its limit is per CALENDAR MONTH while
             # this row sums a daily window, and its per-key rows already
             # read "N chars this month / M left".
+            # Groq is skipped: its pool is per ACCOUNT (ai.groq_api_keys
+            # may hold several accounts), so multiplying the limit by the
+            # key count would invent capacity that does not exist.
             unit = "units" if provider == "youtube" else "requests"
             field = "units" if provider == "youtube" else "req"
             used = sum((day.get(m) or {}).get(field, 0) for m in masks)
@@ -677,6 +696,11 @@ def run_probes(cfg, sample: int = 0) -> str:
         lines.insert(1, f"(sampling the first {sample} key(s) per provider — "
                         "drop --sample to check every key)")
         lines.insert(2, "")
+    lines.append(
+        f"Groq allocation: Whisper×{len(cfg.groq_transcription_api_keys)}; "
+        f"text fallback×{len(cfg.groq_llm_api_keys)} "
+        "(Whisper keys are not chat-probed).")
+    lines.append("")
 
     def section(title: str, results: list) -> None:
         lines.append(title)
@@ -689,14 +713,16 @@ def run_probes(cfg, sample: int = 0) -> str:
     section("GEMINI",
             [(_mask(k), *probe_gemini(k, cfg.gemini_model)) for k in keys]
             or [("none", False, "not configured")])
-    keys = _sample([k for k in _configured_keys(cfg, "groq") if k], sample)
-    section("GROQ",
+    keys = _sample([k for k in cfg.groq_llm_api_keys if k], sample)
+    groq_empty = ("Whisper-only allocation; no text fallback keys"
+                  if cfg.groq_api_keys else "not configured")
+    section("GROQ CHAT (reserved fallback keys)",
             [(_mask(k), *probe_chat(
                 "groq", "https://api.groq.com/openai/v1/chat/completions",
                 k, cfg.groq_model,
                 {"reasoning_format": "hidden"}
                 if "gpt-oss" in cfg.groq_model else None)) for k in keys]
-            or [("none", False, "not configured")])
+            or [("none", False, groq_empty)])
     # Whisper: the stack's real constraint — probe it, and count the audio.
     wav = _whisper_sample()
     if wav is None:
@@ -704,8 +730,10 @@ def run_probes(cfg, sample: int = 0) -> str:
                      "probe tone)")
         lines.append("")
     else:
+        whisper_keys = _sample(
+            [k for k in cfg.groq_transcription_api_keys if k], sample)
         results = []
-        for k in keys:
+        for k in whisper_keys:
             if results and results[-1][1]:
                 break  # one shared pool per account: one success is the truth
             results.append((_mask(k), *probe_whisper(k, wav)))

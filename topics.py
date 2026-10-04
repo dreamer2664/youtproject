@@ -320,7 +320,7 @@ def top_up_backlog(cfg: Config, path: Path | None = None,
     need = want - len(topics)
     if need <= 0:
         return [], len(topics)
-    if not (cfg.gemini_api_key or cfg.groq_api_keys):
+    if not (cfg.gemini_api_key or cfg.groq_llm_api_keys):
         print("  [topics] no Gemini/Groq key — backlog left as is "
               "(add ideas by hand or run: python main.py topics --add \"...\")")
         return [], len(topics)

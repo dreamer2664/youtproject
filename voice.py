@@ -37,7 +37,7 @@ def download_telegram_voice(bot_token: str, file_id: str, dest_dir: Path) -> Pat
 
 
 def transcribe(cfg: Config, path: Path) -> str:
-    """Whisper via Groq keys in order (429/401/403 -> next key).
+    """Whisper via its reserved Groq keys (429/401/403 -> next key).
 
     Ledgered like the clip lane's transcription: Groq Whisper audio-minutes
     are the stack's binding constraint (org-level ~8 h/day pool), so a
@@ -46,9 +46,9 @@ def transcribe(cfg: Config, path: Path) -> str:
     length comes from the local file (ffprobe when available, 0 otherwise —
     bookkeeping must never fail a transcription).
     """
-    keys = keypool.live("groq", cfg.groq_api_keys)
+    keys = keypool.live("groq", cfg.groq_transcription_api_keys)
     if not keys:
-        raise RuntimeError("no Groq API keys")
+        raise RuntimeError("no Groq Whisper transcription keys")
     import keystats
 
     seconds = _audio_seconds(path)

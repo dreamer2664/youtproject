@@ -101,14 +101,23 @@ python main.py clip --url A --url B --file C # a batch: any mix, any count
 python main.py clip --sheet                   # the next queued source from the sheet
 ```
 
-Downloads → transcript (YouTube captions first when they exist — 0 Groq
-audio-minutes — else Whisper; mishears auto-corrected, cached — re-runs
-are free) → picks the strongest moments → cuts on sentence boundaries, opens
+Downloads → transcript (shared cache → Groq Whisper first → keyless
+YouTube captions if Whisper fails or returns nothing; mishears
+auto-corrected and cached, so re-runs are free) → picks the strongest
+moments → cuts on sentence boundaries, opens
 on the hook → **landscape VODs keep their whole frame** (sharp, centered,
 blurred background fill; `clip.crop_mode` switches to the old crop) →
 upload kits in `clips/` (with TikTok + Reels captions per clip). Batch
 runs isolate failures: one dead link doesn't kill the others. Costs ~15-17 API requests per source,
 less than one generated video.
+
+The ordered `ai.groq_api_keys` list is split by `ai.groq_transcription_percent`
+(default 90%): the first share is Whisper-only, and the remaining keys are
+reserved for the Groq text fallback after Gemini's primary/reserve models
+and key pool. With two or more Groq keys the default split preserves at
+least one text key; a single key cannot serve both roles and defaults to
+Whisper. Existing cached transcripts are retained — clear the transcript
+cache only if you want old sources re-transcribed under the new policy.
 
 Captions default to the bottom (the old centered default sat on the
 subject whenever the whole frame was kept). Still not right for a
@@ -318,12 +327,14 @@ is the reused-content-safe way to make long-form — do not also
 re-upload the raw source.
 
 Output: `longform/<key8>_longform.mp4` (whole) or
-`..._longform_5m00s.mp4` (an episode cut at 5:00). Costs: **0 LLM
-calls** when the transcript is cached or harvested from captions and
-you render whole; one cached eos pass when cutting an unpunctuated
-transcript; the transcript-fix pass only on a fresh Whisper source.
-Not in the Telegram phone queue by design — long files are past
-Telegram's 50 MB bot cap. See API-REPORT.md for the full accounting.
+`..._longform_5m00s.mp4` (an episode cut at 5:00). Costs: **0 LLM/audio
+calls** when the transcript is already cached and you render whole; one
+cached eos pass when cutting an unpunctuated transcript. An uncached
+source uses Groq Whisper first (even when YouTube captions exist), with
+YouTube captions as fallback, then the transcript-fix pass. Existing
+cache entries are kept to avoid surprise re-transcription. Not in the
+Telegram phone queue by design — long files are past Telegram's 50 MB
+bot cap. See API-REPORT.md for the full accounting.
 
 ## Phone queue (pregen — clips on your phone, PC on or off)
 
@@ -400,18 +411,19 @@ Everything runs on free tiers. Check the tanks any time:
 
 ```powershell
 python main.py keys           # per-key usage vs every free-tier limit
-python main.py keys --probe   # live-check EVERY lane, per key (each check logged)
+python main.py keys --probe   # every Gemini key + the reserved Groq text keys
 python main.py keys --month   # 30-day spend per provider, split by call tag
 python main.py costs          # Azure spend (if ever configured)
 ```
 
 The ledger counts everything with an origin tag — `script`, `clipfix`,
 `clippick`, `vision`, `probe`, … — so `keys --month` answers "what were
-the tokens FOR", including the agent's own diagnostic probes.
+the tokens FOR", including the agent's own diagnostic probes. Whisper-only
+Groq keys are not chat-probed; they are validated during transcription.
 
 - Gemini's free tier saturates at US peak hours — EU mornings are fast and
-  quiet. The fallback chain (groq → openrouter → template) carries you
-  either way.
+  quiet. The full Gemini primary/reserve pool runs before the reserved
+  Groq text keys; the rest of the configured fallback chain stays active.
 - ElevenLabs: 1 premium-voice video/day (`ai.premium_voices`), the rest use
   free edge-tts. Raise/lower the number in config.yaml.
 - `snap` costs ~4 of 10,000 daily YouTube API units.

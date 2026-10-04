@@ -724,19 +724,29 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
                 remember(cfg, "act", f"none — {decision['reason']}")
 
     # -- act: carry the decision out ----------------------------------------
+    # A picked source is still pending in the sheet; after execution, record
+    # the actual terminal status once, rather than letting "picked" overwrite
+    # a successful/failed render below.
+    act_clip_status: str | None = None
     if kind == "act" and decision and decision["action"] != "none":
         if executor is None:
             decision["result"] = ("not executed — no executor was wired "
                                   "(re-run via `python main.py meeting "
                                   "act` to follow through)")
+            if decision["action"] == "clip":
+                act_clip_status = "picked"
         else:
             say(f"  [meeting] executing the board's action: "
                 f"{decision['action']}")
             emit("action", action=decision["action"], decision=decision)
             try:
                 decision["result"] = str(executor(decision) or "done")
+                if decision["action"] == "clip":
+                    act_clip_status = "clipped"
             except Exception as exc:  # noqa: BLE001 - report, don't crash
                 decision["result"] = f"execution failed: {str(exc)[:200]}"
+                if decision["action"] == "clip":
+                    act_clip_status = "failed"
         remember(cfg, "act", f"outcome: {decision['result']}")
 
     # -- deliver -----------------------------------------------------------
@@ -804,19 +814,28 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
             _mark_sheet(cfg, decision["choice"], "failed",
                         f"render failed: {str(exc)[:120]}")
     if kind == "act" and decision and decision["action"] == "clip":
-        _mark_sheet(cfg, decision["url"], "picked",
-                    f"boardroom: {decision['reason']}")
-        try:
-            wl = cfg.meeting_watchlist
-            if wl.exists():
-                wl.write_text(remove_watchlist_url(
-                    wl.read_text(encoding="utf-8"), decision["url"]),
-                    encoding="utf-8")
-        except OSError:
-            pass
+        status = act_clip_status or "failed"
+        detail = f"boardroom: {decision['reason']}"
+        if status != "picked" and decision.get("result"):
+            detail += f"; {decision['result']}"
+        _mark_sheet(cfg, decision["url"], status, detail)
+        # Keep a legacy watchlist source available if no executor was wired;
+        # the CLI executor consumes it after an actual attempt.
+        if executor is not None:
+            try:
+                wl = cfg.meeting_watchlist
+                if wl.exists():
+                    wl.write_text(remove_watchlist_url(
+                        wl.read_text(encoding="utf-8"), decision["url"]),
+                        encoding="utf-8")
+            except OSError:
+                pass
     if kind == "pick" and decision:
-        _mark_sheet(cfg, decision["choice"], "picked",
-                    f"boardroom: {decision['reason']}")
+        # With --render the render branch above already wrote clipped/failed.
+        # Only a pick-only meeting should leave the source pending as picked.
+        if not render:
+            _mark_sheet(cfg, decision["choice"], "picked",
+                        f"boardroom: {decision['reason']}")
         try:
             wl = cfg.meeting_watchlist
             if wl.exists():

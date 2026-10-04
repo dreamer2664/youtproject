@@ -292,7 +292,12 @@ def has_llm_lane(cfg) -> bool:
     """
     for name in LLM_LANES:
         try:
-            if [k for k in getattr(cfg, f"{name}_api_keys") if k]:
+            attr = ("groq_llm_api_keys" if name == "groq"
+                    else f"{name}_api_keys")
+            # Groq is special: its ordered pool is split by
+            # ai.groq_transcription_percent, and Whisper-only keys cannot
+            # serve a chat turn. Gate on the text share.
+            if [k for k in getattr(cfg, attr) if k]:
                 return True
         except Exception:  # noqa: BLE001 - a missing lane is not an error
             continue

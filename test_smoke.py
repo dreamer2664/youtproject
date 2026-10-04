@@ -127,6 +127,43 @@ def t_config_example_parses():
     assert cfg.style == "photoreal"
 
 
+def t_groq_key_split():
+    """The configured Groq list allocates ~90% to Whisper dynamically."""
+    from config import load_config
+
+    cfg = tmp_cfg()
+    cfg.data["ai"]["groq_api_keys"] = [f"g{i:02d}" for i in range(35)]
+    assert len(cfg.groq_api_keys) == 35
+    assert len(cfg.groq_transcription_api_keys) == 32
+    assert len(cfg.groq_llm_api_keys) == 3
+    assert cfg.groq_transcription_api_keys + cfg.groq_llm_api_keys == \
+        cfg.groq_api_keys
+
+    cfg.data["ai"]["groq_api_keys"] = [f"g{i:02d}" for i in range(80)]
+    assert (len(cfg.groq_transcription_api_keys),
+            len(cfg.groq_llm_api_keys)) == (72, 8)
+
+    # Tiny lists cannot approximate 90/10 exactly; preserve a text reserve
+    # whenever there are at least two keys. A single key must pick one role.
+    for count, expected in ((1, (1, 0)), (2, (1, 1)), (3, (2, 1))):
+        cfg.data["ai"]["groq_api_keys"] = [f"g{i}" for i in range(count)]
+        assert (len(cfg.groq_transcription_api_keys),
+                len(cfg.groq_llm_api_keys)) == expected
+
+    cfg.data["ai"]["groq_api_keys"] = [f"g{i}" for i in range(10)]
+    cfg.data["ai"]["groq_transcription_percent"] = 50
+    assert (len(cfg.groq_transcription_api_keys),
+            len(cfg.groq_llm_api_keys)) == (5, 5)
+    cfg.data["ai"]["groq_transcription_percent"] = 150
+    assert len(cfg.groq_transcription_api_keys) == 10
+    assert cfg.groq_llm_api_keys == []
+    cfg.data["ai"]["groq_transcription_percent"] = "bad"
+    assert cfg.groq_transcription_percent == 90
+
+    example = Path(__file__).resolve().parent / "config.example.yaml"
+    assert load_config(example).groq_transcription_percent == 90
+
+
 def t_config_no_shared_mutation():
     """One Config's overrides must never leak into another (or DEFAULTS)."""
     from config import DEFAULTS, load_config
@@ -1493,6 +1530,36 @@ def t_meeting():
     assert sh.take_pending(cfg.sources_sheet, 3) == \
         [("https://youtu.be/s1", "roman aqueducts")]
 
+    # -- pick --render must keep its terminal render status -----------------
+    import clipper as clipper_mod
+
+    rendered_cfg = tmp_cfg()
+    sh.append_sheet(rendered_cfg.sources_sheet, "https://youtu.be/s1", "")
+    with (
+        _patch.object(mt, "_role_provider", lambda c, lane: SheetChair()),
+        _patch.object(clipper_mod, "run_clip", return_value=None),
+        redirect_stdout(io.StringIO()),
+    ):
+        mt.run_meeting(rendered_cfg, "pick", rounds=1, render=True,
+                       send=False)
+    rendered_row = sh.load_sheet(rendered_cfg.sources_sheet)[0]
+    assert rendered_row["status"] == "clipped", rendered_row
+    assert sh.take_pending(rendered_cfg.sources_sheet, 1) == []
+
+    failed_render_cfg = tmp_cfg()
+    sh.append_sheet(failed_render_cfg.sources_sheet, "https://youtu.be/s1", "")
+    with (
+        _patch.object(mt, "_role_provider", lambda c, lane: SheetChair()),
+        _patch.object(clipper_mod, "run_clip",
+                      side_effect=RuntimeError("render boom")),
+        redirect_stdout(io.StringIO()),
+    ):
+        mt.run_meeting(failed_render_cfg, "pick", rounds=1, render=True,
+                       send=False)
+    failed_render_row = sh.load_sheet(failed_render_cfg.sources_sheet)[0]
+    assert failed_render_row["status"] == "failed", failed_render_row
+    assert sh.take_pending(failed_render_cfg.sources_sheet, 1) == []
+
     # -- latest_minutes + `meeting last` ------------------------------------
     import os
     import meeting as mt2
@@ -1802,7 +1869,34 @@ def t_meeting_act():
     assert "https://youtu.be/bbb" in summary
     rows = {r["url"]: r for r in
             __import__("sheet").load_sheet(cfg5.sources_sheet)}
-    assert rows["https://youtu.be/bbb"]["status"] == "picked"
+    assert rows["https://youtu.be/bbb"]["status"] == "clipped"
+
+    # -- failed clip executions are terminal and recorded ------------------
+    cfg5_fail = tmp_cfg()
+    append_sheet(cfg5_fail.sources_sheet, "https://youtu.be/bbb", "will fail")
+    with _patch.object(mt, "_role_provider",
+                       lambda c, lane: ClipChair()), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(
+            cfg5_fail, "act", rounds=1, send=False,
+            executor=lambda d: (_ for _ in ()).throw(RuntimeError("clip boom")))
+    failed_row = __import__("sheet").load_sheet(cfg5_fail.sources_sheet)[0]
+    assert failed_row["status"] == "failed"
+    assert "execution failed" in failed_row["result"]
+    assert "execution failed" in summary
+
+    # -- without an executor, a clip stays picked and pending ---------------
+    cfg5_queue = tmp_cfg()
+    append_sheet(cfg5_queue.sources_sheet, "https://youtu.be/bbb", "")
+    with _patch.object(mt, "_role_provider",
+                       lambda c, lane: ClipChair()), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(cfg5_queue, "act", rounds=1, send=False)
+    queued_row = __import__("sheet").load_sheet(cfg5_queue.sources_sheet)[0]
+    assert queued_row["status"] == "picked"
+    assert __import__("sheet").take_pending(cfg5_queue.sources_sheet, 1) == [
+        ("https://youtu.be/bbb", "")]
+    assert "not executed" in summary
 
     # -- 'none' is a valid outcome, and no executor fires -------------------
     cfg6 = tmp_cfg()
@@ -2976,6 +3070,20 @@ def t_gemini_key_sweep():
         GeminiProvider(api_key="k")._try_model("m", {}, tag="t")
     assert sleeper1.call_count == 5
 
+    # Large unique-account pools must be swept fully before the provider
+    # gives up to the next model/provider.
+    for count in (35, 80):
+        keys = [f"g{i:03d}" for i in range(count)]
+        denied = Mock(status_code=429, text="account quota")
+        with patch("requests.post", return_value=denied) as post:
+            result, status, _ = GeminiProvider(api_key=keys)._try_model(
+                "m", {}, tag="t")
+        assert result is None and status == 429
+        assert post.call_count == count, (count, post.call_count)
+        used = [call.kwargs["params"]["key"]
+                for call in post.call_args_list]
+        assert used == keys, (count, used)
+
 
 def t_gemini_network():
     """Network faults fail over fast: connection errors abort the provider,
@@ -3338,12 +3446,13 @@ def t_gemini_sandwich():
     assert GeminiProvider(["k"]).models is None  # legacy: full chain
     cfg = tmp_cfg()
     cfg.data["ai"]["gemini_api_key"] = "g"
-    cfg.data["ai"]["groq_api_keys"] = ["q"]
+    cfg.data["ai"]["groq_api_keys"] = [f"g{i}" for i in range(10)]
     cfg.data["ai"]["openrouter_api_keys"] = ["o"]
     chain = get_provider(cfg).chain
     assert [label for label, _ in chain] == [
-        "gemini", "groq", "openrouter", "gemini-reserve", "pollinations",
+        "gemini", "openrouter", "gemini-reserve", "groq", "pollinations",
         "template"]
+    assert dict(chain)["groq"].api_keys == cfg.groq_llm_api_keys
     links = dict(chain)
     assert links["gemini"].models[0] == cfg.gemini_model  # configured first
     assert links["gemini-reserve"].models == [
@@ -3729,7 +3838,7 @@ def t_no_gemini():
 
     cfg = tmp_cfg()
     cfg.data["ai"]["gemini_api_key"] = "g"
-    cfg.data["ai"]["groq_api_keys"] = ["q"]
+    cfg.data["ai"]["groq_api_keys"] = [f"g{i}" for i in range(10)]
     assert any(label == "gemini" for label, _ in get_provider(cfg).chain)
     # The --no-gemini override clears every key source (env beats config
     # in config.py, so all three must go).
@@ -3839,10 +3948,11 @@ def t_keystats():
     assert "GEMINI" in out and "...x7f2" in out and "resets" in out
     assert "ELEVENLABS" in out and "6,000" in out and "4,000 left" in out
     assert "AIzaSyFULL" not in out and "sk-full-secret" not in out
-    # Groq pool line: shared org-wide limit shows a total.
+    # Groq shows the dynamic role split (1 key = Whisper-only).
     cfg.data["ai"]["groq_api_keys"] = ["gq-full-secret-bb18"]
     out = keystats.build_status(cfg)
-    assert "GROQ" in out and "pool total" in out and "14,400" in out
+    assert "GROQ" in out and "Whisper×1" in out and "14,400" in out
+    assert "text fallback×0" in out
     # Multi-key headers say the truth about what N keys buy (pure).
     assert keystats._keys_note(1, False) == ""
     assert keystats._keys_note(1, True) == ""
@@ -3863,20 +3973,21 @@ def t_keystats():
     assert "all keys" in out
     assert f"{36 * keystats.LIMITS['gemini']['day']:,}" in out   # 54,000
     assert not any(f"gkey-{i:02d}-secret" in out for i in range(35))
-    # Shared pools must NOT claim multiplied capacity. (The clipfix bump
-    # above left a ledger-only Groq mask, so it keeps a row and counts
-    # once — hence 6 masks for 5 configured keys.)
+    # Account-level pools must NOT claim multiplied capacity, and the note
+    # says WHICH kind of pool this is. (The clipfix bump above left a
+    # ledger-only Groq mask, so it keeps a row and counts once — hence 6
+    # masks for 5 configured keys.)
     cfg.data["ai"]["groq_api_keys"] = [f"gq-secret-{i:02d}xx" for i in range(5)]
     assert len(cfg.groq_api_keys) == 5
     out = keystats.build_status(cfg)
-    assert "ONE shared pool" in out and "add no capacity" in out
-    assert "6 keys" in out
+    assert "ACCOUNT-level pools" in out and "6 keys" in out
     assert f"{keystats.LIMITS['groq']['day']:,}" in out            # 14,400
     assert f"{6 * keystats.LIMITS['groq']['day']:,}" not in out    # no 86,400
-    # A shared pool shows ONE `pool total` row and never an `all keys`
-    # aggregate (that row would falsely imply multiplied capacity).
+    # Groq shows the role split and per-key audio rows; the old aggregate
+    # `pool total` row misread many separate accounts as one pool.
     groq_section = out.split("GROQ")[-1].split("OPENROUTER")[0]
-    assert "pool total" in groq_section and "all keys" not in groq_section
+    assert "key split: Whisper×4 / text fallback×1" in groq_section
+    assert "pool total" not in groq_section and "all keys" not in groq_section
     # ElevenLabs is per-key but MONTHLY: header truth, no daily aggregate.
     cfg.data["channel"]["elevenlabs_api_keys"] = ["el-secret-1", "el-secret-2"]
     out = keystats.build_status(cfg)
@@ -3908,7 +4019,7 @@ def t_keystats():
     assert "1 this hour" in out and "2 this month" in out
     assert "19,998 left" in out
     assert "DEEPSEEK" in out and "...t-99" in out
-    assert "audio pool" in out and "1h 00m / ~8h 00m" in out
+    assert "Whisper audio" in out and "1h 00m / ~8h 00m" in out
     # Audio bump round-trip on the live clock (crafted Sept-15 rows fall
     # outside the 24h window, so the fresh reading is exactly this bump).
     keystats.bump("groq", "gq-other-secret-zz99", req=1, audio=600)
@@ -4811,12 +4922,13 @@ def t_deepseek():
     assert "deepseek" in names and names[-1] == "template"
 
 
-def t_captions_first():
+def t_whisper_primary():
     import sys
     import types
     from unittest.mock import patch
 
-    from clipper import (captions_to_words, fetch_youtube_captions,
+    from clipper import (ClipError, captions_to_words,
+                         fetch_youtube_captions, transcribe_words,
                          video_id_for_captions)
 
     # URL -> video id; everything else -> "" (Whisper fallthrough).
@@ -4891,6 +5003,82 @@ def t_captions_first():
     with patch.dict(sys.modules, {"youtube_transcript_api": broken}):
         assert fetch_youtube_captions("vid1") is None
     assert fetch_youtube_captions("") is None
+
+    # Whisper wins on a fresh transcript and receives only its 90% key slice.
+    import io
+    from contextlib import redirect_stdout
+
+    cfg = tmp_cfg()
+    cfg.data["ai"]["groq_api_keys"] = [f"groq-{i}" for i in range(10)]
+    whisper_words = [{"word": "Whisper", "start": 0.0, "end": 0.4},
+                     {"word": "primary.", "start": 0.5, "end": 1.0}]
+    with (
+        patch("clipper.ffprobe_duration", return_value=2.0),
+        patch("clipper._whisper_request",
+              return_value={"words": whisper_words}) as request,
+        patch("clipper.fetch_youtube_captions") as captions,
+        redirect_stdout(io.StringIO()),
+    ):
+        got = transcribe_words(Path("audio.opus"), cfg, video_id="vid1")
+    assert [word["word"] for word in got] == ["Whisper", "primary."]
+    assert request.call_args.args[1] == cfg.groq_transcription_api_keys
+    assert len(cfg.groq_transcription_api_keys) == 9
+    assert len(cfg.groq_llm_api_keys) == 1
+    captions.assert_not_called()
+
+    fallback_segments = [{"text": "caption fallback works",
+                          "start": 1.0, "duration": 3.0}]
+    with (
+        patch("clipper.ffprobe_duration", return_value=2.0),
+        patch("clipper._whisper_request",
+              side_effect=ClipError("all Whisper accounts rate-limited")),
+        patch("clipper.fetch_youtube_captions",
+              return_value=(fallback_segments, "manual")),
+        redirect_stdout(io.StringIO()),
+    ):
+        got = transcribe_words(Path("audio.opus"), cfg, video_id="vid1")
+    assert [word["word"] for word in got] == [
+        "caption", "fallback", "works"]
+
+    # Captions also rescue the source when the Whisper pool is empty.
+    no_groq_cfg = tmp_cfg()
+    with (
+        patch("clipper.fetch_youtube_captions",
+              return_value=(fallback_segments, "generated")),
+        redirect_stdout(io.StringIO()),
+    ):
+        got = transcribe_words(Path("audio.opus"), no_groq_cfg,
+                               video_id="vid1")
+    assert [word["word"] for word in got] == [
+        "caption", "fallback", "works"]
+
+    # Empty Whisper output is not the winner if captions can help.
+    with (
+        patch("clipper.ffprobe_duration", return_value=2.0),
+        patch("clipper._whisper_request",
+              return_value={"words": [], "segments": []}),
+        patch("clipper.fetch_youtube_captions",
+              return_value=(fallback_segments, "manual")),
+        redirect_stdout(io.StringIO()),
+    ):
+        got = transcribe_words(Path("audio.opus"), cfg, video_id="vid1")
+    assert [word["word"] for word in got] == [
+        "caption", "fallback", "works"]
+
+    # If neither source succeeds, retain a readable primary failure.
+    with (
+        patch("clipper.ffprobe_duration", return_value=2.0),
+        patch("clipper._whisper_request",
+              side_effect=ClipError("all accounts throttled")),
+        patch("clipper.fetch_youtube_captions", return_value=None),
+        redirect_stdout(io.StringIO()),
+    ):
+        try:
+            transcribe_words(Path("audio.opus"), cfg, video_id="vid1")
+        except ClipError as exc:
+            assert "Groq Whisper failed" in str(exc)
+        else:
+            raise AssertionError("both transcript providers failed")
 
 
 def t_clip_cookies():
@@ -6492,15 +6680,22 @@ def t_script_chain_groq():
     from scriptgen import ChainedProvider, get_provider
 
     cfg = tmp_cfg()
-    assert [label for label, _ in get_provider(cfg).chain] == ["pollinations", "template"]
-    cfg.data["ai"]["groq_api_keys"] = ["k1", "k2"]
-    assert [label for label, _ in get_provider(cfg).chain] == ["groq", "pollinations", "template"]
+    assert [label for label, _ in get_provider(cfg).chain] == [
+        "pollinations", "template"]
+    cfg.data["ai"]["groq_api_keys"] = [f"k{i}" for i in range(10)]
+    labels = [label for label, _ in get_provider(cfg).chain]
+    assert labels == ["groq", "pollinations", "template"]
+    assert dict(get_provider(cfg).chain)["groq"].api_keys == \
+        cfg.groq_llm_api_keys
     cfg.data["ai"]["gemini_api_key"] = "g"
-    assert [label for label, _ in get_provider(cfg).chain] == ["gemini", "groq", "gemini-reserve", "pollinations", "template"]
+    assert [label for label, _ in get_provider(cfg).chain] == [
+        "gemini", "gemini-reserve", "groq", "pollinations", "template"]
     cfg.data["ai"]["provider"] = "groq"
-    assert [label for label, _ in get_provider(cfg).chain] == ["groq", "gemini", "gemini-reserve", "pollinations", "template"]
-    cfg.data["ai"]["provider"] = "nonsense"  # garbage primary -> gemini first
-    assert [label for label, _ in get_provider(cfg).chain] == ["gemini", "groq", "gemini-reserve", "pollinations", "template"]
+    assert [label for label, _ in get_provider(cfg).chain] == [
+        "groq", "gemini", "gemini-reserve", "pollinations", "template"]
+    cfg.data["ai"]["provider"] = "nonsense"  # garbage primary -> Gemini
+    assert [label for label, _ in get_provider(cfg).chain] == [
+        "gemini", "gemini-reserve", "groq", "pollinations", "template"]
     assert isinstance(get_provider(cfg), ChainedProvider)
 
 
@@ -6624,13 +6819,13 @@ def t_openrouter_lane():
     calls = post.call_args_list
     assert calls[1].kwargs["json"]["model"] == "nvidia/nemotron-3-ultra-550b-a55b:free"
     assert calls[1].kwargs["headers"]["Authorization"] == "Bearer k2"
-    # chain: openrouter sits after groq, before template.
+    # Groq's reserved text keys follow the full Gemini model/key group.
     cfg = tmp_cfg()
     cfg.data["ai"]["gemini_api_key"] = "g"
-    cfg.data["ai"]["groq_api_keys"] = ["q"]
+    cfg.data["ai"]["groq_api_keys"] = [f"g{i}" for i in range(10)]
     cfg.data["ai"]["openrouter_api_keys"] = ["o"]
     assert [label for label, _ in get_provider(cfg).chain] == [
-        "gemini", "groq", "openrouter", "gemini-reserve", "pollinations",
+        "gemini", "openrouter", "gemini-reserve", "groq", "pollinations",
         "template"]
     cfg.data["ai"]["groq_api_keys"] = []
     cfg.data["ai"]["gemini_api_key"] = ""
@@ -7006,7 +7201,7 @@ def t_jarvis_task():
         assert jarvis.run_task(tmp_cfg(), "hi") == "Recovered."
     # no brain -> clean message, nothing done.
     with patch("jarvis._brain", return_value=None):
-        assert "No LLM keys" in jarvis.run_task(tmp_cfg(), "hi")
+        assert "No text-generation keys" in jarvis.run_task(tmp_cfg(), "hi")
     # render cap enforced before the pipeline runs.
     with patch("main.cmd_generate", return_value=0) as gen:
         result = jarvis.render_videos(tmp_cfg(), 99, None, say=lambda m: None)
@@ -7063,7 +7258,7 @@ def t_voice():
     from voice import download_telegram_voice, transcribe
 
     cfg = tmp_cfg()
-    cfg.data.setdefault("ai", {})["groq_api_keys"] = ["k1", "k2"]
+    cfg.data.setdefault("ai", {})["groq_api_keys"] = ["k1", "k2", "k3"]
     ok = Mock(status_code=200)
     ok.json.return_value = {"text": "  hello mars "}
     with patch("requests.post", return_value=ok) as post, \
@@ -7601,6 +7796,20 @@ def t_panel_chat():
     assert panel.chat_reply(cfg, "Skeptic", "x", provider=None).startswith(
         "No LLM lane answered")
 
+    # A Whisper-only Groq pool must NOT count as a chat lane (key split).
+    solo = tmp_cfg()
+    solo.data["ai"]["groq_api_keys"] = ["gsk_solo_key_0000000000000001"]
+    solo.data["ai"]["groq_transcription_percent"] = 100
+    assert not solo.groq_llm_api_keys
+    assert not panel.has_llm_lane(solo)
+    assert panel.chat_reply(solo, "Producer", "status?",
+                            provider=None).startswith("No LLM lane answered")
+    mixed = tmp_cfg()
+    mixed.data["ai"]["groq_api_keys"] = ["gsk_a_00000000000000000001",
+                                         "gsk_b_00000000000000000002"]
+    mixed.data["ai"]["groq_transcription_percent"] = 50
+    assert mixed.groq_llm_api_keys and panel.has_llm_lane(mixed)
+
 
 def t_panel_state():
     """The header strip snapshot is offline-safe and complete."""
@@ -7828,6 +8037,7 @@ def t_key_pools():
     cfg.data.setdefault("channel", {})["elevenlabs_api_keys"] = ["x"]
     line = _pools_line(cfg)
     assert "Groq×2" in line and "11Labs×1" in line
+    assert "Whisper×1 + LLM×1" in line
     assert "YouTube" in line and "no Gemini" in line
     # Preflight runs offline and never raises without keys.
     from main import cmd_preflight
@@ -8688,6 +8898,7 @@ def main(argv: list[str] | None = None) -> int:
     tests = [
         ("config_defaults", t_config_defaults),
         ("config_example_parses", t_config_example_parses),
+        ("groq_key_split", t_groq_key_split),
         ("config_no_shared_mutation", t_config_no_shared_mutation),
         ("config_garbage_tolerated", t_config_garbage_tolerated),
         ("image_route", t_image_route),
@@ -8748,7 +8959,7 @@ def main(argv: list[str] | None = None) -> int:
         ("director", t_director),
         ("voice_pauses", t_voice_pauses),
         ("voice_stitch_mechanism", t_voice_stitch_mechanism),
-        ("captions_first", t_captions_first),
+        ("whisper_primary", t_whisper_primary),
         ("clip_cookies", t_clip_cookies),
         ("clip_cookies_status", t_clip_cookies_status),
         ("clip_title_polish", t_clip_title_polish),
