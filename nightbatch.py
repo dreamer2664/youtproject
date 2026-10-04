@@ -49,6 +49,7 @@ ROOT = Path(__file__).resolve().parent
 CLIP_EST_MIN = 10
 GEN_EST_MIN = 15
 PUSH_EST_MIN = 1
+MEETING_EST_MIN = 4
 
 # A lock older than this many hours is treated as stale (a crashed run must
 # not block the whole day). Same-day locks younger than this need --force.
@@ -114,15 +115,30 @@ def release_lock(cfg) -> None:
 # ---------------------------------------------------------------------- plan
 def plan_steps(cfg, clips: int = 2, count: int = 2, seconds: int | None = None,
                style: str | None = None, image_provider: str | None = None,
-               max_clips: int = 0, push: bool = True) -> tuple[list[dict],
-                                                               list[str]]:
+               max_clips: int = 0, push: bool = True,
+               meeting: bool = False, review: bool = False, top: int = 5,
+               since_iso: str | None = None) -> tuple[list[dict], list[str]]:
     """Build the step list (and human notes). Pure — no side effects.
 
     Each step: {id, kind, label, argv, est_min}. `argv` is a full command
     line for this same interpreter, so the run is just subprocesses.
+
+    With `meeting=True` the boardroom opens with its stats review; with
+    `review=True` a second boardroom sitting ranks the finished clips by
+    hook + overall quality and writes the upload plan (review.json next
+    to the journal).
     """
     steps: list[dict] = []
     notes: list[str] = []
+
+    if meeting:
+        steps.append({
+            "id": "meeting-stats", "kind": "meeting",
+            "label": "boardroom: stats review (opens the night)",
+            "argv": [sys.executable, "-u", str(ROOT / "main.py"),
+                     "meeting", "stats", "--json-out",
+                     str(batch_dir(cfg) / "stats-meeting.json")],
+            "est_min": MEETING_EST_MIN})
 
     pending = 0
     if clips > 0:
@@ -144,6 +160,18 @@ def plan_steps(cfg, clips: int = 2, count: int = 2, seconds: int | None = None,
             label = f"clip source {index} of {take} from the sheet"
             steps.append({"id": f"clip-{index}", "kind": "clip", "label": label,
                           "argv": argv, "est_min": CLIP_EST_MIN})
+
+    if review:
+        argv = [sys.executable, "-u", str(ROOT / "main.py"),
+                "meeting", "review", "--json-out",
+                str(batch_dir(cfg) / "review.json"),
+                "--top", str(max(1, int(top)))]
+        if since_iso:
+            argv += ["--since", since_iso]
+        steps.append({
+            "id": "review", "kind": "meeting",
+            "label": f"boardroom: rank the new clips, pick the best {top}",
+            "argv": argv, "est_min": MEETING_EST_MIN})
 
     if count > 0:
         argv = [sys.executable, "-u", str(ROOT / "main.py"), "batch",
@@ -239,9 +267,19 @@ def _mp4s(root: Path) -> set[str]:
 
 
 # -------------------------------------------------------------------- report
+def _read_json(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - a missing decision is just no picks
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def build_report(date: str, records: list[dict], new_clips: int,
                  new_videos: int, notes: list[str],
-                 journal: Path) -> str:
+                 journal: Path, picks: list[dict] | None = None,
+                 stats_summary: str = "",
+                 review_note: str = "") -> str:
     """The morning message. Pure function, easy to test."""
     ran = [r for r in records if r["status"] in ("done", "failed")]
     ok = [r for r in ran if r["status"] == "done"]
@@ -262,6 +300,20 @@ def build_report(date: str, records: list[dict], new_clips: int,
         lines.append(f"{icon} {rec['label']}{when}")
     lines.append("")
     lines.append(f"New on disk: {new_clips} clip(s), {new_videos} video(s).")
+    if stats_summary:
+        lines.append("")
+        lines.append(f"📊 Boardroom (stats): {stats_summary}")
+    if picks:
+        lines.append("")
+        lines.append("🎯 POST THESE TODAY (strongest first):")
+        for pick in picks:
+            title = pick.get("title") or pick.get("id") or "?"
+            why = (pick.get("why") or "").strip()
+            lines.append(f"  {pick.get('rank', '?')}. {title}"
+                         + (f" — {why}" if why else ""))
+    elif review_note:
+        lines.append("")
+        lines.append(f"🎬 Clip review: {review_note}")
     if skipped:
         lines.append(f"Resumed: {len(skipped)} step(s) were already done "
                      "(skipped).")
@@ -303,15 +355,44 @@ def run(cfg, clips: int = 2, count: int = 2, seconds: int | None = None,
         max_clips: int = 0, push: bool = True, report: bool = True,
         fresh: bool = False, force: bool = False, dry_run: bool = False,
         date: str | None = None, runner=None, notify=None,
-        echo=print) -> int:
-    """Run the night batch once. Returns a process exit code."""
+        echo=print, meeting: bool = False, review: bool = False,
+        top: int = 5, if_requested: bool = False) -> int:
+    """Run the night batch once. Returns a process exit code.
+
+    `if_requested`: the /go flow. Reads work/nightrun/request.json; with
+    no pending request it exits 0 without doing anything (so a wake task
+    that fires early is a no-op). With one, the request's options WIN
+    over the flags, and the request is marked done when the run ends —
+    even when steps failed, because the report says what failed and a
+    nightly retry loop would be worse.
+    """
     date = date or datetime.now().strftime("%Y-%m-%d")
     runner = runner or default_runner
     notify = notify or notify_telegram
 
+    if if_requested:
+        import nightreq
+
+        request = nightreq.read_request(cfg)
+        if not request or request.get("status") != "pending":
+            echo("  [nightbatch] no pending /go request — nothing to do.")
+            return 0
+        opts = request.get("options") or {}
+        clips = int(opts.get("clips", clips))
+        count = int(opts.get("count", count))
+        meeting = bool(opts.get("meeting", meeting))
+        review = bool(opts.get("review", review))
+        top = int(opts.get("top", top))
+        echo(f"  [nightbatch] /go request from {request.get('created', '?')}"
+             f" — clips={clips}, count={count}, meeting={meeting}, "
+             f"review={review}")
+
     steps, notes = plan_steps(cfg, clips=clips, count=count, seconds=seconds,
                               style=style, image_provider=image_provider,
-                              max_clips=max_clips, push=push)
+                              max_clips=max_clips, push=push,
+                              meeting=meeting, review=review, top=top,
+                              since_iso=datetime.now().isoformat(
+                                  timespec="seconds"))
 
     if dry_run:
         echo(f"  [nightbatch] plan for {date} (dry run — nothing executes)")
@@ -370,8 +451,17 @@ def run(cfg, clips: int = 2, count: int = 2, seconds: int | None = None,
 
     new_clips = len(_mp4s(Path(cfg.root) / "clips") - before_clips)
     new_videos = len(_mp4s(Path(cfg.out_dir)) - before_videos)
+    review_json = _read_json(batch_dir(cfg) / "review.json")
+    stats_json = _read_json(batch_dir(cfg) / "stats-meeting.json")
+    picks = review_json.get("picks") or []
+    review_note = ""
+    if review and not picks:
+        review_note = (review_json.get("summary")
+                       or "the boardroom produced no ranking this run")
     text = build_report(date, records, new_clips, new_videos, notes,
-                        journal_file)
+                        journal_file, picks=picks,
+                        stats_summary=str(stats_json.get("summary") or ""),
+                        review_note=review_note)
     echo("\n" + text)
     if report:
         if notify(cfg, text):
@@ -379,4 +469,10 @@ def run(cfg, clips: int = 2, count: int = 2, seconds: int | None = None,
         elif telegram_ready(cfg):
             echo("  [nightbatch] report send failed — read it above.")
     failed = [r for r in records if r["status"] == "failed"]
+    if if_requested:
+        import nightreq
+
+        nightreq.mark_done(cfg, failed=len(failed),
+                           note=text.splitlines()[0] if text else "")
+        echo("  [nightbatch] /go request marked done.")
     return 1 if failed else 0

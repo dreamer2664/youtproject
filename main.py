@@ -19,6 +19,10 @@
     python main.py meeting act   the room decides today's move ITSELF (clip
                                  a queued source, or generate a video on a
                                  topic it writes) and carries it out
+    python main.py nightbatch    one unattended run: clips -> boardroom ->
+                                 report (say /go in the Telegram bot)
+    python main.py wakeup        wake/boot task: run a pending /go, then
+                                 hibernate again if nobody's at the PC
     python main.py meeting memory  every decision the board ever made
     python main.py meeting last  re-read what the room said (transcript)
     python main.py snap          daily channel stats + retitle alerts
@@ -1391,12 +1395,27 @@ def cmd_meeting(cfg, args) -> int:
             print("  [meeting] dry run: act meeting — agenda preview:")
             print()
             print(m._act_agenda(cfg, cands))
+        elif args.kind == "review":
+            clips = m.collect_review_clips(
+                cfg, since=_parse_since(getattr(args, "since", None)),
+                ids=getattr(args, "clip", None))
+            if not clips:
+                print("  [meeting] dry run: review meeting — no new clips "
+                      "to review (clip something first).")
+                return 0
+            print(f"  [meeting] dry run: review meeting — "
+                  f"{len(clips)} clip(s) on the table:")
+            print()
+            print(m._review_agenda(clips, getattr(args, "top", 5)))
+            print("  [meeting] the room still has to SPEAK (dry run "
+                  "spends nothing).")
         else:
             print("  [meeting] dry run: stats meeting "
                   "(agenda = the last `snap` report)")
+        rounds = 1 if args.kind == "review" else cfg.meeting_rounds
         print(f"  Room: {', '.join(r['name'] for r in m.ROLES)} + chair, "
-              f"{cfg.meeting_rounds} round(s) — "
-              f"~{len(m.ROLES) * cfg.meeting_rounds + 2} LLM calls. "
+              f"{rounds} round(s) — "
+              f"~{len(m.ROLES) * rounds + 2} LLM calls. "
               "Nothing spent.")
         return 0
     from meeting import run_meeting
@@ -1407,16 +1426,85 @@ def cmd_meeting(cfg, args) -> int:
     # found 2026-10-04: `meeting act` could never execute anything).
     executor = ((lambda decision: _execute_board_action(cfg, decision))
                 if args.kind == "act" else None)
-    events = None
-    if getattr(args, "events_json", False):
-        def events(event):  # one machine-readable line per meeting event
+    captured: dict = {}
+
+    def events(event):  # capture the decision + forward the live stream
+        if event.get("type") == "decision":
+            captured["decision"] = event.get("decision")
+        if getattr(args, "events_json", False):
             print("##PANEL## " + json.dumps(event, ensure_ascii=False),
                   flush=True)
-    print(run_meeting(cfg, args.kind, urls=args.url or [],
-                      rounds=args.rounds, render=args.render,
-                      send=not args.no_send, executor=executor,
-                      events=events))
+
+    clips = None
+    if args.kind == "review":
+        from meeting import collect_review_clips
+
+        clips = collect_review_clips(
+            cfg, since=_parse_since(getattr(args, "since", None)),
+            ids=getattr(args, "clip", None))
+        if not clips:
+            print("  [meeting] no new clips to review — clip something "
+                  "first (or widen --since). Nothing spent.")
+            _write_decision_json(getattr(args, "json_out", None),
+                                 {"summary": "no clips to review",
+                                  "picks": []})
+            return 0
+    extra = {}
+    if args.kind == "review":
+        extra = {"clips": clips, "top": getattr(args, "top", 5)}
+    summary = run_meeting(cfg, args.kind, urls=args.url or [],
+                          rounds=args.rounds, render=args.render,
+                          send=not args.no_send, executor=executor,
+                          events=events, **extra)
+    decision = captured.get("decision")
+    if args.kind == "review" and decision and clips:
+        # ids alone are useless on a phone — carry the titles with them
+        by_id = {str(c.get("id")): c for c in clips}
+        for pick in decision.get("picks", []):
+            cand = by_id.get(pick["id"]) or {}
+            pick["title"] = " ".join(
+                str(cand.get("title") or "").split())[:120]
+            pick["file"] = cand.get("file", "")
+    _write_decision_json(getattr(args, "json_out", None), decision)
+    print(summary)
+    if args.kind == "review" and decision:
+        print("\n  🎯 Post these today (strongest first):")
+        for pick in decision["picks"]:
+            print(f"    {pick['rank']}. {pick.get('title') or pick['id']} "
+                  f"— {pick['why']}")
     return 0
+
+
+def _parse_since(raw):
+    """--since: ISO time or a bare date; None on anything unusable."""
+    if not raw:
+        return None
+    from datetime import datetime as _dt
+
+    text = str(raw).strip().replace("Z", "")
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M",
+                "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return _dt.strptime(text, fmt)
+        except ValueError:
+            continue
+    print(f"  [meeting] ignoring unparseable --since {raw!r}")
+    return None
+
+
+def _write_decision_json(path_str, decision) -> None:
+    """Best-effort sidecar for the night batch report (never fatal)."""
+    if not path_str:
+        return
+    from pathlib import Path as _P
+
+    try:
+        target = _P(path_str)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(decision or {}, indent=2,
+                                     ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        print(f"  [meeting] could not write {path_str}: {exc}")
 
 
 def _execute_board_action(cfg, args) -> str:
@@ -1762,6 +1850,14 @@ def cmd_panel(cfg, args) -> int:
                  open_browser=not args.no_browser)
 
 
+def cmd_wakeup(cfg, args) -> int:
+    """Wake/boot task: check Telegram once, run a pending /go, hibernate."""
+    from wakeup import run as wake_run
+
+    return wake_run(cfg, sleep_after=args.sleep_after, no_inbox=args.no_inbox,
+                    dry_run=args.dry_run, min_idle=args.min_idle)
+
+
 def cmd_nightbatch(cfg, args) -> int:
     """One unattended run: clip the queue, generate, park, report."""
     print(BANNER)
@@ -1771,7 +1867,9 @@ def cmd_nightbatch(cfg, args) -> int:
                style=args.style, image_provider=args.image_provider,
                max_clips=args.max_clips, push=not args.no_push,
                report=not args.no_report, fresh=args.fresh,
-               force=args.force, dry_run=args.dry_run, date=args.date)
+               force=args.force, dry_run=args.dry_run, date=args.date,
+               meeting=args.meeting, review=args.review, top=args.top,
+               if_requested=args.if_requested)
 
 
 def cmd_queue(cfg, args) -> int:
@@ -2100,7 +2198,9 @@ def main() -> int:
     p = sub.add_parser(
         "meeting",
         help="the AI boardroom: stats review, source pick, or board action")
-    p.add_argument("kind", choices=["stats", "pick", "act", "memory", "last"],
+    p.add_argument("kind",
+                   choices=["stats", "pick", "act", "review", "memory",
+                            "last"],
                    help="stats = review channel numbers | pick = choose "
                         "today's source video | act = the room decides "
                         "today's move itself (clip a queued source, or "
@@ -2127,6 +2227,18 @@ def main() -> int:
                    help="also print one machine-readable JSON line per "
                         "meeting event (prefixed ##PANEL##) — how the panel "
                         "renders the room live")
+    p.add_argument("--since",
+                   help="(review) only clips finished at/after this ISO "
+                        "time, e.g. 2026-10-04T21:00:00")
+    p.add_argument("--clip", action="append", metavar="ID|DIR",
+                   help="(review) restrict to this clip id or kit folder "
+                        "(repeatable; default: everything new)")
+    p.add_argument("--top", type=int, default=5, metavar="N",
+                   help="(review) how many clips the room should pick "
+                        "(default 5)")
+    p.add_argument("--json-out", dest="json_out", metavar="PATH",
+                   help="write the chair's decision as JSON (used by the "
+                        "night batch to carry picks into the report)")
 
     p = sub.add_parser("subpreview",
                        help="preview subtitle position/size/font on a real "
@@ -2280,6 +2392,31 @@ def main() -> int:
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
                    help="print the plan and exit; runs nothing")
     p.add_argument("--date", help="journal bucket (default: today, local)")
+    p.add_argument("--meeting", action="store_true",
+                   help="open with the boardroom stats meeting")
+    p.add_argument("--review", action="store_true",
+                   help="after clipping, hold the boardroom clip review "
+                        "(ranks the new clips by hook + quality)")
+    p.add_argument("--top", type=int, default=5, metavar="N",
+                   help="(review) how many clips the board picks (default 5)")
+    p.add_argument("--if-requested", action="store_true", dest="if_requested",
+                   help="run only if a /go request is pending; its options "
+                        "win over the flags (what the bot + wake task call)")
+
+    p = sub.add_parser("wakeup", help="wake/boot task: check Telegram once, "
+                                      "run the pending /go, optionally "
+                                      "hibernate again")
+    p.add_argument("--sleep-after", action="store_true", dest="sleep_after",
+                   help="hibernate when done — only if nobody touched the "
+                        "keyboard for --min-idle seconds")
+    p.add_argument("--min-idle", type=int, default=300, dest="min_idle",
+                   metavar="SECONDS",
+                   help="hibernate only after this much keyboard silence "
+                        "(default 300)")
+    p.add_argument("--no-inbox", action="store_true", dest="no_inbox",
+                   help="skip the one-shot Telegram check")
+    p.add_argument("--dry-run", action="store_true", dest="dry_run",
+                   help="say what would happen; execute nothing")
 
     p = sub.add_parser("autopost", help="post a finished video via Buffer")
     p.add_argument("file", nargs="?", help="video to post (default: newest .mp4 in out/)")
@@ -2341,6 +2478,7 @@ def main() -> int:
         "autopost": cmd_autopost,
         "panel": cmd_panel,
         "nightbatch": cmd_nightbatch,
+        "wakeup": cmd_wakeup,
     }
     return handlers[args.command](cfg, args)
 
