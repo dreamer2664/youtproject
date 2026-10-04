@@ -18,6 +18,7 @@ is fine too); the tool fills `added` when you use `sheet --add` and owns
 `status`/`result` from there on:
 
     new     queued (a bare empty status counts as new)
+    dropped you removed it from the queue in the panel (history kept)
     picked  the boardroom chose it (the reason lands in `result`)
     clipped rendered — the row keeps which lane/channel did it
     failed  refused (missing transcript, dead link, ...) — result says why
@@ -155,7 +156,7 @@ def mark_sheet(path: Path, url: str, status: str,
     The row keeps its place and history; unknown statuses are refused.
     Returns True if a row was updated.
     """
-    if status not in ("new", "picked", "clipped", "failed"):
+    if status not in ("new", "picked", "clipped", "failed", "dropped"):
         return False
     try:
         rows = load_sheet(path)

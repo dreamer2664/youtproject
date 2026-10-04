@@ -1,0 +1,703 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>youtproject · panel</title>
+<style>
+  :root{
+    --bg:#0b0e14; --bg2:#111624; --card:#151b2c; --card2:#1a2236;
+    --line:#232c44; --ink:#e8ecf6; --dim:#8b97b5; --dim2:#5d6885;
+    --acc:#6ea8fe; --ok:#3ddc97; --warn:#ffc857; --bad:#ff6b6b;
+    --strat:#7c5cff; --anal:#3ddc97; --prod:#ffb020; --skep:#ff6b6b;
+    --chair:#38bdf8;
+    --r:14px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:
+      radial-gradient(1200px 500px at 15% -10%, #16203a 0%, transparent 60%),
+      radial-gradient(900px 400px at 90% 0%, #1b1730 0%, transparent 55%),
+      var(--bg);
+    color:var(--ink);
+    font:15px/1.45 ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+    padding-bottom:150px;
+  }
+  a{color:var(--acc)}
+  header{
+    position:sticky; top:0; z-index:50;
+    display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+    padding:12px 22px;
+    background:rgba(11,14,20,.86); backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);
+  }
+  .brand{font-weight:700; font-size:17px; letter-spacing:.2px}
+  .brand .sub{color:var(--dim); font-weight:500; font-size:12px; margin-left:6px}
+  .chips{display:flex; gap:8px; flex-wrap:wrap; margin-left:auto}
+  .chip{
+    background:var(--card); border:1px solid var(--line); color:var(--dim);
+    border-radius:999px; padding:4px 11px; font-size:12.5px; white-space:nowrap;
+  }
+  .chip b{color:var(--ink); font-weight:600}
+  .chip.off{opacity:.42}
+  .chip.bad{border-color:#5a2430; color:#ffb3b3}
+  .chip.good{border-color:#1d4b38; color:#b6f2d6}
+  main{max-width:1180px; margin:22px auto; padding:0 20px;
+       display:grid; grid-template-columns:1fr 1fr; gap:18px}
+  .card{
+    background:linear-gradient(180deg,var(--card),var(--card2));
+    border:1px solid var(--line); border-radius:var(--r); padding:18px 18px 16px;
+  }
+  .card.wide{grid-column:1/-1}
+  .card h2{margin:0 0 14px; font-size:15px; letter-spacing:.4px;
+           text-transform:uppercase; color:var(--dim); font-weight:600}
+  .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+  button{
+    font:inherit; color:var(--ink); background:#1d2740; border:1px solid #2c3a5e;
+    border-radius:11px; padding:9px 14px; cursor:pointer; transition:.12s;
+  }
+  button:hover{background:#243154; border-color:#3a4c7a; transform:translateY(-1px)}
+  button:active{transform:translateY(0)}
+  button.big{
+    font-size:16.5px; font-weight:600; padding:18px 20px; flex:1 1 30%;
+    min-width:210px; background:linear-gradient(180deg,#1f2a45,#1a2338);
+  }
+  button.big .hint{display:block; font-size:12px; color:var(--dim);
+                   font-weight:400; margin-top:5px}
+  button.ghost{background:transparent; border-color:#2c3a5e; color:var(--dim)}
+  button.ghost:hover{color:var(--ink)}
+  button.gold{background:linear-gradient(180deg,#3a2f12,#241d0b);
+              border-color:#6d571f; color:#ffd98a; font-weight:600}
+  button.mini{padding:5px 9px; font-size:12.5px; border-radius:9px}
+  button.danger{border-color:#5a2430; color:#ffb3b3}
+  button:disabled{opacity:.45; cursor:not-allowed; transform:none}
+  .optgroup{margin-top:14px; padding-top:14px; border-top:1px dashed var(--line)}
+  .optline{display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:7px 0}
+  .optlabel{min-width:74px; color:var(--dim); font-size:13px}
+  .pill{
+    border:1px solid var(--line); border-radius:999px; padding:6px 13px;
+    font-size:13.5px; cursor:pointer; background:#161d30;
+  }
+  .pill:hover{border-color:#3a4c7a}
+  .pill.on{background:#22315a; border-color:#41609f; color:#dbe7ff;
+           box-shadow:0 0 0 1px #41609f inset}
+  .note{color:var(--dim); font-size:12.5px; margin-top:8px}
+  .note b{color:#cdd7ef}
+  /* boardroom */
+  .agents{display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:14px}
+  .agent{
+    border:1px solid var(--line); border-radius:12px; padding:11px 10px;
+    background:#131a2b; text-align:center; cursor:pointer; transition:.15s;
+    position:relative; overflow:hidden;
+  }
+  .agent:hover{border-color:#3a4c7a; transform:translateY(-2px)}
+  .agent .ava{font-size:25px; line-height:1}
+  .agent .nm{font-weight:600; font-size:13px; margin-top:6px}
+  .agent .ln{font-size:11px; color:var(--dim2)}
+  .agent .dot{position:absolute; top:9px; right:9px; width:8px; height:8px;
+              border-radius:50%; background:#2c3a5e}
+  .agent.speaking{border-color:currentColor; box-shadow:0 0 22px -6px currentColor}
+  .agent.speaking .dot{background:currentColor; animation:pulse 1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+  .transcript{
+    min-height:120px; max-height:340px; overflow:auto; padding:6px 4px;
+    border-top:1px dashed var(--line); margin-top:12px;
+  }
+  .turn{display:flex; gap:10px; margin:10px 0; animation:rise .25s ease-out}
+  @keyframes rise{from{opacity:0; transform:translateY(6px)}to{opacity:1}}
+  .turn .who{font-weight:700; font-size:13px; white-space:nowrap; min-width:118px}
+  .turn .txt{color:#dbe3f5}
+  .turn.agenda .txt, .turn.silent .txt{color:var(--dim); font-style:italic}
+  .decision{
+    margin:14px 0 4px; padding:13px 15px; border-radius:12px;
+    border:1px solid #6d571f; background:linear-gradient(180deg,#2a230e,#1b1708);
+  }
+  .decision h3{margin:0 0 6px; font-size:13px; color:#ffd98a;
+               text-transform:uppercase; letter-spacing:.5px}
+  .decision .why{color:#e8dcc0; font-size:14px}
+  .empty{color:var(--dim2); font-style:italic; padding:10px 4px}
+  /* links + tables */
+  table{width:100%; border-collapse:collapse; font-size:13.5px}
+  th{ text-align:left; color:var(--dim); font-weight:600; font-size:12px;
+      text-transform:uppercase; letter-spacing:.4px; padding:6px 8px }
+  td{padding:7px 8px; border-top:1px solid var(--line); vertical-align:middle}
+  td.url{max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  tr.done td{color:var(--dim2)}
+  .st{font-size:11.5px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--dim)}
+  .st.new{color:#cfe0ff; border-color:#33436e}
+  .st.picked{color:#ffd98a; border-color:#6d571f}
+  .st.clipped{color:#b6f2d6; border-color:#1d4b38}
+  .st.failed{color:#ffb3b3; border-color:#5a2430}
+  .st.dropped{color:var(--dim2)}
+  input[type=text], textarea{
+    font:inherit; color:var(--ink); background:#0f1526; border:1px solid var(--line);
+    border-radius:10px; padding:9px 12px; width:100%;
+  }
+  input[type=text]:focus, textarea:focus{outline:none; border-color:#41609f}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+  /* chat */
+  .chatroles{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px}
+  .chatlog{height:260px; overflow:auto; padding:8px 4px; border-top:1px dashed var(--line)}
+  .msg{margin:9px 0; display:flex; gap:10px}
+  .msg .who{font-weight:700; font-size:13px; min-width:105px; white-space:nowrap}
+  .msg.owner{flex-direction:row-reverse}
+  .msg.owner .who{text-align:right}
+  .msg .bub{background:#182037; border:1px solid var(--line); border-radius:11px;
+            padding:8px 12px; max-width:78%; white-space:pre-wrap}
+  /* job bar */
+  #jobbar{
+    position:fixed; left:0; right:0; bottom:0; z-index:60;
+    display:flex; align-items:center; gap:14px; padding:10px 20px;
+    background:rgba(13,17,27,.95); backdrop-filter:blur(8px);
+    border-top:1px solid var(--line);
+  }
+  #jobbar .lab{font-weight:600}
+  #jobbar .meta{color:var(--dim); font-size:13px}
+  .status{font-size:12.5px; padding:3px 10px; border-radius:999px; border:1px solid var(--line)}
+  .status.running{color:#cfe0ff; border-color:#33436e}
+  .status.done{color:#b6f2d6; border-color:#1d4b38}
+  .status.failed{color:#ffb3b3; border-color:#5a2430}
+  .status.stopped{color:var(--dim)}
+  #jobbar .spacer{flex:1}
+  #logpane{
+    position:fixed; left:0; right:0; bottom:56px; z-index:59;
+    max-height:44vh; overflow:auto; display:none;
+    background:#080b12; border-top:1px solid var(--line);
+    font:12.5px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+    padding:10px 18px; white-space:pre-wrap;
+  }
+  #logpane.open{display:block}
+  #logpane .ln{color:#c6d0e6}
+  #logpane .ln.bad{color:#ff9d9d}
+  #logpane .ln.cmd{color:#8fd0ff}
+  #toasts{position:fixed; top:64px; left:50%; transform:translateX(-50%);
+          z-index:80; display:flex; flex-direction:column; gap:8px; align-items:center}
+  .toast{background:#1b2337; border:1px solid #33436e; color:#dbe7ff;
+         padding:9px 16px; border-radius:11px; font-size:13.5px;
+         box-shadow:0 8px 26px -10px #000; animation:rise .2s}
+  details summary{cursor:pointer; color:var(--dim); font-size:13px; margin-top:10px}
+  pre.minutes{white-space:pre-wrap; background:#0f1526; border:1px solid var(--line);
+              border-radius:10px; padding:12px; font-size:12.5px;
+              font:12.5px/1.5 ui-monospace, Consolas, monospace; max-height:340px; overflow:auto}
+  @media (max-width:920px){ main{grid-template-columns:1fr} .agents{grid-template-columns:repeat(3,1fr)} }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">▶ youtproject <span class="sub">panel</span></div>
+  <div class="chips" id="chips"></div>
+</header>
+
+<div id="toasts"></div>
+
+<main>
+  <!-- ============================ MAKE ============================ -->
+  <section class="card wide">
+    <h2>Make</h2>
+    <div class="row">
+      <button class="big" data-open="gen">🎬 Generate a video
+        <span class="hint">script → voice → images → render</span></button>
+      <button class="big" data-open="clip">✂️ Clip a source
+        <span class="hint">long video → vertical clips with subtitles</span></button>
+      <button class="big" data-open="parts">🧩 Parts series
+        <span class="hint">long video → "Title · Part X" episodes</span></button>
+    </div>
+
+    <div class="optgroup" id="gen-opts" hidden>
+      <div class="optline"><span class="optlabel">Images</span>
+        <span class="pill on" data-gen="route" data-v="stock">📷 Stock photos <small>(Pexels first)</small></span>
+        <span class="pill" data-gen="route" data-v="ai">🎨 AI images <small>(Gemini)</small></span>
+        <span class="pill" data-gen="route" data-v="free">🆓 Free AI <small>(Pollinations)</small></span>
+      </div>
+      <div class="optline"><span class="optlabel">Style</span>
+        <span class="pill on" data-gen="style" data-v="photoreal">photoreal</span>
+        <span class="pill" data-gen="style" data-v="cartoon">cartoon</span>
+        <span class="pill" data-gen="style" data-v="stickman">stickman</span>
+      </div>
+      <div class="optline"><span class="optlabel">Length</span>
+        <span class="pill" data-gen="seconds" data-v="30">30s</span>
+        <span class="pill on" data-gen="seconds" data-v="45">45s</span>
+        <span class="pill" data-gen="seconds" data-v="60">60s</span>
+        <span class="pill" data-gen="seconds" data-v="90">90s</span>
+      </div>
+      <div class="optline"><span class="optlabel">How many</span>
+        <span class="pill on" data-gen="count" data-v="1">1</span>
+        <span class="pill" data-gen="count" data-v="2">2</span>
+        <span class="pill" data-gen="count" data-v="3">3</span>
+        <span class="pill" data-gen="count" data-v="5">5</span>
+        <span class="spacer"></span>
+        <button class="gold" id="gen-start">▶ Start generating</button>
+      </div>
+      <div class="note" id="gen-note"></div>
+    </div>
+
+    <div class="optgroup" id="src-opts" hidden>
+      <div class="note" id="src-note"></div>
+      <div class="row" style="margin:10px 0">
+        <button id="src-next">▶ Use the next source on the list</button>
+        <button class="ghost" id="src-open">Open the list file</button>
+      </div>
+      <table>
+        <thead><tr><th>Pending source</th><th style="width:170px">Use it for…</th></tr></thead>
+        <tbody id="src-list"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ========================== BOARDROOM ========================= -->
+  <section class="card wide">
+    <h2>The boardroom <span style="text-transform:none; color:var(--dim2)">— four seats, four models, one decision</span></h2>
+    <div class="agents" id="agents"></div>
+    <div class="row">
+      <button class="gold" id="m-act">🧠 Run the board (decides + acts)</button>
+      <button class="ghost" id="m-dry">🧪 Dry run (free)</button>
+      <button class="ghost" id="m-stats">📊 Stats meeting</button>
+      <button class="ghost" id="m-last">📜 Read last minutes</button>
+      <button class="ghost" id="m-mem">🧾 What the board remembers</button>
+    </div>
+    <div class="transcript" id="transcript">
+      <div class="empty">Run a meeting and the seats will talk here — live, turn by turn.</div>
+    </div>
+    <details>
+      <summary>Meeting history (minutes are written to out/meetings/)</summary>
+      <div id="minutes-list" style="margin-top:8px"></div>
+      <pre class="minutes" id="minutes-body" hidden></pre>
+    </details>
+  </section>
+
+  <!-- ============================ TOOLS =========================== -->
+  <section class="card">
+    <h2>Stats &amp; tools</h2>
+    <div class="row">
+      <button data-tool="snap">📈 Channel snapshot</button>
+      <button data-tool="keys">🔑 Keys &amp; quotas</button>
+      <button data-tool="queue">🗂 Queue</button>
+      <button data-tool="preflight">✅ Preflight</button>
+      <button data-tool="package">📦 Build kits (3)</button>
+      <button data-tool="errors">🚨 Errors</button>
+      <button data-tool="topics">💡 Topics</button>
+      <button class="ghost" id="open-out">📂 Open output folder</button>
+    </div>
+    <div class="note">Read-only checks and kit-building — none of these can post anything.</div>
+  </section>
+
+  <!-- ============================ LINKS =========================== -->
+  <section class="card">
+    <h2>YouTube links <span style="text-transform:none; color:var(--dim2)">— the queue the board and clip lanes eat from</span></h2>
+    <div class="grid2">
+      <input type="text" id="link-url" placeholder="paste a YouTube link">
+      <input type="text" id="link-note" placeholder="note (optional)">
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="link-add">＋ Add to the list</button>
+      <button class="ghost" id="link-open">Open the list file</button>
+    </div>
+    <div class="note" id="link-note-out"></div>
+    <div style="margin-top:12px"><table>
+      <thead><tr><th>Queued</th><th style="width:250px"></th></tr></thead>
+      <tbody id="links-pending"></tbody>
+    </table></div>
+    <details>
+      <summary>History (clipped, failed, removed — kept forever)</summary>
+      <table style="margin-top:8px"><tbody id="links-history"></tbody></table>
+    </details>
+  </section>
+
+  <!-- ============================ CHAT ============================ -->
+  <section class="card wide">
+    <h2>Talk to the board <span style="text-transform:none; color:var(--dim2)">— pick a seat; each answers on its own model</span></h2>
+    <div class="chatroles" id="chat-roles"></div>
+    <div class="chatlog" id="chat-log">
+      <div class="empty">Pick a seat above, then ask anything — "how's the channel doing?", "what broke today?", "what should we post next?"</div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input type="text" id="chat-text" placeholder="Ask the board…" style="flex:1">
+      <button class="gold" id="chat-send">Send</button>
+    </div>
+  </section>
+</main>
+
+<div id="logpane"></div>
+<footer id="jobbar">
+  <span class="status" id="job-status">idle</span>
+  <span class="lab" id="job-label">nothing running</span>
+  <span class="meta" id="job-elapsed"></span>
+  <span class="spacer"></span>
+  <button class="mini ghost" id="log-toggle">console ▾</button>
+  <button class="mini danger" id="stop" disabled>■ stop</button>
+</footer>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const COLORS = {Strategist:"var(--strat)", Analyst:"var(--anal)", Producer:"var(--prod)", Skeptic:"var(--skep)", Chair:"var(--chair)"};
+const $S = {
+  gen:{route:"stock", style:"photoreal", seconds:"45", count:"1"},
+  src:null, chatRole:null, chatHistory:[], roles:[], jobId:null, tick:null
+};
+
+/* ---------- tiny helpers ---------- */
+async function api(path, body){
+  const opt = body === undefined ? {} :
+    {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)};
+  const res = await fetch(path, opt);
+  try { return await res.json(); } catch(e){ return {}; }
+}
+function toast(text, ms=3200){
+  const el = document.createElement("div");
+  el.className = "toast"; el.textContent = text;
+  $("toasts").appendChild(el);
+  setTimeout(()=>el.remove(), ms);
+}
+function fmtAgo(ts){
+  if (!ts) return "";
+  const s = Math.max(0, (Date.now()/1000) - ts);
+  if (s < 60) return "just now";
+  if (s < 3600) return Math.floor(s/60) + " min ago";
+  if (s < 86400) return Math.floor(s/3600) + " h ago";
+  return Math.floor(s/86400) + " d ago";
+}
+function esc(t){ const d=document.createElement("div"); d.textContent=t??""; return d.innerHTML; }
+
+/* ---------- header chips ---------- */
+async function refreshState(){
+  const s = await api("/api/state");
+  const snap = s.snapshot || {}, keys = snap.keys || {};
+  const chips = [];
+  const q = snap.queue || {};
+  const qn = Object.values(q).reduce((a,b)=>a+b,0);
+  if (qn) chips.push(`<span class="chip"><b>${qn}</b> jobs in queue</span>`);
+  chips.push(`<span class="chip ${snap.disk_free_mb !== null && snap.disk_free_mb < 2000 ? "bad" : "good"}">
+      disk <b>${snap.disk_free_mb ?? "?"}</b> MB free</span>`);
+  const have = Object.entries(keys).filter(([,n])=>n>0);
+  const missing = Object.entries(keys).filter(([,n])=>n===0).map(([k])=>k);
+  for (const [k,n] of have) chips.push(`<span class="chip"><b>${n}</b> ${k}</span>`);
+  if (missing.length) chips.push(`<span class="chip off" title="no keys configured">no keys: ${missing.join(", ")}</span>`);
+  if (snap.meetings) chips.push(`<span class="chip">${snap.meetings} minutes</span>`);
+  $("chips").innerHTML = chips.join("");
+  if (s.roles && s.roles.length) { $S.roles = s.roles; renderAgents(); renderChatRoles(); }
+  else if (s.roles && !$S.roles.length) { renderChatRoles(); }
+  renderHistory(s.history || []);
+  applyJobs(s.runner);
+}
+function applyJobs(runner){
+  if (!runner) return;
+  const cur = runner.current, pend = runner.pending || [];
+  if (cur){
+    $S.jobId = cur.id;
+    $S.startedAt = cur.started;
+    $("job-status").textContent = cur.status;
+    $("job-status").className = "status " + cur.status;
+    $("job-label").textContent = cur.label;
+    $("stop").disabled = cur.status !== "running";
+    if (cur.status === "running"){
+      if (!$S.tick) $S.tick = setInterval(paintElapsed, 1000);
+      paintElapsed();
+    }
+  } else {
+    $("stop").disabled = true;
+    if ($S.tick){ clearInterval($S.tick); $S.tick = null; }
+    const status = $("job-status").textContent;
+    if (pend.length){
+      $S.jobId = pend[0].id;
+      $("job-status").textContent = "queued";
+      $("job-status").className = "status";
+      $("job-label").textContent = pend[0].label + (pend.length>1 ? ` (+${pend.length-1} more)` : "");
+    } else if (status === "idle" || status === "queued"){
+      $("job-status").textContent = "idle"; $("job-status").className = "status";
+      $("job-label").textContent = "nothing running"; $("job-elapsed").textContent = "";
+    }
+    // done / failed / stopped stay on screen until the next job starts
+  }
+}
+function paintElapsed(){
+  if (!$S.startedAt) return;
+  const s = Math.floor(Date.now()/1000 - $S.startedAt);
+  $("job-elapsed").textContent = `${String(Math.floor(s/60)).padStart(2,"0")}:${String(s%60).padStart(2,"0")}`;
+}
+
+/* ---------- make: options ---------- */
+document.querySelectorAll("[data-open]").forEach(btn=>{
+  btn.onclick = ()=>{
+    const which = btn.dataset.open;
+    $("gen-opts").hidden = which !== "gen";
+    $("src-opts").hidden = which === "gen";
+    if (which !== "gen"){ $S.src = null; $S.srcMode = which; loadLinks(); }
+    if (which === "gen") updateGenNote();
+    if (which === "clip"){ $("src-next").textContent = "▶ Clip the next source on the list"; $("src-note").innerHTML = "Clip turns one long video into vertical clips. Pick a queued source below, or clip the next one on the list."; }
+    if (which === "parts"){ $("src-next").textContent = "▶ Parts the first queued source"; $("src-note").innerHTML = "Parts splits one long video into a <b>Title · Part X</b> series. Pick a source below."; }
+  };
+});
+document.querySelectorAll(".pill[data-gen]").forEach(p=>{
+  p.onclick = ()=>{
+    const key = p.dataset.gen;
+    p.parentElement.querySelectorAll(`.pill[data-gen="${key}"]`).forEach(x=>x.classList.remove("on"));
+    p.classList.add("on");
+    $S.gen[key] = p.dataset.v;
+    updateGenNote();
+  };
+});
+function updateGenNote(){
+  const g = $S.gen;
+  const routeLabel = {stock:"real stock photos (Pexels → Pixabay → AI fallback)", ai:"AI images (Gemini)", free:"free AI images (Pollinations)"}[g.route];
+  $("gen-note").innerHTML = `Will run: <b>generate --count ${g.count} --seconds ${g.seconds} --style ${g.style} --image-provider ${g.route}</b><br>
+    Images: ${routeLabel}. This spends API quota (script, voice, images) — that's why it's a click here, not an accident.`;
+}
+$("gen-start").onclick = () => run("generate", {...$S.gen});
+
+/* ---------- make: sources ---------- */
+$("src-next").onclick = async () => {
+  if ($S.srcMode === "parts"){
+    const first = document.querySelector("#src-list [data-parts2]");
+    if (!first) return toast("the list is empty — add a link below");
+    run("parts", {url: first.dataset.parts2});
+  } else {
+    run("clip", {});      // clip --sheet 1: next queued source, board picks first
+  }
+};
+$("src-open").onclick = async () => { const r = await api("/api/open", {what:"sheet"}); toast(r.note || "ok"); };
+
+/* ---------- boardroom ---------- */
+function renderAgents(){
+  const box = $("agents");
+  if (!box || !$S.roles.length) return;
+  box.innerHTML = $S.roles.map(r=>`
+    <div class="agent" data-role="${esc(r.name)}" style="color:${COLORS[r.name]||"#8b97b5"}">
+      <span class="dot"></span>
+      <div class="ava">${r.emoji}</div>
+      <div class="nm">${esc(r.name)}</div>
+      <div class="ln">${esc(r.lane)}</div>
+    </div>`).join("");
+  box.querySelectorAll(".agent").forEach(a=>{
+    a.onclick = ()=>{ pickChatRole(a.dataset.role); $("chat-text").focus(); };
+  });
+}
+function meetButtons(kind, dryRun){ run("meeting", {kind, dry_run:!!dryRun}); }
+$("m-act").onclick = ()=>meetButtons("act", false);
+$("m-dry").onclick = ()=>meetButtons("act", true);
+$("m-stats").onclick = ()=>meetButtons("stats", false);
+$("m-last").onclick = ()=>run("meeting_last", {});
+$("m-mem").onclick = ()=>run("meeting_memory", {});
+
+function clearTranscript(){
+  $("transcript").innerHTML = "";
+  document.querySelectorAll(".agent").forEach(a=>a.classList.remove("speaking"));
+}
+function addTurn(cls, who, text, color){
+  const box = $("transcript");
+  const el = document.createElement("div");
+  el.className = "turn " + cls;
+  el.innerHTML = `<div class="who" style="color:${color||"var(--dim)"}">${esc(who)}</div>
+                  <div class="txt">${esc(text)}</div>`;
+  box.appendChild(el); box.scrollTop = box.scrollHeight;
+}
+function addDecision(decision){
+  if (!decision) return;
+  const box = $("transcript");
+  let detail = "";
+  if (decision.choice) detail = `Clip <b>${esc(decision.choice)}</b> — ${esc(decision.reason||"")}`;
+  else if (decision.action === "generate") detail = `Generate: <b>${esc(decision.topic||"")}</b> — ${esc(decision.reason||"")}`;
+  else if (decision.action === "clip") detail = `Clip <b>${esc(decision.url||"")}</b> — ${esc(decision.reason||"")}`;
+  else if (decision.action === "none") detail = `Nothing extra today — ${esc(decision.reason||"")}`;
+  else if (decision.decisions) detail = esc(decision.summary||"") + "<br>" + decision.decisions.map(d=>"• "+esc(d)).join("<br>");
+  const el = document.createElement("div");
+  el.className = "decision";
+  el.innerHTML = `<h3>Decision</h3><div class="why">${detail}</div>`;
+  box.appendChild(el); box.scrollTop = box.scrollHeight;
+}
+function markSpeaking(role, on){
+  document.querySelectorAll(".agent").forEach(a=>{
+    if (a.dataset.role === role) a.classList.toggle("speaking", on);
+  });
+}
+function renderHistory(history){
+  const done = history.slice().reverse().slice(0,4);
+  if (!done.length) return;
+  $("job-elapsed").title = done.map(h=>`${h.label}: ${h.status}`).join("\n");
+}
+async function loadMinutes(){
+  const {rows} = await api("/api/meetings");
+  $("minutes-list").innerHTML = (rows||[]).map(r=>`
+    <button class="mini ghost" data-min="${esc(r.name)}">${esc(r.name)} · ${fmtAgo(r.when)}</button>`).join(" ") || "<span class='empty'>no minutes yet</span>";
+  $("minutes-list").querySelectorAll("[data-min]").forEach(b=>{
+    b.onclick = async ()=>{
+      const r = await api("/api/minutes?name=" + encodeURIComponent(b.dataset.min));
+      $("minutes-body").hidden = false;
+      $("minutes-body").textContent = r.text || "(unreadable)";
+    };
+  });
+}
+
+/* ---------- tools ---------- */
+document.querySelectorAll("[data-tool]").forEach(b=>{
+  b.onclick = ()=>run(b.dataset.tool, b.dataset.tool === "package" ? {limit:3} : {});
+});
+$("open-out").onclick = async ()=>{ const r = await api("/api/open", {what:"out"}); toast(r.note||"ok"); };
+
+/* ---------- links ---------- */
+async function loadLinks(){
+  const {rows} = await api("/api/links");
+  const pendingRows = (rows||[]).filter(r=>r.pending);
+  const history = (rows||[]).filter(r=>!r.pending);
+  $("links-pending").innerHTML = pendingRows.length ? pendingRows.map(r=>`
+    <tr>
+      <td class="url"><a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.url)}</a>
+        ${r.note ? `<div class="note">${esc(r.note)}</div>` : ""}</td>
+      <td>
+        <button class="mini" data-clip="${esc(r.url)}">✂️ clip</button>
+        <button class="mini" data-parts="${esc(r.url)}">🧩 parts</button>
+        <button class="mini ghost" data-stats="${esc(r.url)}">📈 stats</button>
+        <button class="mini ghost danger" data-drop="${esc(r.url)}">✕</button>
+      </td>
+    </tr>`).join("") : `<tr><td colspan="2" class="empty">nothing queued — paste a link above, or let the board pick one</td></tr>`;
+  $("src-list").innerHTML = pendingRows.map(r=>`
+    <tr><td class="url">${esc(r.url)}${r.note?` <span class="note">· ${esc(r.note)}</span>`:""}</td>
+      <td><button class="mini" data-clip2="${esc(r.url)}">✂️ clip</button>
+          <button class="mini" data-parts2="${esc(r.url)}">🧩 parts</button></td></tr>`).join("")
+    || `<tr><td colspan="2" class="empty">the list is empty</td></tr>`;
+  $("links-history").innerHTML = history.slice().reverse().map(r=>`
+    <tr class="${r.status==='clipped'?'done':''}">
+      <td class="url">${esc(r.url)}<div class="note">${esc(r.result||"")}</div></td>
+      <td style="width:120px"><span class="st ${esc(r.status)}">${esc(r.status)}</span></td>
+      <td style="width:96px">${r.status==="dropped"?`<button class="mini ghost" data-restore="${esc(r.url)}">↩ restore</button>`:""}</td>
+    </tr>`).join("") || `<tr><td class="empty">history is empty</td></tr>`;
+  document.querySelectorAll("[data-clip],[data-clip2]").forEach(b=>b.onclick=()=>run("clip",{url:b.dataset.clip||b.dataset.clip2}));
+  document.querySelectorAll("[data-parts],[data-parts2]").forEach(b=>b.onclick=()=>run("parts",{url:b.dataset.parts||b.dataset.parts2}));
+  document.querySelectorAll("[data-stats]").forEach(b=>b.onclick=()=>run("yt_video",{url:b.dataset.stats}));
+  document.querySelectorAll("[data-drop]").forEach(b=>b.onclick=async()=>{
+    const r = await api("/api/links",{op:"drop", url:b.dataset.drop});
+    toast(r.note||"done"); loadLinks(); refreshState();
+  });
+  document.querySelectorAll("[data-restore]").forEach(b=>b.onclick=async()=>{
+    const r = await api("/api/links",{op:"restore", url:b.dataset.restore});
+    toast(r.note||"done"); loadLinks();
+  });
+}
+$("link-add").onclick = async ()=>{
+  const url = $("link-url").value.trim(), note = $("link-note").value.trim();
+  if (!url) return toast("paste a link first");
+  const r = await api("/api/links",{op:"add", url, note});
+  $("link-note-out").textContent = r.note || "";
+  if (r.note && r.note.startsWith("added")){ $("link-url").value=""; $("link-note").value=""; }
+  loadLinks();
+};
+$("link-open").onclick = async ()=>{ const r = await api("/api/open",{what:"sheet"}); toast(r.note||"ok"); };
+
+/* ---------- chat ---------- */
+function renderChatRoles(){
+  $("chat-roles").innerHTML = ($S.roles||[]).map(r=>`
+    <span class="pill" data-chat="${esc(r.name)}" style="${$S.chatRole===r.name?`border-color:${COLORS[r.name]};color:${COLORS[r.name]}`:""}">
+      ${r.emoji} ${esc(r.name)}</span>`).join("");
+  $("chat-roles").querySelectorAll("[data-chat]").forEach(p=>p.onclick=()=>pickChatRole(p.dataset.chat));
+}
+function pickChatRole(name){
+  $S.chatRole = name;
+  renderChatRoles();
+  document.querySelectorAll(".agent").forEach(a=>{
+    a.style.borderColor = a.dataset.role===name ? (COLORS[name]||"#3a4c7a") : "";
+  });
+}
+function addMsg(who, text, owner){
+  const el = document.createElement("div");
+  el.className = "msg " + (owner?"owner":"");
+  const color = COLORS[who] || (owner?"var(--acc)":"var(--dim)");
+  el.innerHTML = `<div class="who" style="color:${color}">${esc(owner?"you":who)}</div>
+                  <div class="bub">${esc(text)}</div>`;
+  $("chat-log").appendChild(el); $("chat-log").scrollTop = $("chat-log").scrollHeight;
+}
+async function sendChat(){
+  const text = $("chat-text").value.trim();
+  if (!text) return;
+  if (!$S.chatRole){ toast("pick a seat first"); return; }
+  $("chat-text").value = "";
+  addMsg($S.chatRole, text, true);
+  $S.chatHistory.push({who:"owner", text});
+  addMsg($S.chatRole, "…thinking");
+  const thinking = $("chat-log").lastElementChild.querySelector(".bub");
+  const r = await api("/api/chat",{role:$S.chatRole, text, history:$S.chatHistory.slice(-8)});
+  thinking.textContent = r.text || "(no answer)";
+  $S.chatHistory.push({who:$S.chatRole, text:r.text||""});
+}
+$("chat-send").onclick = sendChat;
+$("chat-text").addEventListener("keydown", e=>{ if (e.key === "Enter") sendChat(); });
+
+/* ---------- job bar + log ---------- */
+function logLine(line){
+  const pane = $("logpane");
+  const el = document.createElement("div");
+  el.className = "ln" + (/\b(error|failed|traceback|refused|rejected)\b/i.test(line) ? " bad" : (line.startsWith("$ ") ? " cmd" : ""));
+  el.textContent = line;
+  pane.appendChild(el);
+  while (pane.childElementCount > 2500) pane.removeChild(pane.firstChild);
+  pane.scrollTop = pane.scrollHeight;
+}
+async function run(action, params){
+  const r = await api("/api/run", {action, params});
+  if (r.error){ toast("✋ " + r.error); return; }
+  $S.jobId = r.job && r.job.id;
+  window.__started = window.__started || {};
+  if (r.job) window.__started[r.job.id] = Date.now()/1000;
+  if (action === "meeting"){ clearTranscript(); addTurn("agenda", "the room", "agenda is being set…"); }
+  $("logpane").classList.add("open");
+  toast(r.job ? `▶ ${r.job.label}` : "started");
+  refreshState();
+}
+$("stop").onclick = async ()=>{ const r = await api("/api/stop",{}); toast(r.note||"stopped"); };
+$("log-toggle").onclick = ()=>{
+  const pane = $("logpane");
+  pane.classList.toggle("open");
+  $("log-toggle").textContent = pane.classList.contains("open") ? "console ▾" : "console ▸";
+};
+function clearSpinners(){ document.querySelectorAll(".agent").forEach(a=>a.classList.remove("speaking")); }
+
+/* ---------- live events ---------- */
+const es = new EventSource("/events");
+es.onmessage = (ev)=>{
+  let msg; try { msg = JSON.parse(ev.data); } catch(e){ return; }
+  if (msg.kind === "log"){
+    if (!msg.job || !$S.jobId || msg.job === $S.jobId) logLine(msg.line);
+  } else if (msg.kind === "jobs"){
+    applyJobs(msg.state);
+  } else if (msg.kind === "job"){
+    const j = msg.job;
+    $("job-status").textContent = j.status;
+    $("job-status").className = "status " + j.status;
+    $("stop").disabled = true;
+    if (j.status === "done") toast("✅ " + j.label + " finished");
+    if (j.status === "failed") toast("❌ " + j.label + " failed — see the console");
+    if (j.status === "stopped") toast("■ stopped: " + j.label);
+    clearSpinners();
+    refreshState(); loadLinks(); loadMinutes();
+  } else if (msg.kind === "event"){
+    const e = msg.event || {};
+    if (e.type === "agenda"){
+      $("transcript").innerHTML = "";
+      addTurn("agenda", "agenda", e.text || "");
+    } else if (e.type === "turn"){
+      markSpeaking(e.role, true);
+      addTurn("turn", `${e.role} ${e.emoji||""}`, e.text || "", COLORS[e.role]);
+      setTimeout(()=>markSpeaking(e.role, false), 900);
+    } else if (e.type === "silent"){
+      addTurn("silent", `${e.role} ${e.emoji||""}`, `is silent (${e.reason||""})`, COLORS[e.role]);
+    } else if (e.type === "decision"){
+      addDecision(e.decision);
+    } else if (e.type === "action"){
+      addTurn("agenda", "[meeting]", `executing: ${e.action}`);
+    } else if (e.type === "render"){
+      addTurn("agenda", "[meeting]", `rendering the winner: ${e.url}`);
+    }
+  } else if (msg.kind === "hello"){
+    applyJobs(msg.runner);
+  }
+};
+es.onerror = ()=>{ /* the page reconnects on its own */ };
+
+/* ---------- boot ---------- */
+refreshState(); loadLinks(); loadMinutes();
+setInterval(refreshState, 20000);
+document.addEventListener("keydown", e=>{ if (e.key === "Escape"){ $("gen-opts").hidden = $("src-opts").hidden = true; }});
+</script>
+</body>
+</html>

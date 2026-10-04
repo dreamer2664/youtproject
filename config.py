@@ -80,6 +80,27 @@ STYLES = ("photoreal", "cartoon", "stickman")
 # deprecated / not supported" for the FLUX/SDXL lanes.)
 IMAGE_PROVIDERS = ("pexels", "pixabay", "pollinations", "gemini")
 
+# Friendly one-click route names for the panel / --image-provider
+# (2026-10-04): nobody should have to remember that "stock" means Pexels
+# first with Pixabay behind it.
+IMAGE_ROUTES = {"stock": "pexels", "ai": "gemini", "free": "pollinations"}
+
+
+def resolve_image_route(value: str) -> str:
+    """'stock'/'ai'/'free' (or a raw provider) -> provider name.
+
+    Raises ValueError on nonsense so the CLI can die with the list.
+    """
+    name = (value or "").strip().lower()
+    if name in IMAGE_ROUTES:
+        return IMAGE_ROUTES[name]
+    if name in IMAGE_PROVIDERS:
+        return name
+    raise ValueError(
+        f"unknown image route {value!r} — want one of "
+        f"{', '.join(sorted(IMAGE_ROUTES))} (stock, ai, free) or "
+        f"{', '.join(IMAGE_PROVIDERS)}")
+
 # Buffer autopost targets (autopost.py). Order in config = posting order.
 BUFFER_SERVICES = ("youtube", "tiktok", "instagram")
 

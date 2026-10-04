@@ -6804,9 +6804,10 @@ def t_meeting_act_wiring():
     captured = {}
 
     def fake_run(cfg_, kind, urls=None, rounds=None, render=False,
-                 send=True, say=None, executor=None):
+                 send=True, say=None, executor=None, events=None):
         captured["executor"] = executor
         captured["kind"] = kind
+        captured["events"] = events
         return "fake summary"
 
     real_run = meeting_mod.run_meeting
@@ -6814,11 +6815,13 @@ def t_meeting_act_wiring():
     try:
         args = argparse.Namespace(kind="act", url=None, rounds=None,
                                   render=False, no_send=True, add=None,
-                                  dry_run=False)
+                                  dry_run=False, events_json=True)
         rc = main_mod.cmd_meeting(cfg, args)
     finally:
         meeting_mod.run_meeting = real_run
     assert rc == 0 and captured.get("kind") == "act"
+    # --events-json wires a callable event listener (the panel streams it)
+    assert callable(captured.get("events")), captured.get("events")
     executor = captured.get("executor")
     assert executor is not None
     # run_meeting calls back with exactly ONE argument (the decision dict).
@@ -7405,6 +7408,325 @@ def t_crew():
     said = []
     daily_digest(tmp_cfg(), state, None, said.append)
     assert "2 (1 live, 1 draft)" in said[0] and state["digests"] == [today]
+
+
+
+def t_image_route():
+    """Friendly image routes: stock/ai/free -> provider, raw names pass."""
+    from config import IMAGE_PROVIDERS, resolve_image_route
+
+    assert resolve_image_route("stock") == "pexels"
+    assert resolve_image_route("AI") == "gemini"
+    assert resolve_image_route(" free ") == "pollinations"
+    for name in IMAGE_PROVIDERS:
+        assert resolve_image_route(name) == name
+    try:
+        resolve_image_route("jpg")
+        raise AssertionError("nonsense route must raise")
+    except ValueError as exc:
+        assert "stock" in str(exc) and "pexels" in str(exc)
+    # the CLI flag is really wired: an invalid route dies before spending
+    import subprocess
+    root = Path(__file__).resolve().parent
+    res = subprocess.run(
+        [sys.executable, str(root / "main.py"), "generate", "--count", "1",
+         "--image-provider", "nope"],
+        capture_output=True, text=True, timeout=120, cwd=str(root))
+    assert res.returncode != 0, res.stdout[-400:]
+    assert "unknown image route" in (res.stdout + res.stderr)
+
+
+def t_sheet_dropped():
+    """Panel queue-removal uses status 'dropped', history stays put."""
+    from sheet import (append_sheet, load_sheet, mark_sheet, pending_rows,
+                       take_pending)
+
+    cfg = tmp_cfg()
+    page = cfg.sources_sheet
+    assert append_sheet(page, "https://youtu.be/aaa", "the octopus")
+    assert mark_sheet(page, "https://youtu.be/aaa", "dropped")
+    rows = load_sheet(page)
+    assert len(rows) == 1 and rows[0]["status"] == "dropped"   # not deleted
+    assert pending_rows(rows) == [] and take_pending(page, 3) == []
+    assert not mark_sheet(page, "https://youtu.be/aaa", "banana")
+    assert mark_sheet(page, "https://youtu.be/aaa", "new")
+    assert len(take_pending(page, 1)) == 1
+
+
+def t_panel_argmap():
+    """Every panel button -> exact CLI args (the golden mapping)."""
+    import panel
+
+    assert panel.build_argv("generate", {}) == ["generate", "--count", "1"]
+    assert panel.build_argv("generate", {"count": 3, "seconds": 60,
+                                         "style": "cartoon",
+                                         "route": "stock"}) == [
+        "generate", "--count", "3", "--seconds", "60", "--style", "cartoon",
+        "--image-provider", "stock"]
+    assert panel.build_argv("generate", {"count": 99}) == [
+        "generate", "--count", "10"]                     # clamped
+    assert panel.build_argv("clip", {"url": "https://youtu.be/x"}) == [
+        "clip", "--url", "https://youtu.be/x"]
+    assert panel.build_argv("clip", {}) == ["clip", "--sheet", "1"]
+    assert panel.build_argv("parts", {"url": "https://youtu.be/x"}) == [
+        "parts", "--url", "https://youtu.be/x"]
+    assert panel.build_argv("meeting", {"kind": "act"}) == [
+        "meeting", "act", "--no-send", "--events-json"]
+    assert panel.build_argv("meeting", {"kind": "act",
+                                        "dry_run": True}) == [
+        "meeting", "act", "--no-send", "--dry-run"]
+    assert panel.build_argv("meeting", {"kind": "bogus"}) == [
+        "meeting", "act", "--no-send", "--events-json"]
+    assert panel.build_argv("meeting_memory") == ["meeting", "memory"]
+    assert panel.build_argv("keys") == ["keys", "--month"]
+    assert panel.build_argv("package", {}) == ["package", "--limit", "3"]
+    assert panel.build_argv("yt_video", {"url": "https://youtu.be/x"}) == [
+        "yt", "https://youtu.be/x"]
+    for bad in ({"action": "parts"}, {"action": "yt_video"},
+                {"action": "nope"}, {"action": "autopost"},
+                {"action": "crew"}):
+        try:
+            panel.build_argv(bad["action"], {})
+            raise AssertionError(f"{bad['action']} must not be runnable")
+        except ValueError:
+            pass
+    assert panel.describe("generate", {"count": 2, "seconds": 45,
+                                       "style": "photoreal",
+                                       "route": "stock"}) == \
+        "generate: 2 video(s), 45s, photoreal, stock route"
+    assert panel.describe("meeting", {"kind": "act", "dry_run": True}) == \
+        "meeting act (dry run)"
+    assert panel.describe("clip", {}) == "clip: next on the list"
+
+
+def t_panel_mask():
+    """Keys are masked on the way to the page; URLs and paths survive."""
+    import panel
+
+    gemini = "AIzaSyB1234567890abcdefghijklmnopqrst"
+    assert gemini not in panel.mask_line(f"  [gemini] using {gemini}")
+    assert panel.mask_line(f"key {gemini}").endswith("…" + gemini[-4:])
+    groq = "gsk_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+    assert groq not in panel.mask_line(f"groq key {groq}")
+    assert "9c1d2e3f" not in panel.mask_line(
+        "telegram token 1234567890:AAH9c1d2e3f4g5h6i7j8k9l0m1n2o3p4q")
+    assert "hunter2" not in panel.mask_line("api_key=hunter2hunter2hunter2")
+    longopaque = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5"
+    assert longopaque not in panel.mask_line(f"token {longopaque}")
+    url = "https://github.com/dreamer2664/youtproject/blob/main/README.md"
+    assert panel.mask_line(url) == url
+    path = "/home/user/repo/out/meetings/2026-10-04-act.md"
+    assert panel.mask_line(path) == path
+    assert panel.mask_line("plain english log line, nothing secret") == \
+        "plain english log line, nothing secret"
+
+
+def t_panel_events():
+    """The ##PANEL## wire format: one JSON line per meeting event."""
+    import json as _json
+
+    import panel
+
+    event = {"type": "turn", "role": "Skeptic", "text": "one\ntwo"}
+    line = panel.encode_event(event)
+    assert line.startswith("##PANEL## ") and "\n" not in line
+    assert panel.decode_line(line) == event
+    assert panel.decode_line("ordinary log line") is None
+    assert panel.decode_line("##PANEL## not json") is None
+    assert panel.decode_line("##PANEL## [1,2]") is None
+    frame = panel.sse_frame({"kind": "log", "line": "hello\nworld"})
+    assert frame.endswith("\n\n") and frame.count("data: ") == 1
+    body = frame[len("data: "):].strip()
+    assert _json.loads(body)["line"] == "hello\nworld"
+
+
+def t_panel_links():
+    """The links list: add / drop / restore, pending flags, payload shape."""
+    import panel
+
+    cfg = tmp_cfg()
+    assert panel.add_link(cfg, "https://youtu.be/aaa",
+                          "the octopus") == "added to the list"
+    assert panel.add_link(cfg, "https://youtu.be/aaa") == "already on the list"
+    assert panel.add_link(cfg, "not-a-link").startswith("skipped")
+    rows = panel.links_payload(cfg)
+    assert len(rows) == 1 and rows[0]["pending"]
+    assert rows[0]["note"] == "the octopus" and rows[0]["status"] == "new"
+    assert panel.drop_link(cfg, "https://youtu.be/aaa") == \
+        "removed from the queue"
+    rows = panel.links_payload(cfg)
+    assert rows[0]["status"] == "dropped" and not rows[0]["pending"]
+    assert panel.drop_link(cfg, "https://youtu.be/zzz") == "row not found"
+    assert panel.restore_link(cfg, "https://youtu.be/aaa") == \
+        "back in the queue"
+    assert panel.links_payload(cfg)[0]["pending"]
+
+
+def t_panel_chat():
+    """Chat: the seat's persona + history reach the model; failures talk."""
+    import panel
+
+    cfg = tmp_cfg()
+    seen = {}
+
+    class FakeProvider:
+        def generate_text(self, prompt, temperature=0.7, tag="",
+                          json_mode=False):
+            seen["prompt"] = prompt
+            seen["tag"] = tag
+            return "  Ship the octopus clip.  "
+
+    text = panel.chat_reply(
+        cfg, "Analyst", "what should we do?",
+        history=[{"who": "owner", "text": "hi there"},
+                 {"who": "Analyst", "text": "hello boss"}],
+        provider=FakeProvider())
+    assert text == "Ship the octopus clip.", text
+    assert seen["tag"] == "panel-chat"
+    assert "Analyst" in seen["prompt"]
+    assert "numbers" in seen["prompt"].lower()          # persona is in there
+    assert "hi there" in seen["prompt"] and "hello boss" in seen["prompt"]
+    assert "what should we do?" in seen["prompt"]
+    assert panel.chat_reply(cfg, "Nobody", "x",
+                            provider=FakeProvider()).startswith("Unknown seat")
+    assert panel.chat_reply(cfg, "Analyst", "",
+                            provider=FakeProvider()) == "(empty message)"
+
+    class Broken:
+        def generate_text(self, *a, **k):
+            raise RuntimeError("429 quota gone")
+
+    out = panel.chat_reply(cfg, "Producer", "status?", provider=Broken())
+    assert out.startswith("Producer could not answer") and "429" in out
+    assert panel.chat_reply(cfg, "Skeptic", "x", provider=None).startswith(
+        "No LLM lane answered")
+
+
+def t_panel_state():
+    """The header strip snapshot is offline-safe and complete."""
+    import panel
+
+    cfg = tmp_cfg()
+    snap = panel.snapshot(cfg)
+    assert set(snap) >= {"keys", "disk_free_mb", "disk_total_mb", "queue",
+                         "meetings", "work_dir"}
+    assert set(snap["keys"]) == set(panel.KEY_PROVIDERS)
+    assert all(isinstance(v, int) and v >= 0 for v in snap["keys"].values())
+    assert isinstance(snap["queue"], dict) and isinstance(snap["meetings"],
+                                                           int)
+    assert snap["disk_free_mb"] is None or snap["disk_free_mb"] >= 0
+    assert snap["work_dir"].endswith("work")
+
+
+def t_panel_files():
+    """The page, the launcher and the CLI are all really there."""
+    import subprocess
+
+    root = Path(__file__).resolve().parent
+    html = (root / "panel.html").read_text(encoding="utf-8")
+    for needle in ("/events", "/api/run", "/api/chat", "/api/stop",
+                   'id="stop"', 'id="gen-start"', 'id="m-act"',
+                   'id="links-pending"', 'id="chat-send"'):
+        assert needle in html, needle
+    bat = (root / "Start Panel.bat").read_text(encoding="utf-8")
+    for needle in ("panel.py --no-browser", "msedge.exe", "chrome.exe",
+                   "pythonw.exe", "--app=%URL%"):
+        assert needle in bat, needle
+    res = subprocess.run(
+        [sys.executable, str(root / "main.py"), "panel", "--help"],
+        capture_output=True, text=True, timeout=120, cwd=str(root))
+    assert res.returncode == 0, res.stderr[-300:]
+    assert "--no-browser" in res.stdout and "--port" in res.stdout
+    # `python panel.py --no-browser` (what Start Panel.bat runs) must PARSE
+    # its flags — a shim that ignored them would pop an extra browser window
+    # before Edge app-mode even starts.
+    res = subprocess.run(
+        [sys.executable, str(root / "panel.py"), "--help"],
+        capture_output=True, text=True, timeout=120, cwd=str(root))
+    assert res.returncode == 0, res.stderr[-300:]
+    assert "--no-browser" in res.stdout and "--host" in res.stdout
+
+
+def t_meeting_event_stream():
+    """run_meeting emits agenda -> turns -> decision (and survives a dead
+    listener) — the panel's live room is built on exactly this."""
+    import io
+    import json as _json
+    from contextlib import redirect_stdout
+    from unittest.mock import patch as _patch
+
+    import meeting as mt
+
+    class Scripted:
+        def __init__(self):
+            self.turns = 0
+
+        def generate_text(self, prompt, temperature=0.7, tag="",
+                          json_mode=False):
+            if json_mode:
+                return _json.dumps({"summary": "Room agrees.",
+                                    "decisions": ["Do the thing"]})
+            self.turns += 1
+            return f"Point {self.turns}."
+
+    events = []
+    with _patch.object(mt, "_role_provider", lambda c, lane: Scripted()), \
+         _patch.object(mt, "_stats_agenda", lambda c: "CHANNEL REPORT"), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(tmp_cfg(), "stats", rounds=1, send=False,
+                                 events=events.append)
+    kinds = [e["type"] for e in events]
+    assert kinds[0] == "agenda", kinds
+    assert kinds.count("turn") == 4, kinds
+    assert "decision" in kinds, kinds
+    assert "CHANNEL REPORT" in events[0]["text"]
+    turn = next(e for e in events if e["type"] == "turn")
+    assert turn["role"] == "Strategist" and turn["lane"] == "gemini"
+    assert turn["text"] and turn["round"] == 1
+    decision = next(e for e in events if e["type"] == "decision")
+    assert decision["decision"]["decisions"] == ["Do the thing"]
+    assert "Do the thing" in summary
+
+    # an act meeting also emits the follow-through as an event
+    class ActChair:
+        def generate_text(self, prompt, temperature=0.7, tag="",
+                          json_mode=False):
+            if json_mode:
+                return _json.dumps({"action": "generate",
+                                    "topic": "why cats purr",
+                                    "reason": "easy win"})
+            return "generate it."
+
+    act_events = []
+    with _patch.object(mt, "_role_provider", lambda c, lane: ActChair()), \
+         patch_act_agenda(), \
+         redirect_stdout(io.StringIO()):
+        mt.run_meeting(tmp_cfg(), "act", rounds=1, send=False,
+                       executor=lambda d: "Rendered -> out/",
+                       events=act_events.append)
+    assert "action" in [e["type"] for e in act_events]
+    fired = next(e for e in act_events if e["type"] == "action")
+    assert fired["action"] == "generate"
+
+    # a listener that raises must not kill the meeting (watching is safe)
+    def bad_listener(event):
+        raise RuntimeError("panel bug")
+
+    with _patch.object(mt, "_role_provider", lambda c, lane: Scripted()), \
+         _patch.object(mt, "_stats_agenda", lambda c: "R"), \
+         redirect_stdout(io.StringIO()):
+        summary = mt.run_meeting(tmp_cfg(), "stats", rounds=1, send=False,
+                                 events=bad_listener)
+    assert "Do the thing" in summary
+
+
+def patch_act_agenda():
+    from unittest.mock import patch as _patch
+
+    import meeting as mt
+
+    return _patch.object(mt, "_act_agenda",
+                         lambda c, cands: "MOMENTUM: something is working")
 
 
 def t_temp_hygiene():
@@ -8368,6 +8690,7 @@ def main(argv: list[str] | None = None) -> int:
         ("config_example_parses", t_config_example_parses),
         ("config_no_shared_mutation", t_config_no_shared_mutation),
         ("config_garbage_tolerated", t_config_garbage_tolerated),
+        ("image_route", t_image_route),
         ("template_all_styles", t_template_all_styles),
         ("template_unknown_style_falls_back", t_template_unknown_style_falls_back),
         ("extract_json", t_extract_json),
@@ -8394,7 +8717,9 @@ def main(argv: list[str] | None = None) -> int:
         ("meeting", t_meeting),
         ("meeting act", t_meeting_act),
         ("meeting_act_wiring", t_meeting_act_wiring),
+        ("meeting_event_stream", t_meeting_event_stream),
         ("sheet", t_sheet),
+        ("sheet_dropped", t_sheet_dropped),
         ("longform_lane", t_longform_lane),
         ("cutpoints", t_cutpoints),
         ("whole_short", t_whole_short),
@@ -8502,6 +8827,13 @@ def main(argv: list[str] | None = None) -> int:
         ("crew", t_crew),
         ("crew_watch", t_crew_watch),
         ("key_pools", t_key_pools),
+        ("panel_argmap", t_panel_argmap),
+        ("panel_mask", t_panel_mask),
+        ("panel_events", t_panel_events),
+        ("panel_links", t_panel_links),
+        ("panel_chat", t_panel_chat),
+        ("panel_state", t_panel_state),
+        ("panel_files", t_panel_files),
         ("temp_hygiene", t_temp_hygiene),
         ("deps_guard", t_deps_guard),
         ("py_compat", t_py_compat),

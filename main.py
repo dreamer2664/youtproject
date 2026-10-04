@@ -394,6 +394,15 @@ def cmd_generate(cfg, args) -> int:
         cfg.data["subtitles"]["enabled"] = False
     if args.style is not None:
         cfg.data["video"]["style"] = args.style
+    if getattr(args, "image_provider", None):
+        from config import resolve_image_route
+
+        try:
+            route = resolve_image_route(args.image_provider)
+        except ValueError as exc:
+            die(str(exc))
+        cfg.data["ai"]["image_provider"] = route
+        print(f"  [images] route: {args.image_provider} -> {route}\n")
     if getattr(args, "no_gemini", False):
         # Drop Gemini from every lane this run. Env vars beat config
         # edits (config.py property order), so all three sources go.
@@ -1393,9 +1402,15 @@ def cmd_meeting(cfg, args) -> int:
     # found 2026-10-04: `meeting act` could never execute anything).
     executor = ((lambda decision: _execute_board_action(cfg, decision))
                 if args.kind == "act" else None)
+    events = None
+    if getattr(args, "events_json", False):
+        def events(event):  # one machine-readable line per meeting event
+            print("##PANEL## " + json.dumps(event, ensure_ascii=False),
+                  flush=True)
     print(run_meeting(cfg, args.kind, urls=args.url or [],
                       rounds=args.rounds, render=args.render,
-                      send=not args.no_send, executor=executor))
+                      send=not args.no_send, executor=executor,
+                      events=events))
     return 0
 
 
@@ -1734,6 +1749,14 @@ def cmd_errors(cfg, args) -> int:
     return 0
 
 
+def cmd_panel(cfg, args) -> int:
+    """The click-only panel: one local page, big buttons, no typing."""
+    from panel import serve
+
+    return serve(cfg, host=args.host, port=args.port,
+                 open_browser=not args.no_browser)
+
+
 def cmd_queue(cfg, args) -> int:
     print(Queue(cfg.state_file).format_table())
     return 0
@@ -1874,6 +1897,12 @@ def main() -> int:
                    help="skip Gemini this run (scripts fall straight to Groq/OpenRouter — faster when Gemini keys are flaky)")
     p.add_argument("--keep-work", action="store_true", help="keep intermediate files")
     p.add_argument("--keep-going", action="store_true", help="continue after a failure")
+    p.add_argument("--image-provider", dest="image_provider", default=None,
+                   metavar="ROUTE",
+                   help="image route for this run: stock (real photos, "
+                        "Pexels first), ai (Gemini images) or free "
+                        "(Pollinations) — or a raw provider name "
+                        "(pexels/pixabay/pollinations/gemini)")
     p.add_argument("--verbose", action="store_true")
 
     p = sub.add_parser("batch", help="render many videos unattended")
@@ -2074,6 +2103,10 @@ def main() -> int:
                    help="skip the Telegram summary")
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
                    help="show the room + agenda, spend nothing")
+    p.add_argument("--events-json", action="store_true", dest="events_json",
+                   help="also print one machine-readable JSON line per "
+                        "meeting event (prefixed ##PANEL##) — how the panel "
+                        "renders the room live")
 
     p = sub.add_parser("subpreview",
                        help="preview subtitle position/size/font on a real "
@@ -2191,6 +2224,15 @@ def main() -> int:
     p = sub.add_parser("voices", help="list available voiceover voices")
     p.add_argument("--lang", default="en-", help="voice prefix filter, e.g. en-, it-, de-")
 
+    p = sub.add_parser("panel",
+                       help="click-only control panel in your browser")
+    p.add_argument("--port", type=int, default=8765,
+                   help="port (default 8765)")
+    p.add_argument("--host", default="127.0.0.1",
+                   help="bind address (127.0.0.1 = this machine only)")
+    p.add_argument("--no-browser", action="store_true", dest="no_browser",
+                   help="don't open the browser window")
+
     p = sub.add_parser("autopost", help="post a finished video via Buffer")
     p.add_argument("file", nargs="?", help="video to post (default: newest .mp4 in out/)")
     p.add_argument("--channels", help="comma list, e.g. youtube,tiktok (default: config)")
@@ -2249,6 +2291,7 @@ def main() -> int:
         "keys": cmd_keys,
         "voices": cmd_voices,
         "autopost": cmd_autopost,
+        "panel": cmd_panel,
     }
     return handlers[args.command](cfg, args)
 

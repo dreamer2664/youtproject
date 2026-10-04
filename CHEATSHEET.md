@@ -245,6 +245,35 @@ python main.py autopost --publish --title "..." --desc "..."
 
 ---
 
+## 7.5. The panel (no typing at all)
+
+```powershell
+# Windows: just double-click  Start Panel.bat   (no terminal, app-style window)
+python main.py panel                 # same thing by hand; opens your browser
+python main.py panel --port 9000     # if 8765 is busy
+python main.py panel --no-browser    # start it, open the page yourself
+```
+
+What each button actually runs (nothing new — same commands as above):
+
+| Button | Runs |
+|---|---|
+| Generate a video | `generate --count N --seconds S --style X --image-provider ROUTE` |
+| Clip a source | `clip --url <picked link>` or `clip --sheet 1` (next queued) |
+| Parts series | `parts --url <picked link>` |
+| Run the board | `meeting act --events-json` (the page renders the room live) |
+| Dry run | `meeting act --dry-run` (free, offline) |
+| Stats meeting | `meeting stats --events-json` |
+| Snapshot / Keys / Queue / Preflight / Kits / Errors | `snap`, `keys --month`, `queue`, `preflight`, `package --limit 3`, `errors` |
+| YouTube links list | reads/writes `sources/sheet.csv` (`sheet`) |
+| Chat with a seat | that seat's model lane, tagged `panel-chat` in the ledger |
+
+One job at a time, output streams live, `■ stop` stops it. The panel binds
+127.0.0.1 (this machine only) and **cannot post** — there is no button for
+publishing anywhere in it.
+
+---
+
 ## 8. Your phone (Telegram)
 
 ```powershell
