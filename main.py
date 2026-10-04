@@ -23,6 +23,12 @@
                                  report (say /go in the Telegram bot)
     python main.py wakeup        wake/boot task: run a pending /go, then
                                  hibernate again if nobody's at the PC
+    python main.py browser data @handle
+                                 public channel numbers with a real browser
+                                 (no API key, no quota)
+    python main.py desktop go "…"  hand the AI your browser for one goal
+    python main.py order "get a link from the database, get 6 clips and
+                          post them in 6 channels"   one sentence → work
     python main.py meeting memory  every decision the board ever made
     python main.py meeting last  re-read what the room said (transcript)
     python main.py snap          daily channel stats + retitle alerts
@@ -32,10 +38,15 @@
     (full workflow: OPERATIONS.md)
 
 Nothing here costs money and nothing here uploads through the YouTube API —
-there is no upload path in the code at all (only `yt`/`snap` make read-only
+there are no upload API calls anywhere (only `yt`/`snap` make read-only
 public-data calls) — which is exactly why no audit or verification can ever be
-required. You upload the
-finished files yourself in ~3 minutes per video (each kit has a CHECKLIST.md).
+required. You upload the finished files yourself in ~3 minutes per video (each
+kit has a CHECKLIST.md).
+
+Optional: the desktop lane (`desktop`, `order`) can drive YOUR OWN browser on
+your PC — it can click through Studio, learn from mistakes and replay what
+worked. It is local UI automation, never an API call, and its publish click
+stays blocked until you set `desktop.uploads: on`.
 """
 
 from __future__ import annotations
@@ -1850,6 +1861,178 @@ def cmd_panel(cfg, args) -> int:
                  open_browser=not args.no_browser)
 
 
+def cmd_browser(cfg, args) -> int:
+    """Stage-1 lane: look at a page with a real browser (no key, no quota)."""
+    import desktop
+
+    backend = args.backend or "browser"
+    if args.action == "data":
+        data = desktop.channel_data(cfg, args.target, backend=backend)
+        if not data.get("ok"):
+            print(f"  [browser] ❌ {data.get('error')}")
+            return 1
+        print(f"  [browser] {data.get('title') or data['ref']}  ({data['url']})")
+        for key in ("subscribers", "videos", "views_seen"):
+            if data.get(key):
+                print(f"    {key:<12}: {data[key]}")
+        print("  (public numbers, read from the page — no API key, no quota)")
+        return 0
+    if args.action == "shot":
+        out = Path(args.out) if args.out else (
+            desktop.work_dir(cfg) / "shots" / "manual-look.png")
+        got = desktop.page_look(cfg, args.target, backend=backend,
+                                shot_path=out)
+        if not got.get("ok"):
+            print(f"  [browser] ❌ {got.get('error')}")
+            return 1
+        print(f"  [browser] {got.get('title')} — screenshot: {got.get('shot')}")
+        return 0
+    got = desktop.page_look(cfg, args.target, backend=backend)
+    if not got.get("ok"):
+        print(f"  [browser] ❌ {got.get('error')}")
+        return 1
+    print(f"  [browser] {got.get('title')}  ({got.get('url')})")
+    print(f"  elements: {got.get('elements')}")
+    print("")
+    print((got.get("text") or "")[:4000])
+    return 0
+
+
+def cmd_desktop(cfg, args) -> int:
+    """The desktop agent: the AI drives the user's own browser."""
+    import desktop
+
+    if args.action == "setup":
+        import subprocess
+        import sys as _sys
+
+        try:
+            import playwright  # noqa: F401
+        except ImportError:
+            print("  [desktop] installing the playwright package…")
+            subprocess.run([_sys.executable, "-m", "pip", "install",
+                            "playwright"], check=False)
+        print("  [desktop] installing the Chromium engine (one-time, ~120 MB)…")
+        rc = subprocess.run([_sys.executable, "-m", "playwright", "install",
+                             "chromium"], check=False).returncode
+        print("  [desktop] ✅ ready." if rc == 0 else
+              "  [desktop] ❌ engine install failed — see the output above.")
+        print("  Next: double-click Desktop Chrome.bat, log into your "
+              "channels in that window once, then: "
+              "python main.py desktop go \"your goal\"")
+        return rc
+
+    if args.action == "stop":
+        desktop.request_stop()
+        print("  [desktop] stop requested — the running task will end "
+              "after its current step.")
+        return 0
+
+    if args.action == "status":
+        conf = desktop.dconf(cfg)
+        from orders import channel_list
+
+        channels = channel_list(cfg)
+        print(f"  backend       : {conf['backend']} ({conf['cdp_url']})")
+        print(f"  uploads       : {'ON' if conf['uploads'] else 'off (staged only)'}")
+        print(f"  allowed       : {', '.join(conf['allowed_domains'])}")
+        print(f"  channels      : "
+              + (", ".join(c['name'] for c in channels) if channels
+                 else "(none — add desktop.channels in config.yaml)"))
+        lessons = desktop.load_lessons(cfg)
+        books = desktop.load_playbooks(cfg)
+        print(f"  learned       : {len(lessons)} lesson(s), "
+              f"{len(books)} playbook(s) in work/desktop/")
+        return 0
+
+    if args.action == "data" and args.goal:
+        return _print_channel_data(cfg, args.goal[0], args.backend)
+
+    if args.action in ("text", "shot") and args.goal:
+        return _print_page(cfg, args.goal[0], args.action, args.backend,
+                           args.out if hasattr(args, "out") else None)
+
+    if args.action == "go":
+        goal = " ".join(args.goal).strip()
+        if not goal:
+            print('  [desktop] give me a goal, e.g.: '
+                  'python main.py desktop go "open youtube studio and '
+                  'tell me the views of the newest video"')
+            return 1
+        backend = args.backend or None
+        dry = bool(args.no_hands)
+        print(BANNER)
+        if dry:
+            print("  [desktop] no-hands mode: planning, clicking nothing.")
+        result = desktop.run_task(cfg, goal, max_steps=args.max_steps,
+                                  dry_run=dry, backend=backend,
+                                  start_url=args.url if hasattr(args, "start_url") else None)
+        print("")
+        print(f"  [desktop] {'✅' if result['ok'] else '❌'} "
+              f"{result.get('summary') or result.get('error') or 'no summary'}")
+        print(f"  log   : {result.get('log')}")
+        print(f"  shots : {result.get('shots')}")
+        if result.get("playbook"):
+            print("  (replayed from a recorded playbook — no model calls)")
+        return 0 if result["ok"] else 1
+
+    print("  [desktop] usage: desktop {go|shot|text|data|setup|stop|status} "
+          "[goal or url] [--no-hands] [--backend chrome|browser]")
+    return 1
+
+
+def _print_channel_data(cfg, ref: str, backend: str | None) -> int:
+    import desktop
+
+    data = desktop.channel_data(cfg, ref, backend=backend or "browser")
+    if not data.get("ok"):
+        print(f"  [desktop] ❌ {data.get('error')}")
+        return 1
+    print(f"  {data.get('title') or data['ref']}  ({data['url']})")
+    for key in ("subscribers", "videos", "views_seen"):
+        if data.get(key):
+            print(f"    {key:<12}: {data[key]}")
+    return 0
+
+
+def _print_page(cfg, url: str, action: str, backend: str | None,
+                out: str | None) -> int:
+    import desktop
+
+    shot = Path(out) if out else (
+        desktop.work_dir(cfg) / "shots" / "manual-look.png")
+    got = desktop.page_look(cfg, url, backend=backend or "browser",
+                            shot_path=shot)
+    if not got.get("ok"):
+        print(f"  [desktop] ❌ {got.get('error')}")
+        return 1
+    print(f"  {got.get('title')}  ({got.get('url')})")
+    if action == "shot":
+        print(f"  screenshot: {got.get('shot')}")
+        return 0
+    print("")
+    print((got.get("text") or "")[:4000])
+    return 0
+
+
+def cmd_order(cfg, args) -> int:
+    """One sentence → sheet clip + generate + stage + (gated) post."""
+    import orders
+
+    text = " ".join(args.text)
+    order = orders.parse_order(text)
+    if args.channels:
+        order["channels"] = args.channels
+    print(BANNER)
+    print(orders.plan_text(cfg, order))
+    if args.plan_only:
+        return 0
+    result = orders.execute(cfg, order, dry_run=args.dry_run)
+    print("")
+    print(result["report"])
+    return 0 if result["ok"] else 1
+
+
 def cmd_wakeup(cfg, args) -> int:
     """Wake/boot task: check Telegram once, run a pending /go, hibernate."""
     from wakeup import run as wake_run
@@ -2418,6 +2601,48 @@ def main() -> int:
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
                    help="say what would happen; execute nothing")
 
+    p = sub.add_parser("browser", help="look at any page with a real browser "
+                                       "(no API key, no quota)")
+    p.add_argument("action", choices=["text", "shot", "data"],
+                   help="text = page text | shot = screenshot | data = "
+                        "public channel numbers")
+    p.add_argument("target", help="url, @handle or channel name")
+    p.add_argument("--out", help="where to save the screenshot "
+                                 "(shot: default work/desktop/shots/)")
+    p.add_argument("--backend", choices=["chrome", "browser"], default=None,
+                   help="chrome = your real browser (needs Desktop "
+                        "Chrome.bat) | browser = private headless (default: "
+                        "config, read-only lanes default to headless)")
+
+    p = sub.add_parser("desktop", help="the desktop agent: hand the mouse to "
+                                       "the AI in your own browser")
+    p.add_argument("action",
+                   choices=["go", "shot", "text", "data", "setup", "stop",
+                            "status"],
+                   help="go = run a free-language goal | setup = install the "
+                        "browser engine | stop = kill switch")
+    p.add_argument("goal", nargs="*",
+                   help="for `go`: the goal in plain words; for others: url/"
+                        "@handle")
+    p.add_argument("--no-hands", action="store_true", dest="no_hands",
+                   help="observe and plan only — click nothing")
+    p.add_argument("--backend", choices=["chrome", "browser"], default=None)
+    p.add_argument("--max-steps", type=int, default=None, dest="max_steps")
+    p.add_argument("--url", help="(go) where to start")
+
+    p = sub.add_parser("order", help="one sentence → clips + videos + posts "
+                                     "(see README: Orders)")
+    p.add_argument("text", nargs="+", help='e.g. "get a link from the '
+                                           'database, get 6 clips and post '
+                                           'them in 6 channels, and generate '
+                                           '2 videos for 2 channels"')
+    p.add_argument("--plan-only", action="store_true", dest="plan_only",
+                   help="show the plan; run nothing")
+    p.add_argument("--dry-run", action="store_true", dest="dry_run",
+                   help="everything except the final publish click")
+    p.add_argument("--channels", type=int, default=0,
+                   help="override how many channels to spread across")
+
     p = sub.add_parser("autopost", help="post a finished video via Buffer")
     p.add_argument("file", nargs="?", help="video to post (default: newest .mp4 in out/)")
     p.add_argument("--channels", help="comma list, e.g. youtube,tiktok (default: config)")
@@ -2479,6 +2704,9 @@ def main() -> int:
         "panel": cmd_panel,
         "nightbatch": cmd_nightbatch,
         "wakeup": cmd_wakeup,
+        "browser": cmd_browser,
+        "desktop": cmd_desktop,
+        "order": cmd_order,
     }
     return handlers[args.command](cfg, args)
 

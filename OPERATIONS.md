@@ -468,6 +468,67 @@ the machine dies mid-run — the next wake resumes from the journal instead of
 redoing the day. `work/nightrun/wake.log` has the raw output of the task.
 Uploads stay manual; no step in this pipeline can post.
 
+## Orders & the desktop lane (the AI drives your browser)
+
+This is the "type it like a person" layer. One sentence:
+
+    python main.py order "get a link from the database, get 6 clips and post
+                          them in 6 channels, and generate 2 videos for 2 channels"
+
+What happens, in order: the parser reads the sentence and **prints the plan
+first** (what it understood, the channel mapping, whether posting is allowed);
+then it takes the next queued source from the sheet, clips it, generates the
+videos, stages one upload packet per item under `work/post/<date>/<channel>/`,
+and — only when `desktop.uploads: on` — drives your Chrome to upload each one
+in Studio. `--plan-only` stops after the plan; `--dry-run` does everything
+except the final publish click. From the phone it's `/order <sentence>`.
+
+### The desktop agent (`desktop …`, `/desk …`)
+
+    python main.py desktop setup        # once: install the browser engine
+    Desktop Chrome.bat                  # Chrome with the debug port + its own profile
+    python main.py desktop status
+    python main.py desktop go "open youtube studio and tell me how the newest video is doing"
+    python main.py desktop go "…" --no-hands     # plan/screenshot only
+    python main.py desktop shot | stop
+
+How the loop works: every step it takes a **snapshot** (visible elements with
+indexes + the page text + a screenshot), asks the model for ONE next action
+(`click 7`, `fill 3 "…"`, `scroll`, `wait`, `done`), executes it, screenshots,
+repeats — then closes with a summary you get in Telegram.
+
+**It learns.** A failed run costs one extra model call: "write one sentence:
+what to do differently" → stored in `work/desktop/lessons.json` and injected
+into every future attempt on that site. A successful run is recorded as a
+**playbook** (the action path with element names, not indexes) and replayed
+first next time — with **zero model calls** when it still works. Playbooks
+that fail twice in a row are dropped.
+
+**The rules that make it safe to leave alone:**
+
+- `desktop.allowed_domains` is an allowlist (YouTube + Google by default);
+  "goto anything else" aborts the run and is logged;
+- clicking Publish / Schedule / Save is a **commit**: refused unless
+  `desktop.uploads: on` (set it in `config.yaml` or `/desk uploads on`);
+- delete / buy / cancel / unsubscribe are refused **always**, config or not;
+- `--no-hands` (or `desktop go` with dry-run) never clicks, only looks;
+- kill switch: `/desk stop` or Ctrl-C — checked between steps;
+- everything is in `work/desktop/logs/*.jsonl` + `work/desktop/shots/<run>/`
+  (kept 14 days), so any surprise can be reconstructed screenshot by step.
+
+**Your real browser, not a robot one:** `Desktop Chrome.bat` starts Chrome
+with `--remote-debugging-port=9222` and its own profile
+(`%USERPROFILE%\youtproject-desktop`). Log into your channels once in that
+window; after that the agent clicks in the window you can watch. Close it any
+time — nothing is lost. `desktop.backend: browser` switches to a private
+headless Chromium for read-only work (no logins).
+
+**Honest limits:** Studio's markup changes and a step will fail sometimes —
+that is exactly what the lesson/playbook loop is for (the next attempt
+usually succeeds). And a publish click is irreversible once YouTube accepts
+it; that is why it sits behind its own gate and never happens unless you said
+`post` and allowed uploads.
+
 ## Channel stats (snap — all your channels, one command)
 
 ```bash

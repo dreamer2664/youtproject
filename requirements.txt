@@ -15,3 +15,4 @@ tzdata>=2024.1,<2027  # Windows: zoneinfo database for quota reset times
 yt-dlp>=2026.1.1,<2027  # clip lane: source video download
 youtube-transcript-api>=1.0,<2  # clip/parts: harvest captions before spending Groq audio-hours
 openpyxl>=3.1,<4  # snap --export: .xlsx workbook (imported lazily, optional at runtime)
+playwright>=1.50,<2  # desktop lane: drives a real browser (lazy-imported; offline suite never needs it)

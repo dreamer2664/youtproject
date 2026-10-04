@@ -8600,6 +8600,516 @@ def patch_act_agenda():
                          lambda c, cands: "MOMENTUM: something is working")
 
 
+# --------------------------------------------------------------------------
+# desktop agent & orders (the "AI takes the mouse" lane)
+# --------------------------------------------------------------------------
+
+PNG_1PX = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01"
+           b"\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+           b"\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01"
+           b"\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+
+
+class ScriptedDriver:
+    """A browser that exists only in RAM — the offline suite's driver."""
+
+    def __init__(self, pages=None,
+                 url="https://studio.youtube.com/videos/upload",
+                 on_click=None):
+        self.pages = pages or {}
+        self._url = url
+        self.on_click = on_click or (lambda name: None)
+        self.clicked: list = []
+        self.filled: list = []
+        self.files_set: list = []
+        self.tabs: list = []
+        self.shots: list = []
+        self.started = False
+
+    def _page(self):
+        return self.pages.get(self._url, {"elements": [], "text": ""})
+
+    def _elements(self):
+        return self._page().get("elements") or []
+
+    def start(self):
+        self.started = True
+
+    def close(self):
+        self.started = False
+
+    def goto(self, url):
+        self._url = url
+
+    def url(self):
+        return self._url
+
+    def title(self):
+        return self._page().get("title") or "Scripted"
+
+    def snapshot(self):
+        return {"url": self._url, "title": self.title(),
+                "elements": [dict(el) for el in self._elements()],
+                "text": self._page().get("text") or ""}
+
+    def click(self, target):
+        name = self.element_name(target)
+        if isinstance(target, int) and not 0 <= target < len(self._elements()):
+            raise RuntimeError(f"no element at index {target}")
+        if isinstance(target, str) and target and name == target:
+            raise RuntimeError(f"no element matching {target!r}")
+        self.clicked.append(name or target)
+        self.on_click(name)
+
+    def fill(self, target, text):
+        self.filled.append((self.element_name(target), text))
+
+    def press(self, key):
+        self.clicked.append(f"key:{key}")
+
+    def scroll(self, dy):
+        self.clicked.append(f"scroll:{dy}")
+
+    def read(self, target=None):
+        return self._page().get("text") or ""
+
+    def open_tab(self, url):
+        self.tabs.append(url)
+        self._url = url
+
+    def switch_tab(self, index):
+        self.clicked.append(f"tab:{index}")
+
+    def close_tab(self, index):
+        self.clicked.append(f"close-tab:{index}")
+
+    def set_input_files(self, target, path):
+        self.files_set.append(str(path))
+
+    def element_name(self, target):
+        if isinstance(target, int):
+            for el in self._elements():
+                if el.get("i") == target:
+                    return str(el.get("name") or "")
+            return ""
+        return str(target)
+
+    def screenshot(self, path):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(PNG_1PX)
+        self.shots.append(str(path))
+        return str(path)
+
+
+def _studio_page(publish_name="Publish",
+                 url="https://studio.youtube.com/videos/upload"):
+    """A minimal Studio-shaped upload dialog for ScriptedDriver."""
+    return {
+        url: {
+            "title": "Upload - YouTube Studio",
+            "text": "Upload videos to your channel",
+            "elements": [
+                {"i": 0, "tag": "input", "role": "input", "name": "file"},
+                {"i": 1, "tag": "input", "role": "textbox",
+                 "name": "Add a title (required)"},
+                {"i": 2, "tag": "div", "role": "textbox",
+                 "name": "Add a description"},
+                {"i": 3, "tag": "button", "role": "button", "name": "Next"},
+                {"i": 4, "tag": "div", "role": "radio", "name": "Unlisted"},
+                {"i": 5, "tag": "button", "role": "button",
+                 "name": publish_name},
+            ],
+        }
+    }
+
+
+def _scripted_model(replies: list):
+    """A fake LLM: pops replies in order, answers lesson calls, counts calls."""
+    state = {"calls": 0, "prompts": []}
+
+    def ask(prompt: str) -> str:
+        state["calls"] += 1
+        state["prompts"].append(prompt)
+        if "Write ONE short sentence" in prompt:
+            return "Click the button labelled Launch, not the one named Start."
+        return replies[min(state["calls"] - 1, len(replies) - 1)]
+
+    ask.state = state
+    return ask
+
+
+def t_order_parse():
+    """The user's sentence, and the close variants, parse as expected."""
+    import orders
+
+    sentence = ("get a link from the database, get 6 clips and post them in "
+                "6 channels, and generate 2 videos for 2 channels")
+    order = orders.parse_order(sentence)
+    assert order["ok"], order
+    assert order["get_link"] is True
+    assert order["clips"] == 6 and order["videos"] == 2, order
+    assert order["channels"] == 6 and order["post"] is True, order
+
+    order = orders.parse_order("make 3 clips, no post")
+    assert order["clips"] == 3 and order["post"] is False, order
+
+    order = orders.parse_order("generate 4 videos for 2 channels")
+    assert order["videos"] == 4 and order["clips"] == 0, order
+    assert order["channels"] == 2, order
+
+    order = orders.parse_order("pull a link from the sheet and cut 2 clips")
+    assert order["get_link"] is True and order["clips"] == 2, order
+
+    order = orders.parse_order("stage only, dry")
+    assert order["dry"] is True and order["post"] is False, order
+
+    order = orders.parse_order("hello there friend")
+    assert order["ok"] is False, order
+
+    order = orders.parse_order("get 99 clips and 99 videos")
+    assert order["clips"] == 10 and order["videos"] == 10, order
+
+
+def t_order_plan():
+    """The plan speaks honestly about posting, and plan-only runs nothing."""
+    import orders
+
+    overrides = {"uploads": "off", "channels": [
+        {"name": "Deep Ocean", "studio_url": "https://studio.youtube.com"},
+        {"name": "Night Files", "studio_url": "https://studio.youtube.com"},
+    ]}
+    cfg = tmp_cfg(desktop=overrides)
+    order = orders.parse_order("get 6 clips and post them in 6 channels, "
+                               "1 video")
+    text = orders.plan_text(cfg, order)
+    assert "Deep Ocean" in text and "Night Files" in text, text
+    assert "staged only" in text, text
+
+    cfg_on = tmp_cfg(desktop={"uploads": "on",
+                              "channels": [{"name": "Deep Ocean"}]})
+    text_on = orders.plan_text(cfg_on, order)
+    assert "POST: enabled" in text_on, text_on
+
+    calls = []
+
+    def runner(argv, log, cwd):
+        calls.append(argv)
+        return 0, ""
+
+    result = orders.execute(cfg, order, plan_only=True, runner=runner)
+    assert calls == [], calls
+    assert result["plan"] in result["report"]
+
+
+def t_order_targets():
+    """Resolution + channel mapping + staged packets, no browser involved."""
+    import json
+
+    import orders
+
+    cfg = tmp_cfg(desktop={"channels": [
+        {"name": "Deep Ocean",
+         "studio_url": "https://studio.youtube.com/channel/UC111"},
+        {"name": "Night Files", "studio_url": ""},
+        {"name": "History Vault", "studio_url": ""},
+    ]})
+    _fake_clip_kit(cfg, "aa11bb22", "01", "First Catch")
+    _fake_clip_kit(cfg, "cc33dd44", "01", "Second Wind")
+    _fake_clip_kit(cfg, "ee55ff66", "02", "Third Rail")
+
+    clips = orders.resolve_new_clips(cfg, since_ts=0, limit=3)
+    assert len(clips) == 3, clips
+    titles = sorted(c["title"] for c in clips)
+    assert titles == ["First Catch", "Second Wind", "Third Rail"], titles
+    assert all(c["description"] for c in clips), clips
+    # mtimes can collide within a second — the mapping assertions below must
+    # not care which clip is "first", only that the mapping is round-robin
+    clips.sort(key=lambda c: c["id"])
+
+    channels = orders.channel_list(cfg)
+    assert [c["name"] for c in channels] == ["Deep Ocean", "Night Files",
+                                             "History Vault"]
+    assert channels[0]["slug"] == "deep-ocean"
+
+    order = orders.parse_order("get 6 clips and post them in 6 channels")
+    assignments = orders.assign_channels(clips, channels, 6)
+    assert [a["channel"]["name"] for a in assignments] == [
+        "Deep Ocean", "Night Files", "History Vault"], assignments
+
+    packets = orders.stage_packets(cfg, assignments, "2026-10-04")
+    assert len(packets) == 3, packets
+    plan = json.loads(Path(packets[0]).read_text(encoding="utf-8"))
+    assert plan["channel"] == "Deep Ocean", plan
+    assert plan["title"] == clips[0]["title"], (plan, clips)
+    assert plan["posted"] is False
+    assert "deep-ocean" in packets[0]
+
+
+def t_desktop_safety():
+    """The allowlist and the commit gate — the two rules that matter."""
+    import desktop as d2
+
+    cfg = tmp_cfg()
+    assert d2.domain_allowed(cfg, "https://studio.youtube.com/x")[0]
+    assert d2.domain_allowed(cfg, "https://www.youtube.com/@x")[0]
+    assert d2.domain_allowed(cfg, "https://accounts.google.com/signin")[0]
+    assert not d2.domain_allowed(cfg, "https://evil.example.com")[0]
+    assert not d2.domain_allowed(cfg, "file:///etc/passwd")[0]
+    assert not d2.domain_allowed(cfg, "javascript:alert(1)")[0]
+
+    cfg_off = tmp_cfg()
+    assert d2.classify_click(cfg_off, "Publish", {})[0] == "commit"
+    assert d2.classify_click(cfg_off, "Schedule", {})[0] == "commit"
+    assert d2.classify_click(cfg_off, "Save", {})[0] == "commit"
+    assert d2.classify_click(cfg_off, "Watch", {})[0] == "safe"
+
+    cfg_on = tmp_cfg(desktop={"uploads": "on"})
+    assert d2.classify_click(cfg_on, "Publish", {})[0] == "commit-ok"
+    for name in ("Delete video", "Buy now", "Unsubscribe", "Cancel order"):
+        kind, why = d2.classify_click(cfg_on, name, {})
+        assert kind == "banned", (name, kind, why)
+    assert d2.classify_click(cfg_off, "Continue", {"commit": True})[0] == "commit"
+
+    # dry-run never commits: a stray publish click is refused, not executed
+    drv = ScriptedDriver(pages=_studio_page())
+    log = d2.RunLog(Path(cfg_off.root) / "work" / "desktop" / "t.jsonl")
+    shots = Path(cfg_off.root) / "work" / "desktop" / "shots" / "t"
+    ok, note, _ = d2.execute_action(cfg_off, drv, {"action": "click",
+                                                   "target": 5}, True, log,
+                                    shots, 1)
+    assert ok and "would click" in note, note
+    assert drv.clicked == [], drv.clicked
+    ok, note, _ = d2.execute_action(cfg_on, drv, {"action": "click",
+                                                  "target": 0}, False, log,
+                                    shots, 2)
+    assert ok, note
+
+
+def t_desktop_lessons_playbooks():
+    """Lessons persist, cap, dedupe; playbooks match by goal+host."""
+    import desktop
+
+    cfg = tmp_cfg()
+    desktop.add_lesson(cfg, "upload a video", "https://studio.youtube.com",
+                       "The title box needs one click first.")
+    desktop.add_lesson(cfg, "upload a video", "https://studio.youtube.com",
+                       "The title box needs one click first.")
+    desktop.add_lesson(cfg, "other goal", "https://www.youtube.com",
+                       "Scroll once before clicking the tab bar.")
+    assert len(desktop.load_lessons(cfg)) == 2
+
+    mine = desktop.lessons_for(cfg, "upload a video",
+                               "https://studio.youtube.com/videos/upload")
+    assert "title box" in mine[0], mine
+
+    for index in range(210):
+        desktop.add_lesson(cfg, f"goal {index}", "https://x.youtube.com",
+                           f"lesson number {index}")
+    assert len(desktop.load_lessons(cfg)) <= 200
+
+    desktop.record_playbook(cfg, "upload a video",
+                            "https://studio.youtube.com",
+                            [{"action": "click", "target_name": "Next",
+                              "why": "advance"}])
+    found = desktop.find_playbook(cfg, "upload a video",
+                                  "https://studio.youtube.com/x")
+    assert found and found["steps"][0]["target_name"] == "Next", found
+    assert desktop.find_playbook(cfg, "upload a video",
+                                 "https://www.youtube.com") is None
+
+
+def t_desktop_prompt_and_parse():
+    """The step prompt carries lessons + elements; replies parse cleanly."""
+    import desktop
+
+    cfg = tmp_cfg()
+    snap = {"url": "https://studio.youtube.com/videos/upload",
+            "title": "Studio", "text": "Upload videos",
+            "elements": [{"i": 0, "role": "button", "name": "Publish",
+                          "disabled": False}]}
+    prompt = desktop._step_prompt(cfg, "post the clip", snap,
+                                  ["Check the channel switcher first."], [], 5)
+    assert "Publish" in prompt and "Check the channel switcher first." in prompt
+    assert "studio.youtube.com" in prompt
+
+    assert desktop.parse_action('{"action": "click", "target": 2}')["target"] == 2
+    assert desktop.parse_action(
+        '```json\n{"action": "done", "ok": true}\n```')["action"] == "done"
+    assert desktop.parse_action('{"action": "fly"}') is None
+    assert desktop.parse_action("no json here") is None
+    assert desktop.parse_action('{"action": "click", "target": ') is None
+
+    assert desktop.parse_channel_text("46.4M subscribers 1.6K videos") == {
+        "subscribers": "46.4M", "videos": "1.6K"}
+    assert desktop.parse_channel_text("nothing here") == {}
+    assert desktop.studio_upload_url(
+        {"studio_url": "https://studio.youtube.com/channel/UC1"}
+    ).endswith("/channel/UC1/videos/upload")
+
+
+def t_desktop_loop():
+    """Success records a playbook; failure records a lesson; the next run
+    replays the playbook with ZERO model calls."""
+    import desktop
+
+    cfg = tmp_cfg()
+    page = {"https://www.youtube.com/@x": {
+        "title": "Channel", "text": "hello",
+        "elements": [{"i": 0, "tag": "button", "role": "button",
+                      "name": "Launch"}]}}
+
+    drv = ScriptedDriver(pages=page, url="https://www.youtube.com/@x")
+    model = _scripted_model(['{"action": "click", "target": 0, '
+                             '"why": "open it"}',
+                             '{"action": "done", "ok": true, '
+                             '"summary": "opened"}'])
+    result = desktop.run_task(cfg, "open the launch panel", driver=drv,
+                              model=model, echo=lambda *a, **k: None)
+    assert result["ok"] and "opened" in result["summary"], result
+    assert drv.clicked == ["Launch"], drv.clicked
+    books = desktop.load_playbooks(cfg)
+    assert books and books[-1]["steps"][0]["target_name"] == "Launch", books
+
+    drv2 = ScriptedDriver(pages=page, url="https://www.youtube.com/@x")
+    boom = _scripted_model(['{"action": "done", "ok": false, '
+                            '"summary": "REPLAY SHOULD NOT NEED ME"}'])
+    result = desktop.run_task(cfg, "open the launch panel", driver=drv2,
+                              model=boom, echo=lambda *a, **k: None)
+    assert result["ok"] and result["playbook"] is True, result
+    assert boom.state["calls"] == 0, boom.state["calls"]
+    assert drv2.clicked == ["Launch"], drv2.clicked
+
+    page2 = {"https://www.youtube.com/@y": {
+        "title": "Channel", "text": "",
+        "elements": [{"i": 0, "tag": "a", "role": "link", "name": "About"}]}}
+    drv3 = ScriptedDriver(pages=page2, url="https://www.youtube.com/@y")
+    fail = _scripted_model(['{"action": "click", "target": 7}',
+                            '{"action": "done", "ok": false, '
+                            '"summary": "no idea"}'])
+    result = desktop.run_task(cfg, "find the hidden counter", driver=drv3,
+                              model=fail, echo=lambda *a, **k: None)
+    assert result["ok"] is False
+    learned = desktop.lessons_for(cfg, "find the hidden counter",
+                                  "https://www.youtube.com/@y")
+    assert any("Launch" in lesson for lesson in learned), learned
+
+    drv4 = ScriptedDriver(pages=page2, url="https://www.youtube.com/@y")
+    sneaky = _scripted_model(['{"action": "goto", "url": '
+                              '"https://evil.example.com/steal"}',
+                              '{"action": "done", "ok": false, '
+                              '"summary": "blocked"}'])
+    result = desktop.run_task(cfg, "find the hidden counter", driver=drv4,
+                              model=sneaky, echo=lambda *a, **k: None)
+    assert drv4.url() == "https://www.youtube.com/@y", drv4.url()
+    log_text = Path(result["log"]).read_text(encoding="utf-8")
+    assert "blocked" in log_text, log_text
+
+
+def t_desktop_post_one():
+    """The posting sequence: staged without the flag, committed with it."""
+    import desktop
+
+    item = {"id": "c-aa11bb22-01", "file": __file__, "title": "Tiny Test",
+            "description": "desc"}
+    channel = {"name": "Deep Ocean",
+               "studio_url": "https://studio.youtube.com"}
+
+    cfg_off = tmp_cfg()
+    drv = ScriptedDriver(pages=_studio_page())
+    got = desktop.post_one(cfg_off, drv, item, channel,
+                           echo=lambda *a, **k: None, pause=0)
+    assert got["ok"] is False and got["committed"] is False, got
+    assert "uploads" in got["error"], got
+    assert "Publish" not in drv.clicked, drv.clicked
+    assert drv.files_set, "the file was set before the gate"
+
+    drv = ScriptedDriver(pages=_studio_page())
+    got = desktop.post_one(cfg_off, drv, item, channel, dry_run=True,
+                           echo=lambda *a, **k: None, pause=0)
+    assert got["ok"] and got["committed"] is False, got
+    assert "Publish" not in drv.clicked, drv.clicked
+
+    cfg_on = tmp_cfg(desktop={"uploads": "on"})
+    drv = ScriptedDriver(pages=_studio_page())
+    got = desktop.post_one(cfg_on, drv, item, channel,
+                           echo=lambda *a, **k: None, pause=0)
+    assert got["ok"] and got["committed"] is True, got
+    assert "Publish" in drv.clicked, drv.clicked
+
+    drv = ScriptedDriver(pages=_studio_page(publish_name="Delete video"))
+    got = desktop.post_one(cfg_on, drv, item, channel,
+                           echo=lambda *a, **k: None, pause=0)
+    assert got["ok"] is False, got            # no publish/save button to trust
+    assert "Delete video" not in drv.clicked  # the destructive one untouched
+
+    drv = ScriptedDriver(pages={"https://studio.youtube.com/videos/upload": {
+        "elements": [], "text": ""}})
+    got = desktop.post_one(cfg_on, drv, item, channel,
+                           echo=lambda *a, **k: None, pause=0)
+    assert got["ok"] is False and "file input" in got["error"], got
+
+
+def t_desktop_bot_wiring():
+    """/look, /order and /desk parse, and the help text advertises them."""
+    import bot
+
+    assert bot.parse_incoming("/look https://example.com") == (
+        "look", "https://example.com")
+    assert bot.parse_incoming("/order get 2 clips") == ("order", "get 2 clips")
+    assert bot.parse_incoming("/desk") == ("desk", "")
+    assert bot.parse_incoming("/desk uploads on") == ("desk", "uploads on")
+    assert bot.parse_incoming("/looky") == ("help", "")
+    assert "/order" in bot.HELP_TEXT and "/desk" in bot.HELP_TEXT
+    assert "/look" in bot.HELP_TEXT
+
+
+def t_desktop_settings_override():
+    """Runtime override (the bot's /desk uploads on) beats config.yaml."""
+    import desktop
+
+    cfg = tmp_cfg(desktop={"uploads": "off"})
+    assert desktop.dconf(cfg)["uploads"] is False
+    desktop.set_setting(cfg, "uploads", True)
+    assert desktop.dconf(cfg)["uploads"] is True
+    desktop.set_setting(cfg, "uploads", False)
+    assert desktop.dconf(cfg)["uploads"] is False
+
+
+def t_order_cli():
+    """The real CLI: plan-only works end to end without a browser."""
+    import subprocess
+    import sys as _sys
+
+    cfg = tmp_cfg(desktop={"channels": [{"name": "Only Channel"}]})
+    root = Path(__file__).resolve().parent
+    res = subprocess.run(
+        [_sys.executable, "main.py", "--config", str(cfg.root / "config.yaml"),
+         "order", "get a link from the database, get 6 clips and post them "
+         "in 6 channels", "--plan-only"],
+        capture_output=True, text=True, timeout=120, cwd=str(root))
+    assert res.returncode == 0, (res.returncode, res.stdout[-500:],
+                                 res.stderr[-500:])
+    assert "Only Channel" in res.stdout, res.stdout[-800:]
+    assert "staged only" in res.stdout, res.stdout[-800:]
+
+    res = subprocess.run([_sys.executable, "main.py", "--help"],
+                         capture_output=True, text=True, timeout=60,
+                         cwd=str(root))
+    for lane in ("order", "desktop", "browser"):
+        assert lane in res.stdout, lane
+
+
+def t_desktop_no_post_apis():
+    """The desktop/orders lanes may only post through the gated browser path."""
+    for name in ("desktop.py", "orders.py"):
+        text = (Path(__file__).resolve().parent / name).read_text(
+            encoding="utf-8")
+        assert "autopost" not in text, name
+        assert "buffer" not in text.lower(), name
+        assert "videos.insert" not in text, name
+
+
 def t_temp_hygiene():
     """Run-end temp sweep: this run's trees go, fresh foreign ones stay."""
     import os
@@ -9714,6 +10224,18 @@ def main(argv: list[str] | None = None) -> int:
         ("go_options", t_go_options),
         ("wakeup", t_wakeup),
         ("nightbatch_go", t_nightbatch_go),
+        ("order_parse", t_order_parse),
+        ("order_plan", t_order_plan),
+        ("order_targets", t_order_targets),
+        ("order_cli", t_order_cli),
+        ("desktop_safety", t_desktop_safety),
+        ("desktop_lessons_playbooks", t_desktop_lessons_playbooks),
+        ("desktop_prompt_and_parse", t_desktop_prompt_and_parse),
+        ("desktop_loop", t_desktop_loop),
+        ("desktop_post_one", t_desktop_post_one),
+        ("desktop_bot_wiring", t_desktop_bot_wiring),
+        ("desktop_settings_override", t_desktop_settings_override),
+        ("desktop_no_post_apis", t_desktop_no_post_apis),
         ("temp_hygiene", t_temp_hygiene),
         ("deps_guard", t_deps_guard),
         ("py_compat", t_py_compat),

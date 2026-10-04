@@ -479,3 +479,38 @@ sentry:
 # Pause the check in the dashboard between missions. Empty = off.
 honeybadger:
   check: ""
+
+# ---------------------------------------------------------------------------
+# Desktop agent (optional) — the AI takes the mouse in YOUR browser.
+#
+# Setup once:   python main.py desktop setup      (installs the browser engine)
+#               Desktop Chrome.bat                (starts Chrome with the
+#                                                  debug port; log into your
+#                                                  channels in that window once)
+# Then:         python main.py desktop status
+#               python main.py order "get a link from the database, get 6
+#                                     clips and post them in 6 channels"
+#
+# Safety defaults, kept deliberately strict:
+#   * allowed_domains is an ALLOWLIST — the agent aborts on anything else;
+#   * uploads: off means the upload sequence runs up to the publish button
+#     and STOPS there ("staged only"). `/desk uploads on` flips it at runtime
+#     (written to work/desktop/settings.json, not to this file);
+#   * delete/buy/unsubscribe clicks are refused no matter what this says.
+# ---------------------------------------------------------------------------
+desktop:
+  backend: chrome                          # chrome = your real browser (CDP)
+                                           # browser = private headless one
+  cdp_url: "http://127.0.0.1:9222"         # Desktop Chrome.bat uses this port
+  allowed_domains:
+    - youtube.com
+    - google.com
+  uploads: "off"                           # "on" = allow the publish/schedule click
+  visibility: unlisted                     # what the lane selects in Studio
+  vision: "off"                            # "on" = send the screenshot to the model too
+  max_steps: 25                            # step budget per `desktop go` goal
+  channels: []                             # one entry per channel to post to
+    # - name: "Deep Ocean"
+    #   studio_url: "https://studio.youtube.com/channel/UCxxxxxxxx"
+    # - name: "Night Files"
+    #   studio_url: "https://studio.youtube.com/channel/UCyyyyyyyy"
