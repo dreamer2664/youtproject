@@ -1912,6 +1912,16 @@ def cmd_desktop(cfg, args) -> int:
             print("  [desktop] installing the playwright package…")
             subprocess.run([_sys.executable, "-m", "pip", "install",
                             "playwright"], check=False)
+        found = desktop.find_browsers()
+        if found:
+            print("  [desktop] browsers found on this machine:")
+            for entry in found:
+                print(f"    - {entry['name']}: {entry['path']}")
+            print("  (any of these can drive the lane — Desktop Chrome.bat "
+                  "picks the first one)")
+        else:
+            print("  [desktop] no Chromium browser found — install Opera GX, "
+                  "Edge, Chrome, Brave or Vivaldi (Edge ships with Windows)")
         print("  [desktop] installing the Chromium engine (one-time, ~120 MB)…")
         rc = subprocess.run([_sys.executable, "-m", "playwright", "install",
                              "chromium"], check=False).returncode

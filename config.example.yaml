@@ -484,7 +484,7 @@ honeybadger:
 # Desktop agent (optional) — the AI takes the mouse in YOUR browser.
 #
 # Setup once:   python main.py desktop setup      (installs the browser engine)
-#               Desktop Chrome.bat                (starts Chrome with the
+#               Desktop Chrome.bat                (starts your Chromium
 #                                                  debug port; log into your
 #                                                  channels in that window once)
 # Then:         python main.py desktop status
