@@ -169,7 +169,18 @@ def run_snapshot(cfg, client, today: str | None = None,
             seen.update(fresh)
             batch = snapshot_videos(client, fresh)
         except Exception as exc:
-            errors.append(f"{title}: {str(exc)[:160]}")
+            message = str(exc)
+            if ("playlistNotFound" in message
+                    or ("404" in message and "playlist" in message.lower())):
+                # A brand-new channel has no uploads playlist until its first
+                # upload, so YouTube 404s the request. That is not a failure:
+                # the channel simply has nothing to fetch yet. Report it as
+                # the plain fact it is instead of dumping the API JSON.
+                log(f"  [snap] {title}: no uploads yet — nothing to fetch; "
+                    f"tracking starts with the first video")
+                fetched[cid] = 0
+                continue
+            errors.append(f"{title}: {message[:160]}")
             continue
         for video in batch:
             video["channel_id"] = video.get("channel_id") or cid
