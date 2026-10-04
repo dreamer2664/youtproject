@@ -1991,6 +1991,10 @@ def cmd_desktop(cfg, args) -> int:
         books = desktop.load_playbooks(cfg)
         print(f"  learned       : {len(lessons)} lesson(s), "
               f"{len(books)} playbook(s) in work/desktop/")
+        rev = _git_rev()
+        if rev:
+            print(f"  code          : {rev}   <- the code you are running; "
+                  "compare it with the newest commit in my last message")
         print("  [desktop] connecting to your browser…")
         check = desktop.connection_check(cfg, backend=args.backend)
         if not check["ok"]:
@@ -2060,6 +2064,27 @@ def _print_channel_data(cfg, ref: str, backend: str | None) -> int:
         if data.get(key):
             print(f"    {key:<12}: {data[key]}")
     return 0
+
+
+def _git_rev() -> str:
+    """Short commit + date of the code that is running. "" when unknown.
+
+    The recurring confusion in this project is "is my clone on the newest
+    code?" (twice already: a stale clone hit argparse, then a stale clone
+    looked like a live bug). Printing the commit in `status` answers it at a
+    glance. Never raises: no git, no output.
+    """
+    import subprocess
+
+    try:
+        here = Path(__file__).resolve().parent
+        out = subprocess.run(
+            ["git", "-C", str(here), "log", "-1", "--format=%h %cs"],
+            capture_output=True, text=True, timeout=5, check=False)
+        text = (out.stdout or "").strip()
+        return text.splitlines()[0][:40] if text else ""
+    except Exception:  # noqa: BLE001 - a missing git is not an error here
+        return ""
 
 
 def _peek_current(cfg, action: str, backend: str | None) -> int:

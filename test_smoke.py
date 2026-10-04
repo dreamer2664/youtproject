@@ -9403,6 +9403,38 @@ def t_desktop_peek_no_shot():
     assert got2["shot"] and len(drv2.shots) == 1, got2
 
 
+def t_desktop_status_code_line():
+    """`status` names the commit it is running — no more stale-clone guessing."""
+    import argparse
+    import io
+    from contextlib import redirect_stdout
+
+    import main as main_mod
+
+    cfg = tmp_cfg()
+    real = main_mod._git_rev
+    ns = argparse.Namespace(action="status", goal=[], backend=None,
+                            max_steps=None, no_hands=False, url=None)
+    try:
+        main_mod._git_rev = lambda: "abc1234 2026-10-04"
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main_mod.cmd_desktop(cfg, ns)
+        out = buf.getvalue()
+        assert rc == 0 and "abc1234 2026-10-04" in out, out
+        assert "code          :" in out, out
+
+        main_mod._git_rev = lambda: ""      # no git -> no line, no crash
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main_mod.cmd_desktop(cfg, ns)
+        assert rc == 0 and "code          :" not in buf.getvalue()
+    finally:
+        main_mod._git_rev = real
+
+    assert main_mod._git_rev()             # this IS a git checkout
+
+
 def t_desktop_channels():
     """The runtime channel store: normalize, add, dedupe, remove, merge."""
     import desktop
@@ -10705,6 +10737,7 @@ def main(argv: list[str] | None = None) -> int:
         ("desktop_cdp_http_info", t_desktop_cdp_http_info),
         ("desktop_stuck_tab", t_desktop_stuck_tab),
         ("desktop_peek_no_shot", t_desktop_peek_no_shot),
+        ("desktop_status_code_line", t_desktop_status_code_line),
         ("desktop_settings_override", t_desktop_settings_override),
         ("desktop_no_post_apis", t_desktop_no_post_apis),
         ("temp_hygiene", t_temp_hygiene),
