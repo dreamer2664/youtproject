@@ -314,8 +314,17 @@ Three rules are built in, not optional:
   successful run becomes a playbook that is replayed first next time, with no
   model calls at all.
 
+Channels the lane can post to (config.yaml `desktop.channels:` or the
+runtime store — no YAML editing needed):
+
+```
+python main.py desktop channels                            # list them
+python main.py desktop channels add "MicroFeed-0" UCWKpOEGAYSgCUzJL-0fO4iQ
+python main.py desktop channels remove "MicroFeed-0"       # runtime ones
+```
+
 From the phone: `/order <sentence>`, `/desk status|shot|log|stop|uploads on`,
-`/look <url>`.
+`/desk channels [add|remove …]`, `/look <url>`.
 
 ### Phone control (Telegram, free)
 

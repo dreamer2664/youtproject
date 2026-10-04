@@ -491,6 +491,7 @@ except the final publish click. From the phone it's `/order <sentence>`.
     python main.py desktop go "open youtube studio and tell me how the newest video is doing"
     python main.py desktop go "…" --no-hands     # plan/screenshot only
     python main.py desktop shot | stop
+    python main.py desktop channels [add "Name" <UC…|studio link> | remove X]
 
 How the loop works: every step it takes a **snapshot** (visible elements with
 indexes + the page text + a screenshot), asks the model for ONE next action
@@ -523,6 +524,13 @@ Vivaldi — with `--remote-debugging-port=9222` and its own profile
 window; after that the agent clicks in the window you can watch. Close it any
 time — nothing is lost. `desktop.backend: browser` switches to a private
 headless Chromium for read-only work (no logins).
+
+**Channels:** the lane reads two places — `desktop.channels:` in
+config.yaml (durable) and `work/desktop/channels.json`, written by
+`desktop channels add` (no YAML surgery; `/desk channels add` from the
+phone). They merge, deduped by the UC id (config wins), and an order spreads
+items across them round-robin. `desktop channels` lists what it can see and
+where each entry came from.
 
 **Honest limits:** Studio's markup changes and a step will fail sometimes —
 that is exactly what the lesson/playbook loop is for (the next attempt
