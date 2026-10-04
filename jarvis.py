@@ -54,10 +54,10 @@ TOOLS = [
 
 
 def _brain(cfg: Config):
-    if cfg.groq_api_keys:
+    if cfg.groq_llm_api_keys:
         from groq import GroqProvider
 
-        return GroqProvider(cfg.groq_api_keys, cfg.groq_model)
+        return GroqProvider(cfg.groq_llm_api_keys, cfg.groq_model)
     if cfg.openrouter_api_keys:
         from openrouter import OpenRouterProvider
 
@@ -86,7 +86,8 @@ def run_task(cfg: Config, text: str, say=None) -> str:
     say = say or (lambda message: None)
     provider = _brain(cfg)
     if provider is None:
-        return "No LLM keys (need Groq or OpenRouter keys) — task not started."
+        return ("No text-generation keys (need a Groq LLM-reserve or "
+                "OpenRouter key) — task not started.")
     now = datetime.now().astimezone()
     messages = [{"role": "system", "content": SYSTEM.format(now=now.isoformat())},
                 {"role": "user", "content": text}]

@@ -15,7 +15,7 @@ def check_script(script, cfg: Config) -> dict:
     """Verify/fix scene narrations in place. Returns a JSON-safe report."""
     if not cfg.factcheck_enabled:
         return {"checked": False, "reason": "disabled"}
-    if not (cfg.gemini_api_key or cfg.groq_api_keys):
+    if not (cfg.gemini_api_key or cfg.groq_llm_api_keys):
         print("      factcheck : skipped (no Gemini/Groq key)")
         return {"checked": False, "reason": "no key"}
     print("      factcheck : verifying claims...")

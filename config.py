@@ -210,8 +210,14 @@ DEFAULTS: dict[str, Any] = {
         # Free Groq keys (https://console.groq.com/keys) — script/topic/
         # factcheck fallback after Gemini, with key rotation spreading the
         # free-tier quota. Env: GROQ_API_KEYS (comma-separated) wins, else
-        # GROQ_API_KEY (single), else this list.
+        # GROQ_API_KEY (single), else this list. The list is ORDERED: the
+        # first groq_transcription_percent keys are Whisper-only, the rest
+        # are the late Groq text fallback (see the split below).
         "groq_api_keys": [],
+        # Percentage of the ordered Groq list reserved for Whisper; the
+        # remainder is the Groq text fallback after the whole Gemini pool.
+        # 0 = captions-first (no Whisper through Groq), 100 = Whisper-only.
+        "groq_transcription_percent": 90,
         "groq_model": "openai/gpt-oss-120b",
         # Editorial passes after factcheck: punch-up (retention) then
         # decringe (taste veto). Skipped automatically without an LLM key.
@@ -1282,6 +1288,39 @@ class Config:
         if isinstance(raw, str):
             raw = [raw]
         return _dedupe_keys(raw)
+
+    @property
+    def groq_transcription_percent(self) -> int:
+        """Share of configured Groq keys assigned to Whisper (0-100)."""
+        try:
+            value = int(self.data["ai"].get("groq_transcription_percent", 90))
+        except (TypeError, ValueError):
+            value = 90
+        return min(100, max(0, value))
+
+    def _groq_key_split(self) -> tuple[list[str], int]:
+        """Configured Groq keys and rounded Whisper-prefix split index."""
+        keys = self.groq_api_keys
+        percent = self.groq_transcription_percent
+        count = (len(keys) * percent + 50) // 100
+        # A percentage cannot divide a tiny pool exactly. Unless the caller
+        # explicitly chooses 0% or 100%, keep at least one key for each role
+        # whenever two or more keys exist; a single key cannot serve both.
+        if len(keys) > 1 and 0 < percent < 100:
+            count = min(len(keys) - 1, max(1, count))
+        return keys, min(len(keys), max(0, count))
+
+    @property
+    def groq_transcription_api_keys(self) -> list[str]:
+        """The first configured share of Groq keys, reserved for Whisper."""
+        keys, split = self._groq_key_split()
+        return keys[:split]
+
+    @property
+    def groq_llm_api_keys(self) -> list[str]:
+        """The remaining Groq keys, reserved for the final text fallback."""
+        keys, split = self._groq_key_split()
+        return keys[split:]
 
     @property
     def groq_model(self) -> str:

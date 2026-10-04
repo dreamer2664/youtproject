@@ -408,9 +408,13 @@ class GeminiProvider:
         # 429 budget: every key gets one immediate shot (spent per-key quota
         # is the common case), minimum 3 attempts like the single-key days.
         failover_after = max(3, len(keys))
+        # Sweep every independently-quota'd key once before falling back;
+        # keep the legacy retry patience, plus three delayed retries after
+        # a large pool's first sweep.
+        attempt_budget = max(self.MAX_RETRIES, len(keys) + 3)
         tried_429 = 0
         net_errors = 0
-        for attempt in range(1, self.MAX_RETRIES + 1):
+        for attempt in range(1, attempt_budget + 1):
             key = keys[0]
             try:
                 response = requests.post(
@@ -477,7 +481,7 @@ class GeminiProvider:
                     break
                 continue
 
-            if response.status_code in self.RETRYABLE and attempt < self.MAX_RETRIES:
+            if response.status_code in self.RETRYABLE and attempt < attempt_budget:
                 # A different key sometimes routes around a saturated shard,
                 # and trying it costs nothing — so every key gets one INSTANT
                 # shot before anyone sleeps. (The old code slept ~107s on the
@@ -489,7 +493,7 @@ class GeminiProvider:
                     wave = attempt - len(keys) + 1
                     delay = min(2 ** wave + random.uniform(0, 1), self.MAX_DELAY)
                     print(f"  [{tag}] {model}: HTTP {response.status_code}, retry in "
-                          f"{delay:.0f}s ({attempt}/{self.MAX_RETRIES})")
+                          f"{delay:.0f}s ({attempt}/{attempt_budget})")
                     time.sleep(delay)
 
         return None, last_status, last_error
@@ -847,8 +851,17 @@ def get_provider(cfg: Config) -> ScriptProvider:
                                            "deepseek", "pollinations", "template")
                          if name != primary]
     chain: list[tuple[str, object]] = []
+    groq_link: tuple[str, object] | None = None
+    groq_index = 0
     for name in order:
-        if name == "azure" and cfg.azure_api_key and cfg.azure_endpoint:
+        if name == "groq":
+            groq_index = len(chain)
+            if cfg.groq_llm_api_keys:
+                from groq import GroqProvider
+
+                groq_link = ("groq", GroqProvider(cfg.groq_llm_api_keys,
+                                                  cfg.groq_model))
+        elif name == "azure" and cfg.azure_api_key and cfg.azure_endpoint:
             from azure_openai import (AzureOpenAIProvider, is_supported_model,
                                       ledger_path_for)
 
@@ -871,10 +884,6 @@ def get_provider(cfg: Config) -> ScriptProvider:
                 models=[cfg.gemini_model] + [
                     m for m in GeminiProvider.PRIMARY_MODELS
                     if m != cfg.gemini_model])))
-        elif name == "groq" and cfg.groq_api_keys:
-            from groq import GroqProvider
-
-            chain.append(("groq", GroqProvider(cfg.groq_api_keys, cfg.groq_model)))
         elif name == "deepseek" and cfg.deepseek_api_keys:
             from deepseek import DeepSeekProvider
             chain.append(("deepseek", DeepSeekProvider(
@@ -891,11 +900,10 @@ def get_provider(cfg: Config) -> ScriptProvider:
                           PollinationsTextProvider(cfg.pollinations_model)))
         elif name == "template":
             chain.append(("template", TemplateProvider()))
-    # Sandwich: Gemini's best three run first (huge quota), then the best
-    # scarce brains (Groq 120b, OpenRouter 550b), and only then Gemini's
-    # weaker reserves — so a slump costs brains, not minutes crawling
-    # through Lite models while a 550B brain sits idle. Inserted after the
-    # last scarce lane so an explicit --primary always keeps its place.
+    # Gemini's best models run first (huge quota), then the scarce brains
+    # (OpenRouter 550B), then Gemini's weaker reserves. The small Groq text
+    # pool is inserted AFTER the whole Gemini primary+reserve group, unless
+    # Groq was explicitly chosen as the primary provider.
     if any(label == "gemini" for label, _ in chain):
         reserve = [m for m in GeminiProvider.RESERVE_MODELS
                    if m != cfg.gemini_model]
@@ -903,6 +911,16 @@ def get_provider(cfg: Config) -> ScriptProvider:
             link = ("gemini-reserve", GeminiProvider(
                 cfg.gemini_api_keys, cfg.gemini_model, models=reserve))
             pos = max(i for i, (label, _) in enumerate(chain)
-                      if label in ("gemini", "groq", "openrouter")) + 1
+                      if label in ("gemini", "openrouter")) + 1
             chain.insert(pos, link)
+
+    if groq_link is not None:
+        if primary == "groq":
+            chain.insert(0, groq_link)  # explicit config stays authoritative
+        else:
+            gemini_positions = [i for i, (label, _) in enumerate(chain)
+                                if label in ("gemini", "gemini-reserve")]
+            pos = (max(gemini_positions) + 1 if gemini_positions
+                   else min(groq_index, len(chain)))
+            chain.insert(pos, groq_link)
     return ChainedProvider(chain)

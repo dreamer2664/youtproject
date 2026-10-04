@@ -17,10 +17,9 @@ cd youtproject
 .\setup.ps1                        # venv + all libraries (mac/linux: ./setup.sh)
 python main.py preflight           # check FFmpeg, libraries, folders
 python main.py preflight --live    # + validate the Gemini key (one tiny free call)
-python main.py keys --probe        # live-check every API key you configured
-python main.py keys --advice          # what each key lane powers + the honest
-                                           # multi-key truths (Groq org-level, the
-                                           # OpenRouter $10 move, ranked upgrades)
+python main.py keys --probe        # every Gemini key + the reserved Groq text keys
+python main.py keys --advice          # key lanes, the Groq account split, the
+                                           # OpenRouter $10 move, ranked upgrades
 ```
 
 Keys live in `config.yaml` (copy `config.example.yaml` to start — it's
@@ -29,7 +28,7 @@ commented line by line):
 | what | where in config.yaml | get it from |
 |---|---|---|
 | Gemini (scripts/titles/agents) | `ai.gemini_api_keys` | aistudio.google.com (free) |
-| Groq (Whisper transcription + LLM) | `ai.groq_api_keys` | console.groq.com (free) |
+| Groq (first 90% Whisper; remainder late text fallback) | `ai.groq_api_keys` + `ai.groq_transcription_percent` | console.groq.com (free) |
 | DeepSeek, OpenRouter (extra LLM lanes) | `ai.deepseek_api_keys`, `ai.openrouter_api_keys` | their consoles (free tiers) |
 | **YouTube Data API (channel stats)** | `youtube.api_keys` | console.cloud.google.com — see §2 |
 | Telegram (DMs, phone queue, boardroom summaries) | `telegram.bot_token`, `telegram.owner_id`, `telegram.channel_id` | @BotFather, @userinfobot |

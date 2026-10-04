@@ -52,12 +52,14 @@ Key counts below are the ones this project actually runs with as of
 
 - Everyday 5/day runs almost entirely on **Gemini + Pexels + edge-tts**,
   none of which break a sweat at that volume.
-- **The long-form lane (Sep 2026) is the cheapest per output-minute**:
-  0 LLM calls for a whole render of a captioned/cached source, one
-  cached eos pass (~8 calls / ~11k tokens on 20 min) when cutting, and
-  Groq Whisper minutes only when captions don't exist. It touches no
-  image, vision, voice or YouTube-API quota at all — see API-REPORT.md
-  for the measured table.
+- **Long-form (Sep 2026) stays cheapest per output-minute when
+  transcripts are cached**: a whole render uses 0 LLM/audio calls;
+  cutting an unpunctuated cached transcript adds one cached eos pass
+  (~8 calls / ~11k tokens on 20 min). On an uncached source the policy
+  (2026-10-04) uses Groq Whisper first even when YouTube captions exist,
+  and harvests captions only if Whisper fails or returns no words. It
+  touches no image, vision, voice or YouTube-API quota — see
+  API-REPORT.md for the accounting.
 - Groq + OpenRouter are the afternoon-slump insurance: when Gemini 503s,
   they cover the same 5 videos with room to spare.
 - If OpenRouter ever starves (50/day on one account ≈ 8 generated videos,
@@ -152,3 +154,28 @@ RPD), cloudzero.com/blog/groq-pricing (Groq org-level: 30 RPM / 6k TPM /
 layer3labs.io/guides/groq-pricing (Whisper ~20 RPM / 2,000 req/day
 separate pool), costgoat.com/deals/openrouter.ai + buldrr.com (50/day →
 $10 credit → 1,000/day, credits never expire).
+
+## Transcript routing + key split update (2026-10-04)
+
+- **Transcript order on a cache miss:** Groq Whisper first, then keyless
+  YouTube captions only if Whisper fails or returns no words, then the
+  existing transcript-fix pass. Fresh/uncached sources therefore use
+  Whisper audio even when captions are available. The shared cache is
+  kept; old caption-derived entries remain in use until manually cleared.
+- **Groq allocation:** `ai.groq_transcription_percent` defaults to 90.
+  In the ordered Groq list the first share is transcription-only; the tail
+  is reserved for the Groq text fallback after the complete Gemini
+  primary/reserve sweep. Examples: 35 keys → 32 Whisper / 3 text;
+  80 → 72 / 8. With at least two keys the default rounding preserves a
+  text key; a single key is Whisper-only. Set the percent to 0 for
+  captions-first or 100 for Whisper-only.
+- **Per-account pools:** Groq limits are per organization/account. Keys on
+  one account share its pool; separately owned accounts are separate. The
+  `keys` dashboard therefore shows a Groq role split and per-key Whisper
+  audio labelled per account, and does not print a multiplied daily
+  aggregate (that row would invent capacity that does not exist).
+- Whisper tries the configured keys in order and advances on
+  auth/rate/network failures; it is failover, not round-robin. In normal
+  operation the first healthy Whisper key takes the load until it is
+  rate-limited. The usage ledger tracks attempted Groq audio requests by
+  masked key; it is not a provider-side quota read.

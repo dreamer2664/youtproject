@@ -5,24 +5,29 @@ Numbers below are **measured from the real prompt builders** (a provider
 fake captured the exact strings; no API calls were made), on a synthetic
 3,000-word transcript ≈ 20 minutes at speaking pace. Token figures use
 ~4 characters/token for English. Quota limits are the free-tier numbers
-already tracked in `CAPACITY.md` / `python main.py keys`.
+already tracked in `CAPACITY.md` / `python main.py keys`. The original
+2026-09-30 tables assumed captions-first routing; see §10 for the
+Whisper-first update (2026-10-04) and the Groq key split.
 
 ---
 
 ## 1. TL;DR
 
-- **Long-form is the cheapest lane in the project per minute of output.**
-  A whole-source render of a captioned (or already-cached) video costs
-  **0 LLM calls, 0 audio-minutes, 0 quota units** — pure FFmpeg.
-- Cutting an episode (`--minutes`) on a captioned source adds **one eos
-  pass, cached forever**: 8 calls / ~11k tokens in on a 20-minute source.
-- A fresh source with no YouTube captions costs one **Groq Whisper
-  transcription** (20 audio-minutes = 4% of the 8-hour daily pool) plus
-  the transcript-fix pass (4 calls / ~11k tokens in).
+- **Long-form is still cheapest when the transcript is cached.** A
+  whole-source render with a cached transcript costs **0 LLM calls,
+  0 Whisper audio-minutes, 0 YouTube quota units** — pure FFmpeg.
+- Cutting an episode (`--minutes`) on a cached, unpunctuated transcript
+  adds **one eos pass, cached forever**: 8 calls / ~11k tokens in on a
+  20-minute source.
+- Under the **Whisper-first policy (2026-10-04)**, every fresh/uncached
+  source uses Groq Whisper even if YouTube captions exist; captions are
+  fallback only. A 20-minute source spends 20 audio-minutes plus the
+  transcript-fix pass (about 4 calls / ~11k tokens in).
 - **Nothing else in the stack feels it**: no images, no vision, no
-  voice, no YouTube Data API units, no ElevenLabs chars. Even
-  3 long-forms/day on uncaptioned sources uses ~12% of the Whisper pool
-  and under 2% of one Gemini key's request quota.
+  voice, no YouTube Data API units, no ElevenLabs chars. Three fresh
+  20-minute sources use 60 aggregate Whisper audio-minutes; ordered key
+  failover moves to another account only when the current key cannot
+  serve.
 - **Audit verdict:** two working lanes were invisible (DeepSeek, Pixabay
   — both already in the code, undocumented in the example config; now
   documented), one API is dead by design (HuggingFace, removed Sep 2026),
@@ -59,8 +64,8 @@ Full user docs: `OPERATIONS.md` → "Long-form".
 
 | Call | When it fires | Calls on a 20-min source | Tokens in | Tokens out | Cached? |
 |---|---|---|---|---|---|
-| Groq Whisper | source has no harvestable YouTube captions | 1-2 chunked requests (20 audio-min) | — | — | transcript cache, shared with clip/parts |
-| transcript fix (`clipfix`) | fresh Whisper transcript (on by default) | 4 (800 words/batch) | ~10,700 | ~120 | rides the transcript cache |
+| Groq Whisper | every fresh/uncached source, even when captions exist | 1-2 chunked requests (20 audio-min) | — | — | transcript cache, shared with clip/parts |
+| transcript fix (`clipfix`) | fresh transcript from Whisper or the caption fallback (on by default) | 4 (800 words/batch) | ~10,700 | ~120 | rides the transcript cache |
 | sentence-end pass (`clipeos`) | `--minutes` cutting an unpunctuated transcript | 8 (400 words/batch) | ~10,650 | ~320 | own `.eos.json`, shared with parts |
 | title / chapters / kit / thumbnails | always | 0 | 0 | 0 | — |
 
@@ -86,7 +91,7 @@ and the source's own title is already proven.
 
 ### 3.3 What 3 long-forms/day (one per channel) does to each budget
 
-Assume the worst mix: all three sources uncaptioned, all cut.
+Assume the worst mix: all three sources are fresh/uncached and cut.
 
 | Provider | Free-tier limit | Long-form draw | Share |
 |---|---|---|---|
@@ -100,9 +105,12 @@ Assume the worst mix: all three sources uncaptioned, all cut.
 | Pollinations | paced, no hard cap | 0 | 0% |
 
 **Conclusion: you can run long-form daily on every channel without
-moving a single quota dial that matters.** The only pool it touches is
-Whisper audio, and only for sources without captions — which the
-captions-first harvest already minimizes.
+moving a quota dial, but fresh sources now always use Whisper first.**
+The shared cache is what prevents repeat audio use; YouTube captions are
+a fallback, not the quota-saving primary. The ordered Groq list is split
+by `ai.groq_transcription_percent` (default 90%): the first share is
+Whisper-only, the tail is the late text fallback after the whole Gemini
+primary/reserve pool.
 
 ---
 
@@ -116,7 +124,7 @@ Legend: ✅ healthy · ⚠️ watch · 💤 dormant by design · 🪦 dead ·
 | 1 | **Gemini** (text) | script, factcheck, editorial, scout, clipfix/clippick/clipeos, title polish | ✅ | Primary chain link, ~1k req/day/key. Saturates at US peak (503) — chain + EU mornings already handle it. Long-form adds ≤1% load. |
 | 2 | **Gemini** (vision) | image QC, clip smart-crop subject tracking | ✅ | Cached per photo+query, circuit breaker, fails OPEN. Long-form makes **0** vision calls (nothing to pick). |
 | 3 | **Groq chat** | LLM fallback link | ⚠️ | Sources conflict on the daily cap: our ledger says ~14,400/day, a Sep-11-2026 check says 1,000/day on the main chat models — **both agree limits are per organization, not per key**. Verify once in console.groq.com → Limits. Not urgent: Gemini takes the load first. |
-| 4 | **Groq Whisper** | transcript fallback when no captions | ⚠️ **binding constraint** | 8 h audio/day, org-level, 25 MB/chunk (hence 25-min chunking). Long-form is a *lighter* user per output-minute than clips. Captions-first + shared cache already minimize it. |
+| 4 | **Groq Whisper** | primary transcript for fresh/uncached sources; YouTube captions fallback | ⚠️ **binding constraint** | ~8 h audio/day per account, 25 MB/chunk (hence chunking). The first `ai.groq_transcription_percent` (default 90%) of the ordered Groq keys are Whisper-only, tried in order; the shared cache prevents repeat transcription. |
 | 5 | **OpenRouter** | last LLM resort before DeepSeek | ✅ | 50 req/day on `:free` — tiny by design, only burns during a multi-provider outage. |
 | 6 | **DeepSeek** | LLM lane after OpenRouter | 🫥→✅ | In code + chain since 2026-09-21, verified live, **but invisible**: not in config.example.yaml. **Fixed in this commit** — documented with keys/model. |
 | 7 | **Pollinations** (text) | offline-ish last text resort | ✅ | `openai-fast` only (mistral model removed upstream 2026-09-16). No hard cap. |
@@ -219,7 +227,7 @@ kit with 0:00-first chapter timestamps and the source credit.
 |---|---|---|---|
 | cached transcript, `--top N` | 1 per picker window | ~2.3k per window | window = 1400 words ≈ 9 min of speech, 120-word overlap |
 | + vision QC on | ~1 per candidate chapter | small | same API the clip lane's frame check uses |
-| fresh uncaptioned source | + Whisper audio-min + transcript fix | ~11k | identical to every other lane — the transcript is the cost |
+| fresh/uncached source | + Whisper audio-min + transcript fix | ~11k | identical across lanes; YouTube captions are only the failure fallback |
 
 A 20-minute source is 2-3 picker windows: **2-3 calls, ~5-7k tokens in**
 — about one clip run. The boardroom lane shipped in the same merge
@@ -227,8 +235,8 @@ A 20-minute source is 2-3 picker windows: **2-3 calls, ~5-7k tokens in**
 total. Neither moves the binding constraint (Groq Whisper audio-minutes);
 transcripts stay cached across lanes.
 
-**Stack changes worth knowing:** `ingest_transcript` (cache → captions →
-Whisper → fix) is now shared by clip/parts/longform; the single-source
+**Stack changes worth knowing:** `ingest_transcript` (cache → Whisper →
+YouTube captions fallback → fix) is shared by clip/parts/longform; the single-source
 silent-failure fix (❌ line instead of a quiet exit 1) covers all three
 batch lanes; the compilation assembly encodes each card to a tiny mp4
 first and then walks one concat-demuxer playlist instead of a single
@@ -243,6 +251,37 @@ The bottom line survives the merge unchanged: whole long-form is a
 0-LLM lane on cached sources, the compilation is a clip-run-priced
 editorial lane, and the daily quota question is still "how many fresh
 audio-minutes did we transcribe today".
+
+## 10. Update — Whisper-first routing + the Groq key split (2026-10-04)
+
+The transcript order on a **cache miss** is now:
+
+```text
+shared transcript cache → Groq Whisper → YouTube captions fallback → transcript fix
+```
+
+Whisper is attempted even when YouTube captions exist. If Whisper fails or
+returns no words, the keyless caption harvest is tried. Existing cached
+transcripts are deliberately preserved — they are not re-transcribed until
+the cache is cleared, so the policy change cannot cause a surprise
+one-time audio charge.
+
+The ordered `ai.groq_api_keys` / `GROQ_API_KEYS` list is split dynamically
+by `ai.groq_transcription_percent` (default 90%): the first share is
+Whisper-only, the tail is reserved for the Groq text fallback — which now
+sits AFTER the whole Gemini primary/reserve model and key sweep in the
+provider chain. With two or more keys the default rounding preserves at
+least one text key; a single key is Whisper-only. Set the percent to 0 for
+captions-first (no Whisper through Groq) or 100 for Whisper-only.
+
+Gemini retries now scale with the configured key count: quota/retryable
+model failures sweep every key before that model is abandoned. A hard
+connection failure still fails fast, because another key cannot repair a
+dead host. Whisper itself uses ordered failover (first eligible key until
+it fails, then the next), not round-robin balancing. Groq pools are
+per ACCOUNT — keys within one account share its limits, so `keys --month`
+and the panel show per-key Whisper audio with the limit labelled per
+account. The in-repo code and tests contain no actual key values.
 
 ---
 

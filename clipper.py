@@ -420,8 +420,8 @@ def fix_transcript_words(words: list[dict], title: str,
 def video_id_for_captions(source_url: str) -> str:
     """YouTube video id for caption harvesting, "" when none (never raises).
 
-    Local files, channels, and non-YouTube links all yield "" — the caller
-    falls through to Groq Whisper.
+    Local files, channels, and non-YouTube links all yield "" — there are
+    no captions to fall back on, so the caller relies on Groq Whisper.
     """
     try:
         from youtube import extract_id
@@ -459,7 +459,7 @@ def fetch_youtube_captions(video_id: str) -> tuple[list[dict], str] | None:
 
     Keyless caption harvest (youtube-transcript-api: v1 instance API with a
     0.x static fallback); every failure mode returns None so the caller
-    falls through to Groq Whisper. Origin is manual/generated/translated.
+    falls back after Groq Whisper fails. Origin is manual/generated/translated.
     """
     if not (video_id or "").strip():
         return None
@@ -606,66 +606,104 @@ def normalize_word_timings(words: list[dict],
 
 def transcribe_words(audio: Path, cfg: Config,
                      title: str = "", video_id: str = "") -> list[dict]:
-    """Word-level transcript: YouTube captions first, Groq Whisper fallback.
+    """Word-level transcript: Groq Whisper first, YouTube captions fallback.
 
     Returns [{"word": str, "start": float, "end": float}, ...] with
-    ABSOLUTE times. Harvested captions cost 0 Groq audio-minutes (their
-    line timings spread evenly across words); Whisper runs chunked with
-    key rotation and falls back to per-chunk segments with words spread
-    evenly when the endpoint returns no word timestamps.
+    ABSOLUTE times. Whisper uses the configured transcription share of the
+    Groq keys (`ai.groq_transcription_percent`, default 90%) and runs
+    chunked with ordered key failover; if it is unavailable or returns no
+    words, the keyless YouTube captions are tried as a fallback. Whisper
+    timestamps are word-level; caption line timings are spread evenly
+    across words.
     """
-    from voice import WHISPER_MODEL, WHISPER_URL
+    keys = keypool.live("groq", cfg.groq_transcription_api_keys)
+    whisper_error: Exception | None = None
+    whisper_empty = False
+
+    if keys:
+        try:
+            total = ffprobe_duration(audio)
+            chunks = plan_chunks(total)
+            offset = 0.0
+            words: list[dict] = []
+            for index, length in enumerate(chunks, start=1):
+                chunk_path = audio if len(chunks) == 1 else \
+                    audio.with_name(f"chunk_{index:02d}.opus")
+                if chunk_path != audio:
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-loglevel", "error",
+                         "-ss", f"{offset:.3f}", "-t", f"{length:.3f}",
+                         "-i", str(audio), "-c:a", "copy", str(chunk_path)],
+                        check=True, capture_output=True)
+                print(f"  [clip] transcribing {int(offset//60)}:"
+                      f"{int(offset%60):02d}-"
+                      f"{int((offset+length)//60)}:"
+                      f"{int((offset+length)%60):02d} "
+                      f"({index}/{len(chunks)})")
+                data = _whisper_request(chunk_path, keys, title=title,
+                                        seconds=length)
+                got = data.get("words") or []
+                if got:
+                    for item in got:
+                        words.append({
+                            "word": str(item.get("word") or "").strip(),
+                            "start": offset + float(item.get("start") or 0),
+                            "end": offset + float(item.get("end") or 0),
+                        })
+                else:  # segment fallback: spread each segment's words evenly
+                    for seg in data.get("segments") or []:
+                        text_words = str(seg.get("text") or "").split()
+                        if not text_words:
+                            continue
+                        s0 = offset + float(seg.get("start") or 0)
+                        s1 = offset + float(seg.get("end") or 0)
+                        step = max(0.05, (s1 - s0) / len(text_words))
+                        for i, word in enumerate(text_words):
+                            words.append({"word": word,
+                                          "start": s0 + i * step,
+                                          "end": s0 + (i + 1) * step})
+                offset += length
+            words = normalize_word_timings(
+                [word for word in words if word["word"]])
+            if words:
+                print(f"  [clip] transcript: Groq Whisper ({len(words)} words)")
+                return words
+            whisper_empty = True
+            print("  [clip] Groq Whisper returned no words; "
+                  "trying YouTube captions")
+        except Exception as exc:  # noqa: BLE001 - captions can salvage source
+            whisper_error = exc
+            print(f"  [clip] Groq Whisper unavailable "
+                  f"({str(exc)[:120]}); trying YouTube captions")
+    else:
+        whisper_error = ClipError("no Groq Whisper transcription keys")
+        print("  [clip] no Groq Whisper transcription keys; "
+              "trying YouTube captions")
 
     if (video_id or "").strip():
-        harvested = fetch_youtube_captions(video_id)
-        if harvested:
-            segments, origin = harvested
-            words = captions_to_words(segments)
-            if words:
-                print(f"  [clip] transcript: YouTube captions ({origin}, "
-                      f"{len(words)} words, 0 Groq audio-minutes)")
-                return words
-    keys = [k for k in cfg.groq_api_keys if k]
-    if not keys:
-        raise ClipError("no Groq API keys — transcription is the one hard "
-                        "dependency of the clip lane (free tier: 8h audio/day)")
-    total = ffprobe_duration(audio)
-    offset = 0.0
-    words: list[dict] = []
-    for index, length in enumerate(plan_chunks(total), start=1):
-        chunk_path = audio if len(plan_chunks(total)) == 1 else \
-            audio.with_name(f"chunk_{index:02d}.opus")
-        if chunk_path != audio:
-            subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error",
-                 "-ss", f"{offset:.3f}", "-t", f"{length:.3f}",
-                 "-i", str(audio), "-c:a", "copy", str(chunk_path)],
-                check=True, capture_output=True)
-        print(f"  [clip] transcribing {int(offset//60)}:{int(offset%60):02d}"
-              f"-{int((offset+length)//60)}:{int((offset+length)%60):02d} "
-              f"({index}/{len(plan_chunks(total))})")
-        data = _whisper_request(chunk_path, keys, title=title,
-                                seconds=length)
-        got = data.get("words") or []
-        if got:
-            for item in got:
-                words.append({"word": str(item.get("word") or "").strip(),
-                              "start": offset + float(item.get("start") or 0),
-                              "end": offset + float(item.get("end") or 0)})
-        else:  # segment fallback: spread each segment's words evenly
-            for seg in data.get("segments") or []:
-                text_words = str(seg.get("text") or "").split()
-                if not text_words:
-                    continue
-                s0 = offset + float(seg.get("start") or 0)
-                s1 = offset + float(seg.get("end") or 0)
-                step = max(0.05, (s1 - s0) / len(text_words))
-                for i, word in enumerate(text_words):
-                    words.append({"word": word,
-                                  "start": s0 + i * step,
-                                  "end": s0 + (i + 1) * step})
-        offset += length
-    return normalize_word_timings([w for w in words if w["word"]])
+        try:
+            harvested = fetch_youtube_captions(video_id)
+            if harvested:
+                segments, origin = harvested
+                words = captions_to_words(segments)
+                if words:
+                    print(f"  [clip] transcript: YouTube captions fallback "
+                          f"({origin}, {len(words)} words)")
+                    return words
+        except Exception as exc:  # noqa: BLE001 - fallback must not mask cause
+            print(f"  [clip] YouTube captions fallback failed "
+                  f"({str(exc)[:100]})")
+
+    if whisper_empty:
+        return []  # preserve the silent-source result when captions are absent
+    if whisper_error is not None:
+        if keys:
+            raise ClipError(f"Groq Whisper failed and YouTube captions "
+                            f"were unavailable ({str(whisper_error)[:180]})") \
+                from whisper_error
+        raise ClipError("no Groq Whisper transcription keys and no usable "
+                        "YouTube captions") from whisper_error
+    return []
 
 
 def _whisper_request(path: Path, keys: list[str],
@@ -675,16 +713,18 @@ def _whisper_request(path: Path, keys: list[str],
     seconds = chunk audio length, ledgered so `keys` can show the ~8h/day
     audio pool (the binding Groq quota for clip/parts lanes).
     """
+    from voice import WHISPER_MODEL, WHISPER_URL
+
     keys = keypool.live("groq", keys)  # dead keys stay dead (keypool)
     last = "no keys tried"
     for key in keys:
         try:
             with open(path, "rb") as handle:
                 response = requests.post(
-                    "https://api.groq.com/openai/v1/audio/transcriptions",
+                    WHISPER_URL,
                     headers={"Authorization": f"Bearer {key}"},
                     files={"file": (path.name, handle, AUDIO_MIME)},
-                    data={"model": "whisper-large-v3-turbo",
+                    data={"model": WHISPER_MODEL,
                           "response_format": "verbose_json",
                           "timestamp_granularities[]": "word",
                           **whisper_params(title)},
@@ -1349,7 +1389,7 @@ def save_transcript_cache(path: Path, words: list[dict]) -> None:
 def ingest_transcript(cfg: Config, src: Path, source: dict, url: str,
                       work: Path, lane: str = "clip",
                       log=print) -> list[dict]:
-    """Transcript for a source: cache -> YouTube captions -> Whisper.
+    """Transcript for a source: cache -> Groq Whisper -> YouTube captions.
 
     The exact pipeline run_clip/run_parts run, factored out for the
     longform lane (they keep their own copies — working code isn't

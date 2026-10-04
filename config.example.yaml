@@ -330,11 +330,18 @@ ai:
   # You can also set that ID explicitly here to skip straight to it.
   gemini_model: "gemini-3.8-flash"
 
-  # Free Groq keys (https://console.groq.com/keys) — script/topic/factcheck
-  # fallback after Gemini, with key rotation spreading the free-tier quota.
-  # Several keys = several quotas. Env GROQ_API_KEYS (comma-separated) wins.
+  # ORDERED Groq keys (https://console.groq.com/keys). The first
+  # groq_transcription_percent (default 90) are Whisper-only — transcription
+  # is the clip/longform lane's primary transcript source now; the remainder
+  # are the final Groq text fallback after the whole Gemini primary/reserve
+  # pool. With 2+ keys the default split keeps at least one text key; a
+  # single key is Whisper-only. Separate Groq accounts have separate pools;
+  # keys within one account share it. Set the percent to 0 for captions-first
+  # (no Whisper through Groq) or 100 for Whisper-only.
+  # Env GROQ_API_KEYS (comma-separated) wins over this list.
   groq_api_keys:
     - ""
+  groq_transcription_percent: 90
   groq_model: "openai/gpt-oss-120b"
 
   # Editorial passes after factcheck: punch-up (retention) then decringe

@@ -520,6 +520,9 @@ def _pools_line(cfg: Config) -> str:
     line = "Keys: " + (", ".join(have) if have else "none")
     if missing:
         line += f" (no {', '.join(missing)})"
+    if cfg.groq_api_keys:
+        line += (f" · Groq split: Whisper×{len(cfg.groq_transcription_api_keys)}"
+                 f" + LLM×{len(cfg.groq_llm_api_keys)}")
     return line
 
 
