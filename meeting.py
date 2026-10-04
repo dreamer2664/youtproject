@@ -583,7 +583,8 @@ def latest_minutes(cfg: Config) -> Path | None:
 
 def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
                 rounds: int | None = None, render: bool = False,
-                send: bool = True, say=None, executor=None) -> str:
+                send: bool = True, say=None, executor=None,
+                events=None) -> str:
     """Hold one meeting. Returns a summary string. Never raises.
 
     kind="act" is the autonomous lane: the room commits to ONE action
@@ -591,8 +592,20 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
     nothing) and `executor(decision)` — wired by main.py — carries it
     out. Board-initiated renders are NOT part of the meeting's call
     budget: the generate pipeline has its own quota headroom.
+
+    `events(event_dict)` is optional and additive: the panel/dashboard
+    (`--events-json`) use it to render the room live. A listener that
+    raises is ignored — watching must never break a meeting.
     """
     say = say or print
+
+    def emit(etype: str, **payload) -> None:
+        if events is None:
+            return
+        try:
+            events({"type": etype, **payload})
+        except Exception:  # noqa: BLE001 - a listener never kills a meeting
+            pass
     if kind not in ("stats", "pick", "act"):
         return f"Unknown meeting kind {kind!r} (stats, pick or act)."
     rounds = rounds or cfg.meeting_rounds
@@ -629,6 +642,9 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
     except MeetingError as exc:
         return str(exc)
 
+    emit("agenda", kind=kind, question=question, text=agenda,
+         candidates=[c[0] for c in (candidates or [])])
+
     # -- the room speaks ---------------------------------------------------
     turns: list[dict] = []
     calls = 0
@@ -653,12 +669,16 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
             except Exception as exc:  # noqa: BLE001 - one seat going quiet
                 say(f"  {role['name']} {role['emoji']} is silent "
                     f"({str(exc)[:80]})")
+                emit("silent", role=role["name"], emoji=role["emoji"],
+                     lane=role["lane"], reason=str(exc)[:160])
                 continue
             est_tokens += (len(prompt) + len(reply)) // 4
             text = clamp_words(reply.strip(), cfg.meeting_max_words)
             turns.append({"name": role["name"], "emoji": role["emoji"],
                           "text": text})
             say(f"  {role['name']} {role['emoji']}: {text}")
+            emit("turn", role=role["name"], emoji=role["emoji"],
+                 lane=role["lane"], round=round_no, text=text)
 
     # -- the chair decides -------------------------------------------------
     decision = None
@@ -680,6 +700,8 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
                 break
             prompt += ("\n\nYour last reply was not valid (wrong shape or "
                        "not one of the candidates). Try again, JSON only.")
+
+    emit("decision", kind=kind, decision=decision)
 
     # -- remember the decision (the board's long-term memory) --------------
     if decision:
@@ -710,6 +732,7 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
         else:
             say(f"  [meeting] executing the board's action: "
                 f"{decision['action']}")
+            emit("action", action=decision["action"], decision=decision)
             try:
                 decision["result"] = str(executor(decision) or "done")
             except Exception as exc:  # noqa: BLE001 - report, don't crash
@@ -768,6 +791,7 @@ def run_meeting(cfg: Config, kind: str, urls: list[str] | None = None,
     # -- optional follow-through -------------------------------------------
     if kind == "pick" and decision and render:
         say(f"  [meeting] rendering the winner: {decision['choice']}")
+        emit("render", url=decision["choice"])
         from clipper import run_clip
 
         try:

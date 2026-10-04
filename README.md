@@ -166,6 +166,27 @@ One video a day, at the same hour, beats five at once. See `UPLOAD-GUIDE.md`
 for the full walkthrough: the AI-disclosure box, captions, audience settings,
 thumbnails, Shorts, and what not to do on a new channel.
 
+### The panel (click instead of typing)
+
+Double-click **`Start Panel.bat`** (Windows) — or run `python main.py panel`.
+A local page opens (127.0.0.1 only, no terminal) with buttons for the moves
+you actually make: **Generate** (image route `stock`/`ai`/`free`, style and
+length as clicks), **Clip** and **Parts** (pick a link off your list or take
+the next queued one), the **boardroom** (run it, dry-run it, read minutes,
+or chat with any seat), plus snapshots, keys, queue, kits, errors.
+Every button runs exactly the command you would have typed, streams its
+output live, and one job runs at a time. No button here can post anything —
+uploading stays manual, by design.
+
+```
+python main.py panel                  # the same thing from a terminal
+python main.py panel --port 9000      # if 8765 is taken
+python main.py panel --host 0.0.0.0   # reachable from your phone on the LAN (read the warning)
+```
+
+`sources/sheet.csv` is the links list the panel manages; the board and the
+clip lanes already read it, so nothing is duplicated anywhere.
+
 ### Phone control (Telegram, free)
 
 Text the bot a topic from your phone, get back the finished video:
@@ -230,6 +251,7 @@ Shorts, long-form and art styles without touching the config.
 | `package.py` | Upload kits + checklists + TikTok/Reels captions |
 | `jobqueue.py` | `state.json` job tracking |
 | `bot.py` | Telegram phone control (polls, renders, delivers) |
+| `panel.py` / `panel.html` | Click-only control panel (`Start Panel.bat`, or `main.py panel`) |
 | `autopost.py` | Buffer autopost: video hosting + TikTok/YouTube/IG drafts or scheduled posts |
 | `jarvis.py` | Channel manager brain: tasks → render + schedule + report |
 | `openai_compat.py` | Shared base for OpenAI-style chat lanes (rotation + fallback) |
