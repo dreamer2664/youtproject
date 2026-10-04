@@ -557,6 +557,13 @@ Studio is driven exactly like an English one — including the publish gate.
 If Opera ever misbehaves, `Desktop Chrome.bat msedge` runs the same lane on
 Edge (already on every Windows machine).
 
+**From the panel:** the Publish section (and the phone bot) drive the same
+`order` lane. One sentence, three buttons: **Plan** (free), **Dry run**
+(everything up to the publish click), **Run** (respects the uploads gate;
+asks for confirmation when the gate is ON). The header chip shows
+`uploads off / uploads ON` and the channel count at all times, so the page
+can never quietly be one click away from publishing without saying so.
+
 **Channels:** the lane reads two places — `desktop.channels:` in
 config.yaml (durable) and `work/desktop/channels.json`, written by
 `desktop channels add` (no YAML surgery; `/desk channels add` from the

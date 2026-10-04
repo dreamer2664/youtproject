@@ -180,10 +180,15 @@ A local page opens (127.0.0.1 only, no terminal) with buttons for the moves
 you actually make: **Generate** (image route `stock`/`ai`/`free`, style and
 length as clicks), **Clip** and **Parts** (pick a link off your list or take
 the next queued one), the **boardroom** (run it, dry-run it, read minutes,
-or chat with any seat), plus snapshots, keys, queue, kits, errors.
+or chat with any seat), plus snapshots, keys, queue, kits, errors, and the
+**Publish** section: type one sentence, watch it plan, dry-run it, or run it.
 Every button runs exactly the command you would have typed, streams its
-output live, and one job runs at a time. No button here can post anything —
-uploading stays manual, by design. If something else already holds port
+output live, and one job runs at a time. The Publish section drives the same
+`order` lane as the CLI (`python main.py order "…"`), which obeys the
+**uploads gate**: with `uploads: off` a Run stages everything and stops
+before any publish click; the header shows `uploads off`/`uploads ON` at all
+times, and with ON the Run button asks before it starts. The panel itself
+contains no upload code. If something else already holds port
 8765 (an older local project, a dev server), the panel quietly takes the
 next free port and opens *that* window — the launcher recognises its own
 server by probing `/api/state`, so it can never show you another program.
