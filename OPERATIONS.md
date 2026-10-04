@@ -540,6 +540,10 @@ follow-up search **reuses the current tab** rather than spawning a new one.
 | `⚠️ your browser IS running … but a tab did not answer` | the browser is fine, one TAB is frozen/asleep/mid-reload (Studio is heavy — this is the page, not the tool) | click/refresh that tab, run it again; the message names the tab |
 | `❌ could not reach your browser at …` | nothing is listening on the debug port | double-click `Desktop Chrome.bat` first |
 
+`status` also prints `code : <commit> <date>` — the exact code your clone is
+running. If a fix was announced with a newer commit than the one shown, you
+have not pulled it yet.
+
 Every page-touching call is time-boxed (attach 6s, read 8s, screenshot 15s),
 so a sleeping tab gives you a sentence in seconds instead of a command that
 hangs forever. Opera itself snoozes background tabs — if the Studio tab is in
