@@ -446,9 +446,11 @@ _SNAPSHOT_JS = """
 class PlayDriver(BaseDriver):
     """Real browser via Playwright (lazy import — CI never sees it)."""
 
-    def __init__(self, cfg, backend: str | None = None) -> None:
+    def __init__(self, cfg, backend: str | None = None,
+                 timeout_ms: int | None = None) -> None:
         self.cfg = cfg
         self.backend = (backend or dconf(cfg)["backend"] or "chrome").lower()
+        self._timeout_ms = int(timeout_ms) if timeout_ms else None
         self._pw = None
         self._browser = None
         self._context = None
@@ -469,7 +471,10 @@ class PlayDriver(BaseDriver):
         if self.backend == "chrome":
             url = dconf(self.cfg)["cdp_url"]
             try:
-                self._browser = self._pw.chromium.connect_over_cdp(url)
+                kwargs = {}
+                if self._timeout_ms:
+                    kwargs["timeout"] = self._timeout_ms
+                self._browser = self._pw.chromium.connect_over_cdp(url, **kwargs)
             except Exception as exc:  # noqa: BLE001 - say the fix
                 raise RuntimeError(
                     f"could not reach your browser at {url} — start it with "
@@ -478,9 +483,16 @@ class PlayDriver(BaseDriver):
                     "Edge is already on every Windows machine."
                 ) from exc
             contexts = self._browser.contexts
-            self._context = contexts[0] if contexts else self._browser.new_context()
-            pages = self._context.pages
-            self._page = pages[0] if pages else self._context.new_page()
+            if not contexts or not contexts[0].pages:
+                # Playwright issue #21812: Opera (and some Chromium builds)
+                # CRASH when Playwright asks a CDP-connected browser for a
+                # new page/context. Never do that to the user's browser —
+                # ask them for a tab instead.
+                raise RuntimeError(
+                    "your browser is running but has no open tab — open one "
+                    "(studio.youtube.com is a good start) and try again")
+            self._context = contexts[0]
+            self._page = self._context.pages[0]
         else:
             self._browser = self._pw.chromium.launch(headless=True)
             self._context = self._browser.new_context(
@@ -567,6 +579,17 @@ class PlayDriver(BaseDriver):
             return ""
 
     def open_tab(self, url: str) -> None:
+        """Open a tab — or reuse the current one when CDP-connected.
+
+        `new_page()` against the user's own browser is the exact call that
+        crashes Opera (playwright#21812). Crashing their browser to honor a
+        "new tab" nicety is a bad trade, so the real-browser backend
+        navigates the open tab instead; the headless backend still opens a
+        real tab.
+        """
+        if self.backend == "chrome":
+            self.goto(url)
+            return
         self._page = self._context.new_page()
         self.goto(url)
 
@@ -579,7 +602,10 @@ class PlayDriver(BaseDriver):
     def close_tab(self, index: int) -> None:
         pages = self._context.pages
         if 0 <= index < len(pages) and len(pages) > 1:
-            pages[index].close()
+            try:
+                pages[index].close()
+            except Exception:  # noqa: BLE001 - never crash the user's browser
+                return
             self._page = self._context.pages[0]
 
     def tabs(self) -> int:
@@ -1155,6 +1181,33 @@ def page_look(cfg, url: str, backend: str | None = None,
     finally:
         if owns:
             drv.close()
+
+
+def connection_check(cfg, backend: str | None = None,
+                     driver: BaseDriver | None = None,
+                     timeout_ms: int = 5000) -> dict:
+    """Can we reach the configured browser RIGHT NOW? Never raises.
+
+    `desktop status` calls this: printing settings is not an answer to "is
+    it ready?" — connecting is. The short timeout keeps a half-open port
+    from hanging the command.
+    """
+    owns = driver is None
+    if owns:
+        driver = PlayDriver(cfg, backend=backend, timeout_ms=timeout_ms)
+    try:
+        driver.start()
+        snap = driver.snapshot()
+        return {"ok": True, "url": snap.get("url") or "",
+                "title": snap.get("title") or ""}
+    except Exception as exc:  # noqa: BLE001 - status must always answer
+        return {"ok": False, "error": str(exc)[:240]}
+    finally:
+        if owns:
+            try:
+                driver.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def peek(cfg, backend: str | None = None, driver: BaseDriver | None = None,
