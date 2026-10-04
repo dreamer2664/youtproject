@@ -295,6 +295,8 @@ python main.py desktop go "open youtube studio and tell me how the newest video 
 python main.py desktop go "…" --no-hands  # plan and screenshot, click nothing
 python main.py desktop shot               # screenshot of the page already open → Telegram (/desk shot)
 python main.py desktop text               # read the page already open (no URL = wherever you are)
+# status ends with ✅ connected / ⚠️ a tab froze (the browser is fine) / ❌ start the browser
+# a sleeping or frozen tab is reported in seconds — never a hang
 python main.py browser data @handle       # public subscriber/video numbers, no API key, no quota
 python main.py browser shot <url>         # screenshot of any allowed page
 ```

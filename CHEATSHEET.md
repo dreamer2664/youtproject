@@ -361,6 +361,7 @@ python main.py desktop go "open youtube studio and tell me how the newest video 
 python main.py desktop go "…" --no-hands     # look + plan, click nothing
 python main.py desktop shot                 # screenshot of the page already open (no URL needed)
 python main.py desktop text                 # read the page already open (no URL needed)
+# status: ✅ connected | ⚠️ a tab froze (browser fine, click the tab) | ❌ browser not running
 python main.py desktop stop                 # kill switch for a running task
 python main.py desktop channels             # channels the lane can post to
 python main.py desktop channels add "MicroFeed-0" UCWKpOEGAYSgCUzJL-0fO4iQ

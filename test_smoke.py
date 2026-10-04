@@ -9169,6 +9169,240 @@ def t_desktop_peek_current():
     assert drv.url() == "https://studio.youtube.com/", drv.url()
 
 
+def _italian_studio_page():
+    """Studio in the account language (Italian) — the owner's real UI."""
+    return {
+        "https://studio.youtube.com/videos/upload": {
+            "title": "Carica video - YouTube Studio",
+            "text": "Carica i video sul tuo canale",
+            "elements": [
+                {"i": 0, "tag": "input", "role": "input",
+                 "name": "(file upload)"},
+                {"i": 1, "tag": "input", "role": "textbox",
+                 "name": "Titolo (obbligatorio)"},
+                {"i": 2, "tag": "div", "role": "textbox",
+                 "name": "Aggiungi una descrizione"},
+                {"i": 3, "tag": "button", "role": "button", "name": "Avanti"},
+                {"i": 4, "tag": "input", "role": "radio",
+                 "name": "Pubblica", "id": "radio-public", "attr": "PUBLIC"},
+                {"i": 5, "tag": "input", "role": "radio",
+                 "name": "Non elencato", "id": "radio-unlisted",
+                 "attr": "UNLISTED"},
+                # the commit button, same word as the radio above, further down
+                {"i": 6, "tag": "button", "role": "button",
+                 "name": "Pubblica"},
+            ],
+        }
+    }
+
+
+def t_desktop_labels_italian():
+    """The lane drives Studio in the ACCOUNT's language, not just English."""
+    import desktop
+
+    snap = _italian_studio_page()[
+        "https://studio.youtube.com/videos/upload"]
+    snap = {"elements": snap["elements"]}
+
+    assert desktop._resolve_named(snap, desktop.LABELS["next"]) == 3
+    assert desktop._resolve_named(snap, desktop.LABELS["title"]) == 1
+    assert desktop._resolve_named(snap, desktop.LABELS["description"]) == 2
+    # the visibility radio and the publish button share the word "Pubblica";
+    # the radio is chosen for visibility (first), the button for the commit
+    # (role=button + bottom-most)
+    assert desktop._resolve_named(
+        snap, desktop.LABELS["unlisted"], attr=True) == 5
+    assert desktop._resolve_named(
+        snap, desktop.LABELS["public"], role="button", last=True) == 6
+    # English keeps working exactly as before
+    eng = {"elements": [
+        {"i": 0, "tag": "button", "role": "button", "name": "Next"},
+        {"i": 1, "tag": "button", "role": "button", "name": "Publish"},
+    ]}
+    assert desktop._resolve_named(eng, desktop.LABELS["next"]) == 0
+    assert desktop._resolve_named(
+        eng, desktop.LABELS["publish"], role="button", last=True) == 1
+    # attr matching is language-independent: PUBLIC wins over the label text
+    assert desktop._resolve_named(snap, ("PUBLIC",), attr=True) == 4
+
+
+def t_desktop_post_one_italian():
+    """Full staging sequence against an Italian Studio, gate included."""
+    import desktop
+
+    item = {"id": "c-it000000-01", "file": __file__, "title": "Titolo IT",
+            "description": "desc"}
+    channel = {"name": "ZimoTV", "studio_url": "https://studio.youtube.com"}
+
+    cfg_off = tmp_cfg()
+    drv = ScriptedDriver(pages=_italian_studio_page())
+    got = desktop.post_one(cfg_off, drv, item, channel,
+                           echo=lambda *a, **k: None, pause=0)
+    assert got["ok"] is False and "uploads" in got["error"], got
+    assert drv.clicked.count("Avanti") >= 2, drv.clicked
+    assert "Pubblica" not in drv.clicked, drv.clicked
+
+    cfg_on = tmp_cfg(desktop={"uploads": "on", "visibility": "unlisted"})
+    drv = ScriptedDriver(pages=_italian_studio_page())
+    got = desktop.post_one(cfg_on, drv, item, channel,
+                           echo=lambda *a, **k: None, pause=0)
+    assert got["ok"] and got["committed"] is True, got
+    # the radio was set (element 5), the commit button was clicked (element 6)
+    assert drv.clicks[-1] == 6 if hasattr(drv, "clicks") else True
+    assert drv.clicked[-1] == "Pubblica", drv.clicked
+    assert "Non elencato" in drv.clicked, drv.clicked
+    assert drv.filled, drv.filled
+
+
+def t_desktop_cdp_http_info():
+    """The browser's own http endpoint is the diagnosis source."""
+    import io
+    import json as _json
+    import urllib.request as _url
+
+    import desktop
+
+    class Resp:
+        def __init__(self, payload):
+            self._b = io.BytesIO(_json.dumps(payload).encode())
+
+        def read(self):
+            return self._b.read()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    real = _url.urlopen
+
+    def fake(url, timeout=0):
+        if url.endswith("/json/version"):
+            return Resp({"Browser": "Opera GX/104.0"})
+        return Resp([{"type": "page", "title": "Studio"},
+                     {"type": "page", "title": "Other"},
+                     {"type": "service_worker", "title": "sw"}])
+
+    _url.urlopen = fake
+    try:
+        info = desktop.cdp_http_info("http://127.0.0.1:9222")
+    finally:
+        _url.urlopen = real
+    assert info["browser"] == "Opera GX/104.0", info
+    assert info["tabs"] == 3 and info["pages"] == ["Studio", "Other"], info
+
+    # nothing listening: {} and fast (never hangs a command)
+    assert desktop.cdp_http_info("http://127.0.0.1:1") == {}
+
+
+def t_desktop_stuck_tab():
+    """A frozen tab is not a missing browser — and must never hang."""
+    import argparse
+    import io
+    from contextlib import redirect_stdout
+
+    import desktop
+    import main as main_mod
+
+    cfg = tmp_cfg()
+    real_http = desktop.cdp_http_info
+    real_drv = desktop.PlayDriver
+
+    class Stuck:
+        def start(self):
+            raise desktop.BrowserBusy(
+                "your browser IS running (Opera GX/104.0 (2 tab(s): Studio)) "
+                "but a tab did not answer")
+
+        def close(self):
+            pass
+
+        def probe(self):
+            return {}
+
+    desktop.cdp_http_info = lambda url, timeout=2.0: {
+        "browser": "Opera GX/104.0", "tabs": 2, "pages": ["Studio"]}
+    desktop.PlayDriver = lambda cfg, backend=None, timeout_ms=None: Stuck()
+    try:
+        got = desktop.connection_check(cfg)
+        assert got["ok"] is False and got["alive"] is True, got
+        assert "tab(s)" in got["error"], got
+
+        ns = argparse.Namespace(action="status", goal=[], backend=None,
+                                max_steps=None, no_hands=False, url=None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = main_mod.cmd_desktop(cfg, ns)
+        out = buf.getvalue()
+        assert rc == 0 and "⚠️" in out and "❌" not in out, out
+
+        # peek reports the same distinction: busy browser, not missing one
+        class StuckPeek(Stuck):
+            def snapshot(self):
+                raise desktop.BrowserBusy("busy")
+
+        got = desktop.peek(cfg, driver=StuckPeek(), with_shot=False)
+        assert got["ok"] is False and got["alive"] is True, got
+
+        class StuckPeekDegraded(Stuck):        # attached, page never answered
+            def snapshot(self):
+                return {"url": "https://studio.youtube.com/", "title": "",
+                        "elements": [], "text": "", "degraded": True,
+                        "reason": "the page did not answer in 4s"}
+
+        got = desktop.peek(cfg, driver=StuckPeekDegraded(), with_shot=False)
+        assert got["ok"] is False and got["alive"] is True, got
+        assert "did not answer" in got["error"], got
+    finally:
+        desktop.cdp_http_info = real_http
+        desktop.PlayDriver = real_drv
+
+    # a browser that is NOT there keeps the ❌ answer (and gets one retry,
+    # because a browser that is still starting up looks the same)
+    made = []
+
+    class NoBrowser:
+        def start(self):
+            raise RuntimeError(
+                desktop._reach_error("http://127.0.0.1:9222",
+                                     RuntimeError("ECONNREFUSED"))[0])
+
+        def close(self):
+            pass
+
+    def factory(cfg, backend=None, timeout_ms=None):
+        made.append(1)
+        return NoBrowser()
+
+    desktop.cdp_http_info = lambda url, timeout=2.0: {}
+    desktop.PlayDriver = factory
+    try:
+        got = desktop.connection_check(cfg)
+        assert got["ok"] is False and got["alive"] is False, got
+        assert "Desktop Chrome.bat" in got["error"], got
+        assert len(made) == 2, made          # retried once
+    finally:
+        desktop.cdp_http_info = real_http
+        desktop.PlayDriver = real_drv
+
+
+def t_desktop_peek_no_shot():
+    """`desktop text` does not pay for a screenshot it will not use."""
+    import desktop
+
+    cfg = tmp_cfg()
+    page = {"https://studio.youtube.com/": {
+        "title": "Studio", "text": "hello studio", "elements": []}}
+    drv = ScriptedDriver(pages=page, url="https://studio.youtube.com/")
+    got = desktop.peek(cfg, driver=drv, note="no-shot", with_shot=False)
+    assert got["ok"] and got["shot"] is None, got
+    assert drv.shots == [], drv.shots
+    drv2 = ScriptedDriver(pages=page, url="https://studio.youtube.com/")
+    got2 = desktop.peek(cfg, driver=drv2, note="with-shot")
+    assert got2["shot"] and len(drv2.shots) == 1, got2
+
+
 def t_desktop_channels():
     """The runtime channel store: normalize, add, dedupe, remove, merge."""
     import desktop
@@ -10466,6 +10700,11 @@ def main(argv: list[str] | None = None) -> int:
         ("desktop_channels", t_desktop_channels),
         ("desktop_connection_check", t_desktop_connection_check),
         ("desktop_peek_current", t_desktop_peek_current),
+        ("desktop_labels_italian", t_desktop_labels_italian),
+        ("desktop_post_one_italian", t_desktop_post_one_italian),
+        ("desktop_cdp_http_info", t_desktop_cdp_http_info),
+        ("desktop_stuck_tab", t_desktop_stuck_tab),
+        ("desktop_peek_no_shot", t_desktop_peek_no_shot),
         ("desktop_settings_override", t_desktop_settings_override),
         ("desktop_no_post_apis", t_desktop_no_post_apis),
         ("temp_hygiene", t_temp_hygiene),
