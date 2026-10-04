@@ -13,6 +13,7 @@ import requests
 
 import keypool
 from config import Config
+from process_utils import no_console_kwargs
 
 WHISPER_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 WHISPER_MODEL = "whisper-large-v3-turbo"
@@ -95,7 +96,8 @@ def _audio_seconds(path: Path) -> float:
         out = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, timeout=30,
+            **no_console_kwargs())
         return max(0.0, float((out.stdout or "0").strip() or 0.0))
     except Exception:  # noqa: BLE001 - ffprobe missing / unreadable file
         return 0.0

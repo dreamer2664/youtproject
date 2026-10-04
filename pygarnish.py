@@ -27,6 +27,8 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 
+from process_utils import no_console_kwargs
+
 SAMPLE_RATE = 48000
 
 _ASS_DIALOGUE = "dialogue:"
@@ -327,7 +329,8 @@ def decode_to_wav(src: Path, dst: Path) -> Path:
     """Decode any audio file to 48 kHz stereo s16 WAV (no filters used)."""
     cmd = ["ffmpeg", "-y", "-loglevel", "warning", "-i", str(src),
            "-ar", str(SAMPLE_RATE), "-ac", "2", "-c:a", "pcm_s16le", str(dst)]
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True,
+                          **no_console_kwargs())
     if proc.returncode != 0 or not dst.exists():
         tail = (proc.stderr or "").strip().splitlines()[-4:]
         raise PygarnishError(

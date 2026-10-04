@@ -22,6 +22,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from process_utils import no_console_kwargs
+
 ORDER = ["gemini", "groq", "openrouter", "deepseek", "elevenlabs", "pexels",
          "pixabay", "youtube", "pollinations"]
 
@@ -654,7 +656,8 @@ def _whisper_sample() -> bytes | None:
                 ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
                  "-i", "sine=frequency=440:duration=1", "-ar", "16000",
                  "-ac", "1", str(path)],
-                capture_output=True, timeout=30)
+                capture_output=True, timeout=30,
+                **no_console_kwargs())
             if proc.returncode != 0 or not path.exists():
                 return None
             return path.read_bytes()

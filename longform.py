@@ -43,6 +43,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from process_utils import no_console_kwargs
+
 LONGFORM_MAX_MINUTES_DEFAULT = 20.0   # whole sources longer than this warn
 LONGFORM_MIN_MINUTES = 1.0
 LONGFORM_MAX_MINUTES_CAP = 120.0
@@ -359,7 +361,7 @@ def render_longform(src: Path, window: tuple[float, float],
         "-threads", "4", "-c:a", "aac", "-b:a", "160k",
         "-movflags", "+faststart", str(out_path),
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    subprocess.run(cmd, check=True, capture_output=True, **no_console_kwargs())
     return out_path
 
 
@@ -686,7 +688,7 @@ def build_compilation_video(plan: list[dict], out_path: Path, cfg,
              "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
              "-c:a", "aac", "-b:a", "160k", "-ar", "44100", "-ac", "2",
              str(card_mp4)],
-            check=True, capture_output=True)
+            check=True, capture_output=True, **no_console_kwargs())
         entries.append(card_mp4)
         entries.append(Path(seg["path"]))
 
@@ -702,7 +704,7 @@ def build_compilation_video(plan: list[dict], out_path: Path, cfg,
          *resolve_encoder_args(cfg.encoder), "-c:a", "aac", "-b:a", "160k",
          "-ar", "44100", "-ac", "2",
          "-movflags", "+faststart", str(out_path)],
-        check=True, capture_output=True)
+        check=True, capture_output=True, **no_console_kwargs())
     return out_path
 
 

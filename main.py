@@ -62,6 +62,7 @@ from pathlib import Path
 from config import load_config
 from jobqueue import Queue
 from scriptgen import get_provider
+from process_utils import no_console_kwargs
 
 BANNER = """\
 ======================================================================
@@ -752,6 +753,7 @@ def _subtitle_render_test(cfg) -> bool:
              "-i", f"color=c=black:s={cfg.width}x{cfg.height}:d=1",
              "-frames:v", "1", str(bg)],
             capture_output=True,
+            **no_console_kwargs(),
         )
         if result.returncode != 0 or not bg.exists():
             return False
@@ -762,6 +764,7 @@ def _subtitle_render_test(cfg) -> bool:
                 ["ffmpeg", "-y", "-loglevel", "error", "-loop", "1",
                  "-i", str(bg), *extra, "-frames:v", "1", str(out)],
                 capture_output=True,
+                **no_console_kwargs(),
             )
             if result.returncode != 0 or not out.exists():
                 return False

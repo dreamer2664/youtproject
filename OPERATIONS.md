@@ -571,7 +571,10 @@ port file records it), so an older sibling project answering on the same port
 is never mistaken for this panel. `python main.py panel --status` prints a
 line per port — `THIS panel (yours)` / `held by another program` / `free` —
 plus the URL to open. If the start fails under `pythonw` (no console) a
-dialog says so instead of nothing happening.
+dialog says so instead of nothing happening. Windows panel jobs also suppress
+FFmpeg/ffprobe console windows; their output is captured by the processing step
+instead of opening a terminal, while the app's progress and reports stay in
+the panel log.
 
 **From the panel:** the Publish section (and the phone bot) drive the same
 `order` lane. One sentence, three buttons: **Plan** (free), **Dry run**
