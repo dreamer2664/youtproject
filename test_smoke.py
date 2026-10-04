@@ -5502,11 +5502,14 @@ class _FakeYT:
     videos:   {vid: {title, channel_id, published_at, duration, views,
                      likes, comments}}
     broken:   set of channel ids whose playlist call raises.
+    empty:    set of channel ids whose uploads playlist 404s like a real
+              brand-new channel (no videos yet -> no playlist).
     """
 
-    def __init__(self, channels, videos, broken=()):
+    def __init__(self, channels, videos, broken=(), empty=()):
         self.channels, self.videos = channels, videos
         self.broken = set(broken)
+        self.empty = set(empty)
         self.spent = 0
         self.calls = []
 
@@ -5538,6 +5541,11 @@ class _FakeYT:
             return {"items": items}
         if method == "playlistItems":
             cid = "UC" + params["playlistId"][2:]
+            if cid in self.empty:
+                raise RuntimeError(
+                    'YouTube HTTP 404: playlistNotFound: {"error": '
+                    '{"code": 404, "message": "The playlist identified with '
+                    'the request\'s playlistId parameter cannot be found."}}')
             if cid in self.broken:
                 raise RuntimeError("YouTube HTTP 500: backend error")
             ids = self.channels[cid]["videos"]
@@ -9050,6 +9058,57 @@ def t_desktop_post_one():
     assert got["ok"] is False and "file input" in got["error"], got
 
 
+def t_snap_empty_channel():
+    """A brand-new channel's uploads playlist 404s — a fact, not a failure.
+
+    MicroFeed and ClipShift (2026-10-04) are empty channels: YouTube has no
+    uploads playlist to read until the first video exists. The snapshot used
+    to dump that 404 JSON as a scary error every run; it now reports it as
+    what it is, keeps the channel's zero row, and keeps real failures real.
+    """
+    import channelstats as cs
+    from youtube import load_snapshots, save_snapshots
+
+    channels = {
+        "UC" + "e" * 22: {"title": "Empty One", "handle": "@emptyone",
+                          "subs": 0, "views": 0, "videos": []},
+        "UC" + "f" * 22: {"title": "Busy One", "handle": "@busyone",
+                          "subs": 12, "views": 100, "videos": []},
+    }
+    e, f = list(channels)
+    videos = {"vf000000001": {"title": "One video", "channel_id": f,
+                              "published_at": "2026-10-03T10:00:00Z",
+                              "duration": "PT40S", "views": 7, "likes": 1,
+                              "comments": 0}}
+    channels[f]["videos"].append("vf000000001")
+
+    cfg = tmp_cfg()
+    history = load_snapshots(cs.store_path(cfg))
+    cs.add_channel(history, e, "Empty One")
+    cs.add_channel(history, f, "Busy One")
+    save_snapshots(cs.store_path(cfg), history)
+
+    lines: list = []
+    res = cs.run_snapshot(cfg, _FakeYT(channels, videos, empty={e}),
+                          today="2026-10-04", log=lines.append)
+    assert res["errors"] == [], res["errors"]
+    assert res["fetched"][e] == 0 and res["fetched"][f] == 1, res["fetched"]
+    assert any("no uploads yet" in line and "Empty One" in line
+               for line in lines), lines
+
+    text, _ = cs.build_channel_report(res["history"], "2026-10-04", None,
+                                      errors=res["errors"])
+    assert "Empty One" in text and "⚠️ Empty One" not in text, text
+    assert "no videos fetched" in text, text
+
+    # a REAL failure (500) still lands in errors — the friendly branch must
+    # not swallow it
+    res2 = cs.run_snapshot(cfg, _FakeYT(channels, videos, broken={f}),
+                           today="2026-10-04", log=lambda *_: None)
+    assert any("Busy One" in e and "500" in e for e in res2["errors"]), \
+        res2["errors"]
+
+
 def t_desktop_channels():
     """The runtime channel store: normalize, add, dedupe, remove, merge."""
     import desktop
@@ -10251,6 +10310,7 @@ def main(argv: list[str] | None = None) -> int:
         ("channel_snap", t_channel_snap),
         ("channel_stats", t_channel_stats),
         ("snap_cli", t_snap_cli),
+        ("snap_empty_channel", t_snap_empty_channel),
         ("topic_scout", t_topic_scout),
         ("ab_titles", t_ab_titles),
         ("mux_crash_recovery", t_mux_crash_recovery),
