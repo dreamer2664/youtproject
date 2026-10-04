@@ -18,6 +18,7 @@ import re
 import time
 
 import keystats
+import keypool
 from pathlib import Path
 
 import requests
@@ -123,9 +124,12 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
     """Download one stock photo for an art prompt. Raises on total failure."""
     from director import plan_query
 
-    keys = list(cfg.pexels_api_keys)
-    if not keys:
+    if not cfg.pexels_api_keys:
         raise RuntimeError("no Pexels key")
+    keys = keypool.live("pexels", cfg.pexels_api_keys)
+    if not keys:
+        raise RuntimeError("every Pexels key was rejected (401/403) "
+                           "earlier this run — check ai.pexels_api_keys")
     dest.parent.mkdir(parents=True, exist_ok=True)
     query = plan_query(prompt, cfg)
     portrait = cfg.format == "portrait"
@@ -150,8 +154,13 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
             continue
         t_search += time.time() - t_s
         keystats.bump("pexels", key, req=1, tag="image")
-        if response.status_code in (401, 403) and len(keys) > 1:
+        if response.status_code in (401, 403):
+            keypool.dead("pexels", key)  # remembered for the whole process
             keys.pop(0)  # bad key: the next one takes over
+            if not keys:
+                raise RuntimeError(
+                    "every Pexels key was rejected (401/403) — check "
+                    "ai.pexels_api_keys")
             continue
         if response.status_code == 429:
             last_error = "HTTP 429 (200/hour Pexels limit)"
@@ -271,9 +280,12 @@ def pixabay_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Pat
     """
     from director import plan_query
 
-    keys = list(cfg.pixabay_api_keys)
-    if not keys:
+    if not cfg.pixabay_api_keys:
         raise RuntimeError("no Pixabay key")
+    keys = keypool.live("pixabay", cfg.pixabay_api_keys)
+    if not keys:
+        raise RuntimeError("every Pixabay key was rejected (401/403) "
+                           "earlier this run — check ai.pixabay_api_keys")
     dest.parent.mkdir(parents=True, exist_ok=True)
     query = plan_query(prompt, cfg)
     portrait = cfg.format == "portrait"
@@ -292,8 +304,13 @@ def pixabay_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Pat
             time.sleep(2 * attempt)
             continue
         keystats.bump("pixabay", key, req=1, tag="image")
-        if response.status_code in (401, 403) and len(keys) > 1:
+        if response.status_code in (401, 403):
+            keypool.dead("pixabay", key)  # remembered for the whole process
             keys.pop(0)  # bad key: the next one takes over
+            if not keys:
+                raise RuntimeError(
+                    "every Pixabay key was rejected (401/403) — check "
+                    "ai.pixabay_api_keys")
             continue
         if response.status_code == 429:
             last_error = "HTTP 429 (Pixabay rate limit)"

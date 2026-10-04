@@ -14,6 +14,38 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+
+def _env_keys(*names: str) -> list[str]:
+    """First non-empty env var wins; comma/space separated (never crash).
+
+    Providers had grown a patchwork of env names — Gemini and Groq took
+    both the singular and the plural, but Pixabay/DeepSeek/ElevenLabs/
+    YouTube only ever read one spelling, so `export PIXABAY_API_KEY=...`
+    was silently ignored (#loose threads, 2026-10-04). Every provider now
+    accepts its natural names.
+    """
+    for name in names:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return [part for chunk in value.replace(",", " ").split()
+                    for part in (chunk.strip(),) if part]
+    return []
+
+
+def _dedupe_keys(keys) -> list[str]:
+    """Strip, drop empties, de-dupe (order kept).
+
+    Duplicates used to survive in most key lists — the same key was tried
+    twice per call, and "all keys rate-limited" fired early because the
+    pool was padded with copies of itself.
+    """
+    out: list[str] = []
+    for key in keys:
+        text = str(key).strip()
+        if text and text not in out:
+            out.append(text)
+    return out
+
 # Friendly guard: config.py is the first project import everywhere, so a
 # missing venv shows up here as a scary traceback. Say the fix instead.
 _missing = []
@@ -543,14 +575,14 @@ class Config:
     @property
     def elevenlabs_api_keys(self) -> list[str]:
         """ElevenLabs keys; env ELEVENLABS_KEYS wins (never crash)."""
-        env = (os.environ.get("ELEVENLABS_KEYS") or "").strip()
+        env = _env_keys("ELEVENLABS_KEYS", "ELEVENLABS_API_KEYS",
+                        "ELEVENLABS_API_KEY")
         if env:
-            return [part for chunk in env.split(",") for part in
-                    (p.strip() for p in chunk.split()) if part]
+            return _dedupe_keys(env)
         raw = self.data["channel"].get("elevenlabs_api_keys") or []
         if isinstance(raw, str):
             raw = [raw]
-        return [str(k).strip() for k in raw if str(k).strip()]
+        return _dedupe_keys(raw)
 
     @property
     def elevenlabs_voice_id(self) -> str:
@@ -591,14 +623,14 @@ class Config:
     @property
     def youtube_api_keys(self) -> list[str]:
         """YouTube Data keys; env YOUTUBE_KEYS wins (never crash)."""
-        env = (os.environ.get("YOUTUBE_KEYS") or "").strip()
+        env = _env_keys("YOUTUBE_KEYS", "YOUTUBE_API_KEYS",
+                        "YOUTUBE_API_KEY")
         if env:
-            return [part for chunk in env.split(",") for part in
-                    (p.strip() for p in chunk.split()) if part]
+            return _dedupe_keys(env)
         raw = self.data.get("youtube", {}).get("api_keys") or []
         if isinstance(raw, str):
             raw = [raw]
-        return [str(k).strip() for k in raw if str(k).strip()]
+        return _dedupe_keys(raw)
 
     @property
     def snap_settings(self) -> dict:
@@ -1196,14 +1228,13 @@ class Config:
     @property
     def gemini_api_keys(self) -> list[str]:
         """All configured Gemini keys; env wins over config.yaml (never crash)."""
-        env = (os.environ.get("GEMINI_API_KEYS") or "").strip()
+        env = _env_keys("GEMINI_API_KEYS")
         if env:
-            return [part for chunk in env.split(",") for part in
-                    (p.strip() for p in chunk.split()) if part]
+            return _dedupe_keys(env)
         raw = self.data["ai"].get("gemini_api_keys") or []
         if isinstance(raw, str):
             raw = [raw]
-        keys = [str(k).strip() for k in raw if str(k).strip()]
+        keys = _dedupe_keys(raw)
         legacy = (os.environ.get("GEMINI_API_KEY")
                   or str(self.data["ai"].get("gemini_api_key") or "")).strip()
         if legacy and legacy not in keys:
@@ -1223,14 +1254,13 @@ class Config:
     @property
     def groq_api_keys(self) -> list[str]:
         """All configured Groq keys; env wins over config.yaml (never crash)."""
-        env = (os.environ.get("GROQ_API_KEYS")
-               or os.environ.get("GROQ_API_KEY") or "").strip()
+        env = _env_keys("GROQ_API_KEYS", "GROQ_API_KEY")
         if env:
-            return [key.strip() for key in env.split(",") if key.strip()]
+            return _dedupe_keys(env)
         raw = self.data["ai"].get("groq_api_keys") or []
         if isinstance(raw, str):
             raw = [raw]
-        return [str(key).strip() for key in raw if str(key).strip()]
+        return _dedupe_keys(raw)
 
     @property
     def groq_model(self) -> str:
@@ -1253,14 +1283,13 @@ class Config:
     @property
     def openrouter_api_keys(self) -> list[str]:
         """All configured OpenRouter keys; env wins over config.yaml."""
-        env = (os.environ.get("OPENROUTER_KEYS")
-               or os.environ.get("OPENROUTER_API_KEY") or "").strip()
+        env = _env_keys("OPENROUTER_KEYS", "OPENROUTER_API_KEY")
         if env:
-            return [key for key in env.replace(",", " ").split() if key]
+            return _dedupe_keys(env)
         raw = self.data["ai"].get("openrouter_api_keys") or []
         if isinstance(raw, str):
             raw = [raw]
-        return [str(key).strip() for key in raw if str(key).strip()]
+        return _dedupe_keys(raw)
 
     @property
     def openrouter_model(self) -> str:
@@ -1428,9 +1457,8 @@ class Config:
     @property
     def deepseek_api_keys(self) -> list[str]:
         """All DeepSeek keys: env, ai.deepseek_api_keys, legacy single."""
-        env = (os.environ.get("DEEPSEEK_KEYS") or "").strip()
-        keys = [k for chunk in env.split(",") for k in (chunk.strip(),)
-                if k] if env else []
+        keys = _env_keys("DEEPSEEK_KEYS", "DEEPSEEK_API_KEYS",
+                         "DEEPSEEK_API_KEY")
         raw = self.data["ai"].get("deepseek_api_keys") or []
         if isinstance(raw, str):
             raw = [raw]
@@ -1455,9 +1483,7 @@ class Config:
     @property
     def pixabay_api_keys(self) -> list[str]:
         """All Pixabay keys: env, ai.pixabay_api_keys, legacy single (tested)."""
-        env = (os.environ.get("PIXABAY_API_KEYS") or "").strip()
-        keys = [k for chunk in env.split(",") for k in (chunk.strip(),)
-                if k] if env else []
+        keys = _env_keys("PIXABAY_API_KEYS", "PIXABAY_API_KEY")
         raw = self.data["ai"].get("pixabay_api_keys") or []
         if isinstance(raw, str):
             raw = [raw]
@@ -1477,9 +1503,7 @@ class Config:
         Spare keys rotate on 429s in stock.py — Pexels caps each key at
         200 requests/hour, so more keys = more headroom (2026-09-21).
         """
-        env = (os.environ.get("PEXELS_API_KEYS") or "").strip()
-        keys = [k for chunk in env.split(",") for k in (chunk.strip(),)
-                if k] if env else []
+        keys = _env_keys("PEXELS_API_KEYS", "PEXELS_API_KEY")
         raw = self.data["ai"].get("pexels_api_keys") or []
         if isinstance(raw, str):
             raw = [raw]

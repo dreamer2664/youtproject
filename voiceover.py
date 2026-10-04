@@ -23,6 +23,7 @@ from pathlib import Path
 import edge_tts
 import requests
 
+import keypool
 from config import Config
 from editorial import scrub_narration
 
@@ -39,17 +40,18 @@ class WordTiming:
     end: float
 
 
-# Keys that answered 401 (revoked/dead) — dropped for the rest of the
+# Keys that answered 401 (revoked/dead) are dropped for the rest of the
 # process so later scenes stop re-trying them (live log 2026-09-21: one
 # dead key was retried every scene, 3 wasted calls per render). A 429 is
-# quota, not death — those keys stay for the next day.
-_DEAD_ELEVEN_KEYS: set[str] = set()
+# quota, not death — those keys stay for the next day. Since 2026-10-04
+# this set IS keypool's shared elevenlabs set: the fix that lived only
+# here now protects every lane that touches an ElevenLabs key.
+_DEAD_ELEVEN_KEYS = keypool.dead_set("elevenlabs")
 
 
 def _live_eleven_keys(cfg: Config) -> list[str]:
     """Configured ElevenLabs keys minus this run's dead ones (pure, tested)."""
-    return [key for key in cfg.elevenlabs_api_keys
-            if key not in _DEAD_ELEVEN_KEYS]
+    return keypool.live("elevenlabs", cfg.elevenlabs_api_keys)
 
 
 def _elevenlabs_available(cfg: Config) -> bool:

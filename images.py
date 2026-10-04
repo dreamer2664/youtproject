@@ -30,6 +30,7 @@ from pathlib import Path
 import requests
 
 import keystats
+import keypool
 
 from stock import pexels_fetch, pixabay_fetch
 
@@ -384,7 +385,7 @@ def _gemini_fetch(prompt: str, dest: Path, cfg: Config, seed: int, attempts: int
     # 2026-09-16: image quota is per-key (429 seen on key 1 while other
     # keys were fresh) — cycle ALL keys instead of pinning the first.
     pool = [cfg.gemini_api_key, *cfg.gemini_api_keys]
-    keys = list(dict.fromkeys(key for key in pool if key))
+    keys = keypool.live("gemini", pool)
     if not keys:
         raise RuntimeError("no Gemini key")
     last_error = "unknown"
@@ -424,6 +425,8 @@ def _gemini_fetch(prompt: str, dest: Path, cfg: Config, seed: int, attempts: int
                     time.sleep(delay)
             else:
                 # Other 4xx = key/permissions — retrying is pointless.
+                if keypool.key_dead_like(response.status_code, response.text):
+                    keypool.dead("gemini", key)
                 raise RuntimeError(f"gemini images rejected "
                                    f"(HTTP {response.status_code}): {response.text[:160]}")
     raise RuntimeError(f"gemini image failed: {last_error}")
