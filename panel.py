@@ -806,9 +806,153 @@ def _roles_payload() -> list[dict]:
         return []
 
 
+# ------------------------------------------------------------------ launch
+# Why this block exists (bug found on the owner's machine, 2026-10-04): he
+# also runs an OLDER board project whose window answers on the same port
+# range. The old Start Panel.bat trusted a bare "something answers on
+# 8765" check, so it skipped starting this panel and opened the OTHER
+# project's window. The port file + /api/state marker below make the
+# launcher identify THIS process only, and always open the port we
+# actually bound (8765, else the next free one).
+PORT_FILE = "panel_port.txt"
+
+
+def _open_host(host: str) -> str:
+    """The host a local browser window should use for a bind address."""
+    return "127.0.0.1" if host in ("0.0.0.0", "::", "") else host
+
+
+def port_file_path(cfg) -> Path:
+    return Path(cfg.work_dir) / PORT_FILE
+
+
+def write_port_file(cfg, port: int) -> None:
+    """Record the live port so the next double-click finds THIS panel."""
+    try:
+        path = port_file_path(cfg)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"port": int(port), "pid": os.getpid()}),
+                        encoding="utf-8")
+    except OSError:
+        pass  # a missing port file only costs a cold start, never a crash
+
+
+def read_port_file(cfg) -> "int | None":
+    """The port of our last run — tolerates a bare number and garbage."""
+    try:
+        raw = port_file_path(cfg).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    try:
+        port = int(json.loads(raw)["port"])
+    except Exception:  # noqa: BLE001 - fall through to the bare-int form
+        try:
+            port = int(raw)
+        except ValueError:
+            return None
+    return port if 1 <= port <= 65535 else None
+
+
+def clear_port_file(cfg, port: int) -> None:
+    """Remove the port file, but only if it still points at `port`."""
+    if read_port_file(cfg) != int(port):
+        return
+    try:
+        port_file_path(cfg).unlink()
+    except OSError:
+        pass
+
+
+def probe_ours(host: str = "127.0.0.1", port: int = DEFAULT_PORT,
+               timeout: float = 0.8) -> bool:
+    """True only when what answers on `port` is THIS panel.
+
+    /api/state exists here and nowhere else. A foreign server — any other
+    board project, dev tool or stray web app — fails the check and is
+    ignored instead of being opened as if it were us.
+    """
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(
+                f"http://{_open_host(host)}:{int(port)}/api/state",
+                timeout=timeout) as resp:
+            body = resp.read(4096)
+    except Exception:  # noqa: BLE001 - unreachable/garbage/foreign = not ours
+        return False
+    return b'"snapshot"' in body and b'"runner"' in body
+
+
+def existing_panel_url(cfg, host: str = "127.0.0.1") -> "str | None":
+    """URL of a panel of OURS that is already running, else None."""
+    port = read_port_file(cfg)
+    if not port or not probe_ours(host, port):
+        return None
+    return f"http://{_open_host(host)}:{port}/"
+
+
+def browser_candidates() -> list:
+    """Chromium-family browsers (they support --app=), Edge first on Win."""
+    found = []
+    if os.name == "nt":
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        local = os.environ.get("LocalAppData", "")
+        for cand in (rf"{pf}\Microsoft\Edge\Application\msedge.exe",
+                     rf"{pf86}\Microsoft\Edge\Application\msedge.exe",
+                     rf"{pf}\Google\Chrome\Application\chrome.exe",
+                     rf"{local}\Google\Chrome\Application\chrome.exe"):
+            if cand and Path(cand).is_file():
+                found.append(cand)
+    for name in ("msedge", "google-chrome", "chromium", "chromium-browser",
+                 "chrome"):
+        path = shutil.which(name)
+        if path and path not in found:
+            found.append(path)
+    return found
+
+
+def open_app_window(url: str) -> bool:
+    """Open `url` chromeless (Edge/Chrome --app=). False = tab fallback."""
+    for exe in browser_candidates():
+        try:
+            subprocess.Popen([exe, f"--app={url}"],
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            return True
+        except OSError:
+            continue
+    webbrowser.open(url)
+    return False
+
+
+def launch(cfg, host: str = "127.0.0.1", port: int = DEFAULT_PORT) -> int:
+    """`--app-window`: reuse a running panel of ours, else start one and
+    open it in a chromeless window. What Start Panel.bat runs."""
+    url = existing_panel_url(cfg, host)
+    if url:
+        open_app_window(url)
+        return 0
+    return serve(cfg, host=host, port=port, open_browser=False,
+                 app_window=True)
+
+
+def _alert(title: str, text: str) -> None:
+    """A dialog on Windows (pythonw shows no console), else stderr."""
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            ctypes.windll.user32.MessageBoxW(None, text, title, 0x10)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    print(f"{title}: {text}", file=sys.stderr)
+
+
 # ------------------------------------------------------------------ serve
 def serve(cfg, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
-          open_browser: bool = True) -> int:
+          open_browser: bool = True, app_window: bool = False) -> int:
     """Start the panel. Returns a process exit code (Ctrl+C -> 130)."""
     hub = Hub()
     history_path = Path(cfg.work_dir) / "panel_history.json"
@@ -828,7 +972,8 @@ def serve(cfg, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
                       f"({exc}) — is another panel already running?")
                 return 1
     assert httpd is not None
-    url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{chosen}/"
+    url = f"http://{_open_host(host)}:{chosen}/"
+    write_port_file(cfg, chosen)  # the launcher reads this, not a bare scan
     print(f"  [panel] {url}  (Ctrl+C stops it)")
     print("  [panel] every button runs the real CLI — same behavior as "
           "the terminal")
@@ -836,7 +981,9 @@ def serve(cfg, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
     if host not in ("127.0.0.1", "localhost", "::1"):
         print("  [panel] WARNING: bound beyond this machine — anyone who "
               "can reach this port can click these buttons")
-    if open_browser:
+    if app_window:
+        threading.Timer(0.4, lambda: open_app_window(url)).start()
+    elif open_browser:
         threading.Timer(0.4, lambda: webbrowser.open(url)).start()
     try:
         httpd.serve_forever()
@@ -845,6 +992,7 @@ def serve(cfg, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
         return 130
     finally:
         httpd.server_close()
+        clear_port_file(cfg, chosen)
     return 0
 
 
@@ -852,8 +1000,10 @@ def _main(argv: list[str] | None = None) -> int:
     """Entry point for `python panel.py …` (also what Start Panel.bat runs).
 
     `python main.py panel` goes through main.py's parser instead; both end
-    at serve(). Flags MUST be parsed here — the .bat relies on --no-browser
-    so pythonw never pops an unwanted window before Edge app-mode opens.
+    at serve(). Flags MUST be parsed here — Start Panel.bat runs
+    `panel.py --app-window`, which must (a) reuse a running panel of ours,
+    (b) tell it apart from any other program on those ports, and (c) show
+    a dialog instead of dying silently under pythonw.
     """
     import argparse
 
@@ -867,8 +1017,22 @@ def _main(argv: list[str] | None = None) -> int:
                         help="bind address (127.0.0.1 = this machine only)")
     parser.add_argument("--no-browser", action="store_true", dest="no_browser",
                         help="don't open the browser window")
+    parser.add_argument("--app-window", action="store_true", dest="app_window",
+                        help="reuse a running panel or start one, then open "
+                             "it as a chromeless Edge/Chrome window (what "
+                             "Start Panel.bat runs)")
     args = parser.parse_args(argv)
-    return serve(load_config(args.config), host=args.host, port=args.port,
+    cfg = load_config(args.config)
+    if args.app_window:
+        try:
+            return launch(cfg, host=args.host, port=args.port)
+        except Exception as exc:  # noqa: BLE001 - pythonw has no console
+            _alert("Start Panel",
+                   "The panel could not start:\n\n"
+                   f"{exc!r}\n\nRun this in a terminal to see the details:"
+                   "\n\n    venv\\Scripts\\python.exe panel.py --app-window")
+            return 1
+    return serve(cfg, host=args.host, port=args.port,
                  open_browser=not args.no_browser)
 
 
