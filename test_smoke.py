@@ -128,6 +128,12 @@ def t_config_garbage_tolerated():
     assert cfg.images_per_scene == 6
     cfg.data["channel"]["target_seconds"] = -5
     assert cfg.target_seconds == 5
+    # music level: garbage -> the documented default (-12), never the stale
+    # pre-retune -24 the fallback carried until 2026-10-04
+    cfg.data["music"]["level_db"] = "loud"
+    assert cfg.music_level_db == -12
+    cfg.data["music"]["level_db"] = -18
+    assert cfg.music_level_db == -18
 
 
 # --------------------------------------------------------------------------
@@ -6663,6 +6669,84 @@ def t_probe_report_shape():
     assert "python main.py keys --month" in text
 
 
+def t_ledger_tags():
+    """Every bumped lane carries a tag — none show as "(untagged)".
+
+    Stock fetches ledger as tag=image; subject detection AND clip frame
+    QC as tag=vision. Before this, those bumps were untagged, so
+    `keys --month` hid which lane ate the requests.
+    """
+    import types
+    from unittest.mock import Mock, patch
+
+    import keystats
+    import stock
+    import vision
+
+    jpeg = b"\xff\xd8\xff" + b"j" * 2500
+    cfg = tmp_cfg()
+    keystats.init(cfg)
+
+    class Resp:
+        def __init__(self, payload=None, content=b""):
+            self.status_code = 200
+            self._payload, self.content = payload, content
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **kw):
+        if url == stock.SEARCH_URL:
+            return Resp(payload={"photos": [
+                {"id": 5, "alt": "ocean waves", "src": {"portrait": "u5"},
+                 "photographer": "A"}]})
+        return Resp(content=jpeg)
+
+    import director
+    real_plan, director.plan_query = director.plan_query, (
+        lambda prompt, cfg: "ocean")
+    real_stock_requests, stock.requests = stock.requests, \
+        types.SimpleNamespace(get=fake_get)
+    real_check, vision.check_image = vision.check_image, (
+        lambda body, query, cfg, photo_key="":
+        {"safe": True, "relevant": True, "reason": ""})
+    try:
+        cfg.data["ai"]["pexels_api_key"] = "pk"
+        dest = Path(tempfile.mkdtemp(prefix="youttest_")) / "img.jpg"
+        stock.pexels_fetch("ocean scene", dest, cfg, seed=1, attempts=1)
+    finally:
+        director.plan_query = real_plan
+        stock.requests = real_stock_requests
+        vision.check_image = real_check
+
+    events = keystats._load(keystats._path)
+    pex = [e for e in events if e.get("p") == "pexels"]
+    assert pex and pex[-1].get("tag") == "image", pex
+
+    cfg.data["ai"]["gemini_api_keys"] = ["g1"]
+    resp = Mock(status_code=200)
+    resp.json.return_value = {"candidates": [{"content": {"parts": [
+        {"text": '{"x": 0.5}'}]}}]}
+    with patch("vision.requests.post", return_value=resp):
+        assert vision.subject_x(jpeg, cfg) == 0.5
+    events = keystats._load(keystats._path)
+    gem = [e for e in events if e.get("p") == "gemini"
+           and e.get("tag") == "vision"]
+    assert gem, [e for e in events if e.get("p") == "gemini"]
+
+    # clipper._frame_ok — the clip frame-QC lane — ledgers there too
+    import clipper
+    resp2 = Mock(status_code=200)
+    resp2.json.return_value = {"candidates": [{"content": {"parts": [
+        {"text": '{"usable": true}'}]}}]}
+    with patch("clipper.requests.post", return_value=resp2):
+        assert clipper._frame_ok(jpeg, cfg) is True
+    events = keystats._load(keystats._path)
+    gem2 = [e for e in events if e.get("p") == "gemini"
+            and e.get("tag") == "vision"]
+    assert len(gem2) == len(gem) + 1, gem2
+
+
 def t_chat_tools():
     from unittest.mock import Mock, patch
 
@@ -8173,6 +8257,7 @@ def main(argv: list[str] | None = None) -> int:
         ("probe_whisper", t_probe_whisper),
         ("probe_sample", t_probe_sample),
         ("probe_report_shape", t_probe_report_shape),
+        ("ledger_tags", t_ledger_tags),
         ("chat_tools", t_chat_tools),
         ("jarvis_task", t_jarvis_task),
         ("analytics", t_analytics),

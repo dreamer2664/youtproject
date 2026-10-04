@@ -153,8 +153,10 @@ music:
   enabled: true
   file: ""
   folder: "music"
-  # Bed loudness in dB. -24 is subtle, -18 is clearly present.
-  level_db: -24
+  # Bed loudness in dB. -18 under ducking measured inaudible under the
+  # narration (live verdict 2026-09-20: "no music at all"); -12 is
+  # clearly present without fighting the voice. Code default: -12.
+  level_db: -12
   # Dip the music while the narrator speaks. If your FFmpeg lacks the
   # sidechain filter you silently get a static bed instead.
   duck: true

@@ -273,6 +273,7 @@ python main.py stats                # local render-history report
 python main.py stats --days 14
 python main.py keys                 # API key usage vs free-tier limits
 python main.py keys --probe         # live-check every key
+python main.py keys --probe --sample 5   # ...or the first 5 keys per provider
 python main.py keys --month         # 30-day spend rollup per provider
 python main.py costs                # cost ledger of recent runs
 python main.py errors               # recent failure log

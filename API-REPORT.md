@@ -250,7 +250,10 @@ audio-minutes did we transcribe today".
 
 §7 (131) and §8 (133/133) are point-in-time records of what shipped with
 each change and are left as written. The suite has grown since: run
-`python test_smoke.py` for the live count (138 as of 2026-10-03, all
-green). Nothing else in this report changes — the quota accounting is
+`python test_smoke.py` for the live count (144 as of 2026-10-04, all
+green on CPython 3.11 and 3.13). Since the 138 note: the dead broll.py
+went away with its test, and these joined — Pollinations-402 fail-fast,
+the Whisper probe, `--probe --sample N`, and the stock/vision ledger
+tags. Nothing else in this report changes — the quota accounting is
 still measured against the same prompt builders, and the daily question
 is still "how many fresh audio-minutes did we transcribe today".

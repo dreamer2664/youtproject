@@ -751,7 +751,7 @@ class Config:
         try:
             return int(self.data.get("music", {}).get("level_db", -12))
         except (ValueError, TypeError):
-            return -24
+            return -12
 
     @property
     def music_duck(self) -> bool:

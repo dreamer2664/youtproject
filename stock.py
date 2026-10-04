@@ -149,7 +149,7 @@ def pexels_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Path
             time.sleep(2 * attempt)
             continue
         t_search += time.time() - t_s
-        keystats.bump("pexels", key, req=1)
+        keystats.bump("pexels", key, req=1, tag="image")
         if response.status_code in (401, 403) and len(keys) > 1:
             keys.pop(0)  # bad key: the next one takes over
             continue
@@ -291,7 +291,7 @@ def pixabay_fetch(prompt: str, dest: Path, cfg, seed: int, attempts: int) -> Pat
             last_error = str(exc)[:120]
             time.sleep(2 * attempt)
             continue
-        keystats.bump("pixabay", key, req=1)
+        keystats.bump("pixabay", key, req=1, tag="image")
         if response.status_code in (401, 403) and len(keys) > 1:
             keys.pop(0)  # bad key: the next one takes over
             continue
