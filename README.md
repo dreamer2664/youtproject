@@ -2,7 +2,9 @@
 
 Makes documentary-style videos with AI and prepares everything for upload.
 **Everything here is free, and no audit or verification can ever be required —
-because this tool never talks to the YouTube API at all.** You upload the
+because there is no upload path anywhere in this code: it cannot call the
+YouTube upload API, ever.** (The optional `yt` / `snap` commands make
+read-only public-stats calls — no OAuth, no upload scope.) You upload the
 finished files yourself in about 3 minutes per video.
 
 ```
@@ -34,8 +36,8 @@ Lifting the lock requires passing YouTube's Compliance Audit: a free form, read
 by a human, with no guaranteed approval and no published timeline. Personal and
 hobby projects get rejected often.
 
-This project sidesteps the whole thing: **no API calls means no private lock,
-no quota, no OAuth dance, no audit form, nothing to reject.** The price is
+This project sidesteps the whole thing: **no upload API calls means no
+private lock, no OAuth dance, no audit form, nothing to reject.** The price is
 three minutes of manual uploading per video — which also happens to be where
 you tick YouTube's AI-disclosure box, set scheduling, and do all the things the
 API makes awkward anyway.
@@ -232,7 +234,6 @@ Shorts, long-form and art styles without touching the config.
 | `jarvis.py` | Channel manager brain: tasks → render + schedule + report |
 | `openai_compat.py` | Shared base for OpenAI-style chat lanes (rotation + fallback) |
 | `groq.py` / `openrouter.py` | Free LLM lanes (primary / backup) |
-| `broll.py` | Pexels **video** clip fetcher — fetch-only, NOT wired into any render path yet (the generate lane uses `stock.py` photos) |
 | `editorial.py` | Punch-up (retention) + decringe (taste veto) passes |
 | `analytics.py` | Buffer stats: posts + per-post metrics roll-up (read-only) |
 | `voice.py` | Voice notes: Telegram download + Groq Whisper transcription |
@@ -252,11 +253,14 @@ Shorts, long-form and art styles without touching the config.
 
 ## Security
 
-There is no OAuth here at all. The only secrets in the project are your Gemini
-key and (if you enable phone control) your Telegram bot token, both living in
-`config.yaml`, which is git-ignored, and `hooks/pre-commit` blocks
-commits containing API keys or tokens. The setup scripts install that guard
-automatically — this repo is public, so that guard is not optional.
+There is no OAuth here at all, and no upload scope exists to leak. Every
+secret is an optional free-tier key you may never need: the Gemini key, the
+other LLM lanes (Groq / OpenRouter / DeepSeek), ElevenLabs, Pexels / Pixabay,
+the read-only YouTube Data API keys (`yt` / `snap` stats only), Telegram,
+Buffer, Cloudinary. They all live in `config.yaml`, which is git-ignored, and
+`hooks/pre-commit` blocks commits containing API keys or tokens. The setup
+scripts install that guard automatically — this repo is public, so that guard
+is not optional.
 
 ---
 

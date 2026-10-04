@@ -965,7 +965,10 @@ def _frame_ok(jpeg: bytes, cfg: Config) -> bool:
                 continue
             import keystats
 
-            keystats.bump("gemini", key, req=1)
+            # tag="vision": clip frame QC shares the vision bucket with
+            # the image-pick checks (vision.py), so `keys --month` can
+            # answer "how much did QC burn" vs "how much did scripting".
+            keystats.bump("gemini", key, req=1, tag="vision")
             if resp.status_code == 200:
                 try:
                     text = (resp.json()["candidates"][0]["content"]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Free AI video generator with manual YouTube upload — no API, no audit.
+"""Free AI video generator with manual YouTube upload — no upload API, no audit.
 
     python main.py preflight     check setup before anything else
     python main.py generate      AI script -> voice -> images -> subtitled MP4
@@ -27,8 +27,10 @@
     python main.py keys --advice  what each key lane powers + how to grow
     (full workflow: OPERATIONS.md)
 
-Nothing here costs money and nothing here touches the YouTube API, which is
-exactly why no audit or verification can ever be required. You upload the
+Nothing here costs money and nothing here uploads through the YouTube API —
+there is no upload path in the code at all (only `yt`/`snap` make read-only
+public-data calls) — which is exactly why no audit or verification can ever be
+required. You upload the
 finished files yourself in ~3 minutes per video (each kit has a CHECKLIST.md).
 """
 
@@ -49,7 +51,7 @@ from scriptgen import get_provider
 BANNER = """\
 ======================================================================
   Free AI video generator (manual-upload edition)
-  Cost: 0. Audit required: none — no YouTube API is used at all.
+  Cost: 0. Audit required: none — no upload API, no OAuth.
 ======================================================================
 """
 
@@ -1396,9 +1398,10 @@ def _execute_board_action(cfg, args) -> str:
     """Follow-through for `meeting act` (called by meeting.run_meeting).
 
     clip: render clips from the chosen source and book the sheet.
-    generate: render one b-roll video from the board's own topic —
-    this pipeline is EXEMPT from the meeting's call budget (it has its
-    own quota headroom, see CAPACITY.md).
+    generate: render one video from the board's own topic — the normal
+    generate lane (script + stock photos); no b-roll path involved. This
+    pipeline is EXEMPT from the meeting's call budget (it has its own
+    quota headroom, see CAPACITY.md).
     """
     if args["action"] == "clip":
         from clipper import run_clip
@@ -1425,7 +1428,7 @@ def _execute_board_action(cfg, args) -> str:
             return (f"Generate failed (exit {rc}) — see the log above; "
                     "the topic is not lost, it's in the minutes + memory.")
         return (f"Rendered the board's video on '{topic}' -> out/ "
-                "(pregen --push parks it).")
+                "(kit it with `python main.py package`).")
     return "(nothing to execute)"
 
 
@@ -1826,7 +1829,7 @@ def cmd_keys(cfg, args) -> int:
         print(advice_report())
         return 0
     if getattr(args, "probe", False):
-        print(run_probes(cfg))
+        print(run_probes(cfg, sample=int(getattr(args, "sample", 0) or 0)))
         return 0
     if getattr(args, "month", False):
         print(month_report())
@@ -2173,6 +2176,9 @@ def main() -> int:
                          "ledgered as tag=probe — nothing spends off the books)")
     pk.add_argument("--month", action="store_true",
                     help="30-day spend rollup per provider, split by call tag")
+    pk.add_argument("--sample", type=int, default=0,
+                    help="with --probe: check only the first N keys per "
+                         "provider (0 = every key)")
     p.add_argument("--count", type=int, default=3, help="how many failures to show")
 
     sub.add_parser("queue", help="show the queue")

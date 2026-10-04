@@ -120,7 +120,7 @@ class YouTubeClient:
                 continue
             if response.status_code == 200:
                 self.spent += cost
-                keystats.bump("youtube", key, units=cost)
+                keystats.bump("youtube", key, units=cost, tag="api")
                 try:
                     return response.json()
                 except ValueError as exc:

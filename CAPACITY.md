@@ -27,7 +27,7 @@ doesn't lie.
 | Images | **7 × images_per_scene, plus extra shots on long scenes** | the adaptive shot plan (`images.plan_shot_counts`) gives any scene longer than ~6.5 s per image more shots, capped at 3× `images_per_scene` (max 10). So 3/scene ≈ 21 for evenly-paced scenes, more when one scene runs long. With a Pexels/Pixabay key each is a stock search; without one each is a paced Pollinations fetch (~50 s). |
 | Voice | ~1,000 chars | ~65 s of edge-tts narration (free, unmetered) |
 | Groq Whisper | 0 | the generate lane writes its own script — nothing to transcribe |
-| YouTube API | ~0 | no YouTube API is used (manual upload) |
+| YouTube API | ~0 | no upload path; only the optional read-only public-stats commands (`yt` = 1 unit, `snap` ≈ 3/channel), which never gate a render |
 
 ## Lane-by-lane ceilings
 

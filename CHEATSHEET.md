@@ -33,7 +33,7 @@ commented line by line):
 | DeepSeek, OpenRouter (extra LLM lanes) | `ai.deepseek_api_keys`, `ai.openrouter_api_keys` | their consoles (free tiers) |
 | **YouTube Data API (channel stats)** | `youtube.api_keys` | console.cloud.google.com — see §2 |
 | Telegram (DMs, phone queue, boardroom summaries) | `telegram.bot_token`, `telegram.owner_id`, `telegram.channel_id` | @BotFather, @userinfobot |
-| Pixabay (b-roll) | `pixabay.api_keys` | pixabay.com/api (free) |
+| Pixabay (stock photos) | `pixabay.api_keys` | pixabay.com/api (free) |
 
 ---
 
@@ -273,6 +273,7 @@ python main.py stats                # local render-history report
 python main.py stats --days 14
 python main.py keys                 # API key usage vs free-tier limits
 python main.py keys --probe         # live-check every key
+python main.py keys --probe --sample 5   # ...or the first 5 keys per provider
 python main.py keys --month         # 30-day spend rollup per provider
 python main.py costs                # cost ledger of recent runs
 python main.py errors               # recent failure log

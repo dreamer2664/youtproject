@@ -2,8 +2,10 @@
 #  CONFIGURATION — edit this file, it is git-ignored so it is safe to keep
 #  your key in it. Copy config.example.yaml -> config.yaml to start.
 #
-#  This project uses NO YouTube API, so there is no OAuth, no quota and no
-#  audit. The only secret here is the optional free Gemini key.
+#  There is no upload API and no OAuth anywhere in this project, so no audit
+#  or verification can ever be required. Every key below is optional and free
+#  tier — the youtube.api_keys section powers read-only public stats
+#  (`yt` / `snap`) only; nothing here can upload a video.
 # ============================================================================
 
 channel:
@@ -151,8 +153,10 @@ music:
   enabled: true
   file: ""
   folder: "music"
-  # Bed loudness in dB. -24 is subtle, -18 is clearly present.
-  level_db: -24
+  # Bed loudness in dB. -18 under ducking measured inaudible under the
+  # narration (live verdict 2026-09-20: "no music at all"); -12 is
+  # clearly present without fighting the voice. Code default: -12.
+  level_db: -12
   # Dip the music while the narrator speaks. If your FFmpeg lacks the
   # sidechain filter you silently get a static bed instead.
   duck: true

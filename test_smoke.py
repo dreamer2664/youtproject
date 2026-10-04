@@ -128,6 +128,12 @@ def t_config_garbage_tolerated():
     assert cfg.images_per_scene == 6
     cfg.data["channel"]["target_seconds"] = -5
     assert cfg.target_seconds == 5
+    # music level: garbage -> the documented default (-12), never the stale
+    # pre-retune -24 the fallback carried until 2026-10-04
+    cfg.data["music"]["level_db"] = "loud"
+    assert cfg.music_level_db == -12
+    cfg.data["music"]["level_db"] = -18
+    assert cfg.music_level_db == -18
 
 
 # --------------------------------------------------------------------------
@@ -6592,38 +6598,153 @@ def t_openrouter_lane():
     assert [label for label, _ in get_provider(cfg).chain] == ["openrouter", "pollinations", "template"]
 
 
-def t_broll():
+def t_image_402_fails_over_fast():
+    """Pollinations HTTP 402 must fail over at once — one request, no retries.
+
+    The old behavior treated 402 as generic-retryable: six paced attempts,
+    ~45s of sleeps per image, then the chain failed over anyway.
+    """
     from unittest.mock import Mock, patch
 
-    from broll import _pick_file, search_clips
+    import images
 
-    portrait_hd = {"id": 1, "file_type": "video/mp4", "width": 1080, "height": 1920,
-                   "fps": 30, "link": "https://v/p.mp4"}
-    landscape_4k = {"id": 2, "file_type": "video/mp4", "width": 3840, "height": 2160,
-                    "fps": 30, "link": "https://v/l.mp4"}
-    assert _pick_file({"video_files": [landscape_4k, portrait_hd]}) == portrait_hd
-    assert _pick_file({"video_files": [landscape_4k]}) == landscape_4k
-    assert _pick_file({"video_files": []}) is None
-    assert _pick_file({}) is None
-
-    body = {"videos": [{"id": 9, "url": "https://p/9", "duration": 16,
-                        "image": "https://i/9.jpg", "video_files": [portrait_hd]}]}
-    resp = Mock(status_code=200)
-    resp.json.return_value = body
-    with patch("broll.requests.get", return_value=resp) as get:
-        clips = search_clips("KEY", "ocean waves", per_page=3)
-    assert len(clips) == 1 and clips[0]["file"] == "https://v/p.mp4"
-    assert clips[0]["height"] == 1920 and clips[0]["duration"] == 16
-    assert get.call_args.kwargs["headers"] == {"Authorization": "KEY"}
-    assert get.call_args.kwargs["params"]["orientation"] == "portrait"
-    with patch("broll.requests.get",
-               return_value=Mock(status_code=401, text="bad")):
+    cfg = tmp_cfg()
+    dest = Path(tempfile.mkdtemp(prefix="youttest_")) / "img.jpg"
+    resp = Mock(status_code=402, text="payment required")
+    resp.headers = {}
+    with patch("images._wait_for_slot", lambda *a, **k: None), \
+         patch("images.requests.get", return_value=resp) as get:
         try:
-            search_clips("BAD", "x")
+            images._pollinations_fetch("prompt", dest, cfg, seed=1)
         except RuntimeError as exc:
-            assert "rejected" in str(exc)
+            assert "402" in str(exc), str(exc)
         else:
-            raise AssertionError("expected RuntimeError on 401")
+            raise AssertionError("expected RuntimeError on HTTP 402")
+    assert get.call_count == 1, f"402 was retried {get.call_count} times"
+    assert not dest.exists()
+
+
+def t_probe_whisper():
+    """probe_whisper posts the wav, ledgers audio=1 tag=probe, never raises."""
+    from unittest.mock import Mock, patch
+
+    import keystats
+
+    cfg = tmp_cfg()
+    keystats.init(cfg)
+    ok_resp = Mock(status_code=200, text="")
+    with patch("requests.post", return_value=ok_resp) as post:
+        ok, detail = keystats.probe_whisper("gsk-secret-0001", b"RIFFfake")
+    assert ok and "audio-second" in detail, (ok, detail)
+    assert post.call_args.kwargs["data"]["model"] == "whisper-large-v3-turbo"
+    events = keystats._load(keystats._path)
+    probes = [e for e in events if e.get("p") == "groq"
+              and e.get("tag") == "probe"]
+    assert probes and probes[-1]["audio"] == 1 and probes[-1]["req"] == 1
+
+    with patch("requests.post", return_value=Mock(status_code=401, text="bad")):
+        ok, detail = keystats.probe_whisper("gsk-secret-0001", b"RIFFfake")
+    assert not ok and "401" in detail, (ok, detail)
+
+
+def t_probe_sample():
+    """--probe --sample N slices key lists; 0/negative = all (pure)."""
+    import keystats
+
+    assert keystats._sample(["a", "b", "c", "d"], 2) == ["a", "b"]
+    assert keystats._sample(["a", "b"], 0) == ["a", "b"]
+    assert keystats._sample(["a"], -3) == ["a"]
+    assert keystats._sample([], 5) == []
+
+
+def t_probe_report_shape():
+    """run_probes works keyless (no network) and names the Whisper lane."""
+    import keystats
+
+    cfg = tmp_cfg()
+    text = keystats.run_probes(cfg, sample=1)
+    assert "GEMINI" in text and "GROQ" in text
+    assert "WHISPER" in text
+    assert "sampling the first 1 key" in text
+    assert "python main.py keys --month" in text
+
+
+def t_ledger_tags():
+    """Every bumped lane carries a tag — none show as "(untagged)".
+
+    Stock fetches ledger as tag=image; subject detection AND clip frame
+    QC as tag=vision. Before this, those bumps were untagged, so
+    `keys --month` hid which lane ate the requests.
+    """
+    import types
+    from unittest.mock import Mock, patch
+
+    import keystats
+    import stock
+    import vision
+
+    jpeg = b"\xff\xd8\xff" + b"j" * 2500
+    cfg = tmp_cfg()
+    keystats.init(cfg)
+
+    class Resp:
+        def __init__(self, payload=None, content=b""):
+            self.status_code = 200
+            self._payload, self.content = payload, content
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, **kw):
+        if url == stock.SEARCH_URL:
+            return Resp(payload={"photos": [
+                {"id": 5, "alt": "ocean waves", "src": {"portrait": "u5"},
+                 "photographer": "A"}]})
+        return Resp(content=jpeg)
+
+    import director
+    real_plan, director.plan_query = director.plan_query, (
+        lambda prompt, cfg: "ocean")
+    real_stock_requests, stock.requests = stock.requests, \
+        types.SimpleNamespace(get=fake_get)
+    real_check, vision.check_image = vision.check_image, (
+        lambda body, query, cfg, photo_key="":
+        {"safe": True, "relevant": True, "reason": ""})
+    try:
+        cfg.data["ai"]["pexels_api_key"] = "pk"
+        dest = Path(tempfile.mkdtemp(prefix="youttest_")) / "img.jpg"
+        stock.pexels_fetch("ocean scene", dest, cfg, seed=1, attempts=1)
+    finally:
+        director.plan_query = real_plan
+        stock.requests = real_stock_requests
+        vision.check_image = real_check
+
+    events = keystats._load(keystats._path)
+    pex = [e for e in events if e.get("p") == "pexels"]
+    assert pex and pex[-1].get("tag") == "image", pex
+
+    cfg.data["ai"]["gemini_api_keys"] = ["g1"]
+    resp = Mock(status_code=200)
+    resp.json.return_value = {"candidates": [{"content": {"parts": [
+        {"text": '{"x": 0.5}'}]}}]}
+    with patch("vision.requests.post", return_value=resp):
+        assert vision.subject_x(jpeg, cfg) == 0.5
+    events = keystats._load(keystats._path)
+    gem = [e for e in events if e.get("p") == "gemini"
+           and e.get("tag") == "vision"]
+    assert gem, [e for e in events if e.get("p") == "gemini"]
+
+    # clipper._frame_ok — the clip frame-QC lane — ledgers there too
+    import clipper
+    resp2 = Mock(status_code=200)
+    resp2.json.return_value = {"candidates": [{"content": {"parts": [
+        {"text": '{"usable": true}'}]}}]}
+    with patch("clipper.requests.post", return_value=resp2):
+        assert clipper._frame_ok(jpeg, cfg) is True
+    events = keystats._load(keystats._path)
+    gem2 = [e for e in events if e.get("p") == "gemini"
+            and e.get("tag") == "vision"]
+    assert len(gem2) == len(gem) + 1, gem2
 
 
 def t_chat_tools():
@@ -8132,7 +8253,11 @@ def main(argv: list[str] | None = None) -> int:
         ("dry_run_batch", t_dry_run_batch),
         ("editorial", t_editorial),
         ("openrouter_lane", t_openrouter_lane),
-        ("broll", t_broll),
+        ("image_402", t_image_402_fails_over_fast),
+        ("probe_whisper", t_probe_whisper),
+        ("probe_sample", t_probe_sample),
+        ("probe_report_shape", t_probe_report_shape),
+        ("ledger_tags", t_ledger_tags),
         ("chat_tools", t_chat_tools),
         ("jarvis_task", t_jarvis_task),
         ("analytics", t_analytics),

@@ -1,9 +1,11 @@
 """AI image generation with automatic provider fallbacks.
 
-Primary: Pollinations (free, keyless anonymous tier; an optional free token
-raises the rate limit and removes the watermark). Fallbacks, tried in order
-when the primary fails an image: Gemini image generation (same free Gemini
-key as the scripts — no new signup).
+The chain is config-driven: `ai.image_provider` first, then
+`ai.image_fallbacks` in order (the shipped example config uses
+pexels → pixabay → pollinations → gemini; providers missing a key are
+skipped). Pollinations is the keyless default that always works — anonymous,
+with an optional free token to raise the rate limit and remove the watermark.
+Gemini image generation reuses the script key — no new signup.
 
 There is no SLA on any provider, so every call is retried, failures fall
 through to the next provider, and a total failure raises rather than
@@ -211,6 +213,16 @@ class _RateLimited(Exception):
         self.retry_after = retry_after
 
 
+class _ProviderRefusal(RuntimeError):
+    """The provider refused non-transiently (HTTP 402) — do not retry.
+
+    Anonymous Pollinations answers 402 once its upstream/GPU tier refuses
+    the request. The pacer + backoff would then burn ~45s per image before
+    the chain failed over anyway, so this skips the retry loop entirely:
+    `generate_image` hands the slot to the next provider at once.
+    """
+
+
 def _retry_after_seconds(response) -> float | None:
     """Parse a Retry-After response header (delta-seconds form)."""
     headers = getattr(response, "headers", None) or {}
@@ -269,13 +281,22 @@ def _pollinations_fetch(
     interval = MIN_REQUEST_INTERVAL_TOKEN if cfg.pollinations_token else MIN_REQUEST_INTERVAL
 
     last_error: Exception | None = None
+    attempts_made = 0
     for attempt in range(1, attempts + 1):
+        attempts_made = attempt
         try:
             _wait_for_slot(interval)
             response = requests.get(url, params=params, headers=headers or None,
                                     timeout=cfg.image_timeout)
             if response.status_code == 429:
                 raise _RateLimited(_retry_after_seconds(response))
+            if response.status_code == 402:
+                # Payment Required: not transient, not our pacing — fail
+                # over now (a pollinations_token or another provider helps).
+                raise _ProviderRefusal(
+                    "HTTP 402 (payment required — Pollinations is refusing "
+                    "this tier; try a pollinations_token or let the chain "
+                    "fall over to another image provider)")
             if response.status_code != 200:
                 detail = (response.text or "").strip().replace("\n", " ")[:160]
                 raise RuntimeError(f"HTTP {response.status_code}" + (f": {detail}" if detail else ""))
@@ -292,6 +313,9 @@ def _pollinations_fetch(
             dest.write_bytes(body)
             keystats.bump("pollinations", "anonymous", req=1, tag="image")
             return dest
+        except _ProviderRefusal as exc:
+            last_error = exc
+            break  # non-transient refusal: the chain takes over from here
         except _RateLimited as exc:
             last_error = exc
             if attempt == attempts:
@@ -314,7 +338,7 @@ def _pollinations_fetch(
                 delay = 3 * attempt
             time.sleep(delay)
 
-    raise RuntimeError(f"image generation failed after {attempts} attempts: {last_error}")
+    raise RuntimeError(f"image generation failed after {attempts_made} attempt(s): {last_error}")
 
 
 # --- Gemini images -------------------------------------------------------

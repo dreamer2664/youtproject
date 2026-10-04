@@ -402,7 +402,7 @@ def _stats_agenda(cfg: Config) -> str:
     days = history.get("days") or []
     if not days:
         raise MeetingError("no snapshots yet — run `python main.py snap` "
-                           "first (it costs ~4 YouTube API units), then "
+                           "first (it costs ~3 YouTube API units per channel), then "
                            "re-run the meeting.")
     today = days[-1]
     prev = days[-2] if len(days) >= 2 else None

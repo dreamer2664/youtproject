@@ -211,7 +211,7 @@ def subject_x(body: bytes, cfg: Config) -> float | None:
                                      timeout=TIMEOUT)
             except requests.RequestException:
                 continue
-            keystats.bump("gemini", key, req=1)
+            keystats.bump("gemini", key, req=1, tag="vision")
             if resp.status_code in (400, 401, 403):
                 continue
             if resp.status_code == 404:

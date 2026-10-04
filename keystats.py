@@ -114,12 +114,12 @@ ADVICE = {
         "10,000 units/day is far beyond this stack's use — one key "
         "is enough; a second from another Cloud project is spare."],
     "pexels": [
-        "Powers: real-footage b-roll for the generate lane (the board's "
+        "Powers: real stock photos for the generate lane (the board's "
         "'make a video' action rides this).",
         "200/hour + 20,000/month per key; a second key doubles a "
         "generous pool — low priority."],
     "pixabay": [
-        "Powers: alternate b-roll lane (~100 req/min). One key is "
+        "Powers: alternate stock-photo lane (~100 req/min). One key is "
         "plenty."],
     "elevenlabs": [
         "Powers: premium narration (~10k chars/month per key); overflow "
@@ -603,9 +603,80 @@ def probe_get(name: str, url: str, key: str, headers: dict | None = None,
     return False, f"HTTP {r.status_code}"
 
 
-def run_probes(cfg) -> str:
-    """`python main.py keys --probe` — every lane, per key, logged as probe."""
+def _sample(keys: list[str], limit: int) -> list[str]:
+    """First `limit` keys (0 or negative = all) — pure, tested.
+
+    `keys --probe --sample N` exists because a wall of 35 keys means 35
+    sequential requests; a 5-key spot check answers "is this lane alive"
+    at a fifth of the spend.
+    """
+    if limit and limit > 0:
+        return list(keys)[:limit]
+    return list(keys)
+
+
+def _whisper_sample() -> bytes | None:
+    """A 1-second 440Hz WAV for the Whisper probe; None when ffmpeg is absent.
+
+    About one audio-second of the Groq pool per transcribed probe — the
+    probe's cost is counted (audio=1) like any real transcription, because
+    Whisper minutes are this stack's binding constraint.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+
+    if not shutil.which("ffmpeg"):
+        return None
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "probe.wav"
+            proc = subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi",
+                 "-i", "sine=frequency=440:duration=1", "-ar", "16000",
+                 "-ac", "1", str(path)],
+                capture_output=True, timeout=30)
+            if proc.returncode != 0 or not path.exists():
+                return None
+            return path.read_bytes()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def probe_whisper(key: str, wav: bytes) -> tuple[bool, str]:
+    """One ~1s Groq Whisper call; logs itself (audio=1, tag=probe).
+
+    Never raises. The tone transcribes to empty/garbage text — fine: the
+    probe asks "does this key get audio minutes", not "is the model sharp".
+    """
+    import requests
+
+    try:
+        r = requests.post(
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            headers={"Authorization": f"Bearer {key}"},
+            files={"file": ("probe.wav", wav, "audio/wav")},
+            data={"model": "whisper-large-v3-turbo"},
+            timeout=60)
+    except Exception as exc:  # noqa: BLE001
+        return False, f"unreachable ({type(exc).__name__})"
+    bump("groq", key, req=1, audio=1, tag="probe")
+    if r.status_code == 200:
+        return True, "ok (~1 audio-second spent)"
+    return False, f"HTTP {r.status_code}: {r.text[:60]}"
+
+
+def run_probes(cfg, sample: int = 0) -> str:
+    """`python main.py keys --probe` — every lane, per key, logged as probe.
+
+    `sample` > 0 checks only the first N keys per provider (0 = all keys);
+    the Whisper section renders a fresh 1s tone only when ffmpeg exists.
+    """
     lines = ["Live probe — every check below is ledgered (tag=probe)", ""]
+    if sample and sample > 0:
+        lines.insert(1, f"(sampling the first {sample} key(s) per provider — "
+                        "drop --sample to check every key)")
+        lines.insert(2, "")
 
     def section(title: str, results: list) -> None:
         lines.append(title)
@@ -614,11 +685,11 @@ def run_probes(cfg) -> str:
             lines.append(f"  {mark} ...{mask[-4:]}: {detail}")
         lines.append("")
 
-    keys = [k for k in _configured_keys(cfg, "gemini") if k]
+    keys = _sample([k for k in _configured_keys(cfg, "gemini") if k], sample)
     section("GEMINI",
             [(_mask(k), *probe_gemini(k, cfg.gemini_model)) for k in keys]
             or [("none", False, "not configured")])
-    keys = [k for k in _configured_keys(cfg, "groq") if k]
+    keys = _sample([k for k in _configured_keys(cfg, "groq") if k], sample)
     section("GROQ",
             [(_mask(k), *probe_chat(
                 "groq", "https://api.groq.com/openai/v1/chat/completions",
@@ -626,10 +697,26 @@ def run_probes(cfg) -> str:
                 {"reasoning_format": "hidden"}
                 if "gpt-oss" in cfg.groq_model else None)) for k in keys]
             or [("none", False, "not configured")])
+    # Whisper: the stack's real constraint — probe it, and count the audio.
+    wav = _whisper_sample()
+    if wav is None:
+        lines.append("GROQ WHISPER — skipped (no ffmpeg to render the 1s "
+                     "probe tone)")
+        lines.append("")
+    else:
+        results = []
+        for k in keys:
+            if results and results[-1][1]:
+                break  # one shared pool per account: one success is the truth
+            results.append((_mask(k), *probe_whisper(k, wav)))
+        section("GROQ WHISPER (~1 audio-second each · shared pool — stops at "
+                "first success)",
+                results or [("none", False, "not configured")])
     # OpenRouter: 50/day SHARED pool — one key tests the lane; the next
     # key is only spent if the previous one failed.
     results = []
-    for k in [k for k in _configured_keys(cfg, "openrouter") if k]:
+    for k in _sample([k for k in _configured_keys(cfg, "openrouter") if k],
+                     sample):
         if results and results[-1][1]:
             break
         results.append((_mask(k), *probe_chat(
@@ -637,33 +724,34 @@ def run_probes(cfg) -> str:
             k, cfg.openrouter_model)))
     section("OPENROUTER (shared pool — probed until first success)",
             results or [("none", False, "not configured")])
-    keys = [k for k in _configured_keys(cfg, "deepseek") if k]
+    keys = _sample([k for k in _configured_keys(cfg, "deepseek") if k], sample)
     section("DEEPSEEK",
             [(_mask(k), *probe_chat(
                 "deepseek", "https://api.deepseek.com/chat/completions",
                 k, cfg.deepseek_model)) for k in keys]
             or [("none", False, "not configured")])
-    keys = [k for k in _configured_keys(cfg, "elevenlabs") if k]
+    keys = _sample([k for k in _configured_keys(cfg, "elevenlabs") if k],
+                   sample)
     section("ELEVENLABS (quota-free /user check)",
             [(_mask(k), *probe_get(
                 "elevenlabs", "https://api.elevenlabs.io/v1/user", k,
                 headers={"xi-api-key": k})) for k in keys]
             or [("none", False, "not configured")])
-    pex = _configured_keys(cfg, "pexels")
+    pex = _sample([k for k in _configured_keys(cfg, "pexels") if k], sample)
     section("PEXELS",
             [(_mask(pex[0]), *probe_get(
                 "pexels", "https://api.pexels.com/v1/search",
                 pex[0], headers={"Authorization": pex[0]},
                 params={"query": "ocean", "per_page": 1}))]
             if pex and pex[0] else [("none", False, "not configured")])
-    pix = [k for k in _configured_keys(cfg, "pixabay") if k]
+    pix = _sample([k for k in _configured_keys(cfg, "pixabay") if k], sample)
     section("PIXABAY",
             [(_mask(k), *probe_get(
                 "pixabay", "https://pixabay.com/api/", k,
                 params={"key": k, "q": "ocean", "per_page": 3}))
              for k in pix[:1]]
             or [("none", False, "not configured")])
-    yt = [k for k in _configured_keys(cfg, "youtube") if k]
+    yt = _sample([k for k in _configured_keys(cfg, "youtube") if k], sample)
     section("YOUTUBE (1 quota unit)",
             [(_mask(k), *probe_get(
                 "youtube", "https://www.googleapis.com/youtube/v3/videos",

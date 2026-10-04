@@ -1,5 +1,7 @@
-# No Google/YouTube libraries on purpose — this project uses no YouTube API,
-# which is exactly why no audit or verification can ever be required.
+# No Google/YouTube client libraries on purpose — this project has no upload
+# path (nothing can reach videos.insert), which is exactly why no audit or
+# verification can ever be required. The optional read-only stats commands
+# call the Data API over plain HTTPS, so no client library is needed.
 # (youtube-transcript-api below is keyless caption scraping, not the Data
 # API — no quota, no audit, no key.)
 # Ceilings block breaking majors; minors float for security fixes.

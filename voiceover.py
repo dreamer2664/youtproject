@@ -147,7 +147,7 @@ def _elevenlabs_synth(text: str, dest: Path, cfg: Config) -> list[WordTiming]:
             except ValueError as exc:
                 raise RuntimeError(
                     "elevenlabs returned a non-JSON payload") from exc
-            keystats.bump("elevenlabs", key, chars=len(text))
+            keystats.bump("elevenlabs", key, chars=len(text), tag="tts")
             return _elevenlabs_save(data, dest)
         last = f"HTTP {response.status_code}: {response.text[:150]}"
         if response.status_code in (401, 429):
