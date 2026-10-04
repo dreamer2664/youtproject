@@ -15,7 +15,11 @@ Deliberate constraints (do not relax these casually):
   * binds 127.0.0.1 by default — a local tool, not a web service;
   * one job at a time, in order — the queue is visible, nothing stacks
     up invisibly and two renders never fight over the same files;
-  * no publishing — there is no button anywhere that can post; uploads
+  * the panel's own buttons still never post; the Publish section drives
+    the same `order` lane as the CLI, which obeys desktop.uploads
+    (off = stage only). The gate is shown in the header, and the
+    real-run button asks before it starts.
+  * no publishing — the panel grew no direct upload code; uploads
     stay manual (autopost/crew --live are not reachable from here);
   * keys stay masked — the CLI already masks them; mask_line() is the
     second lock on the same door, because logs are shown on a page.
@@ -98,6 +102,22 @@ def build_argv(action: str, params: dict | None = None) -> list[str]:
         return ["meeting", "memory"]
     if action == "meeting_last":
         return ["meeting", "last"]
+    if action == "order":
+        text = (p.get("text") or "").strip()
+        if not text:
+            raise ValueError("the order needs words — e.g. \"get a link from "
+                             "the database, get 6 clips and post them in 5 "
+                             "channels\"")
+        argv = ["order", text]
+        if p.get("plan_only"):
+            argv.append("--plan-only")
+        elif p.get("dry_run"):
+            argv.append("--dry-run")
+        return argv
+    if action == "desktop_status":
+        return ["desktop", "status"]
+    if action == "desktop_channels":
+        return ["desktop", "channels", "list"]
     if action == "snap":
         return ["snap"]
     if action == "keys":
@@ -142,6 +162,16 @@ def describe(action: str, params: dict | None = None) -> str:
     if action == "meeting":
         kind = p.get("kind", "act")
         return f"meeting {kind}" + (" (dry run)" if p.get("dry_run") else "")
+    if action == "order":
+        text = (p.get("text") or "").strip()
+        short = text if len(text) <= 48 else text[:45] + "…"
+        flag = (" (plan only)" if p.get("plan_only") else
+                " (dry run)" if p.get("dry_run") else "")
+        return f"order: {short}{flag}"
+    if action == "desktop_status":
+        return "desktop status (browser check)"
+    if action == "desktop_channels":
+        return "desktop channels"
     return action.replace("_", " ")
 
 
@@ -393,6 +423,14 @@ def snapshot(cfg) -> dict:
         out["meetings"] = len(list((cfg.out_dir / "meetings").glob("*.md")))
     except OSError:
         pass
+    try:  # the publishing gate: the page must never hide this
+        import desktop
+
+        out["uploads"] = bool(desktop.dconf(cfg)["uploads"])
+        out["channels"] = len(desktop.all_channels(cfg))
+    except Exception:  # noqa: BLE001
+        out["uploads"] = None
+        out["channels"] = 0
     return out
 
 
@@ -977,7 +1015,9 @@ def serve(cfg, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
     print(f"  [panel] {url}  (Ctrl+C stops it)")
     print("  [panel] every button runs the real CLI — same behavior as "
           "the terminal")
-    print("  [panel] no publishing here: uploads stay manual, by design")
+    print("  [panel] no upload code in this app: the Publish section drives "
+          "the same `order` lane,\n  [panel] and that lane only publishes when "
+          "desktop.uploads is on (off = stage only, always)")
     if host not in ("127.0.0.1", "localhost", "::1"):
         print("  [panel] WARNING: bound beyond this machine — anyone who "
               "can reach this port can click these buttons")

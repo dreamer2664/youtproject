@@ -267,6 +267,38 @@
     </details>
   </section>
 
+  <!-- =========================== PUBLISH =========================== -->
+  <section class="card wide">
+    <h2>Publish <span style="text-transform:none; color:var(--dim2)">— one sentence: clip, assign, post</span></h2>
+    <div class="row" style="margin-bottom:8px">
+      <textarea id="ord-text" rows="2" style="flex:1; min-width:280px"
+        placeholder="get a link from the database, get 6 clips and post them in 5 channels">get a link from the database, get 6 clips and post them in 5 channels</textarea>
+    </div>
+    <div class="row">
+      <button class="ghost" id="ord-plan">🧾 Plan (free, runs nothing)</button>
+      <button id="ord-dry">🧪 Dry run (everything but the publish click)</button>
+      <button class="gold" id="ord-run">🚀 Run order</button>
+      <span class="spacer"></span>
+      <button class="ghost" data-order-tool="desktop_status">🔌 Browser status</button>
+      <button class="ghost" data-order-tool="desktop_channels">📺 Channels</button>
+    </div>
+    <div class="note" id="ord-note"></div>
+    <details style="margin-top:8px">
+      <summary>What happens on Run (and what “uploads” means)</summary>
+      <div class="note" style="margin-top:6px">
+        Plan prints the order in words. Dry run does everything up to the final
+        publish click — nothing ever leaves your browser. Run posts for real,
+        but only when <b>uploads: on</b> (config.yaml or <code>/desk uploads
+        on</code> from the phone); with uploads off it stages everything and
+        stops at the publish button, exactly like the dry run. Each channel
+        must be logged in once in the browser window that
+        <code>Desktop Chrome.bat</code> opened. Reports land in
+        <code>work/post/&lt;day&gt;/report.json</code> and every step is
+        screenshotted in <code>work/desktop/shots/</code>.
+      </div>
+    </details>
+  </section>
+
   <!-- ============================ TOOLS =========================== -->
   <section class="card">
     <h2>Stats &amp; tools</h2>
@@ -376,6 +408,11 @@ async function refreshState(){
   for (const [k,n] of have) chips.push(`<span class="chip"><b>${n}</b> ${k}</span>`);
   if (missing.length) chips.push(`<span class="chip off" title="no keys configured">no keys: ${missing.join(", ")}</span>`);
   if (snap.meetings) chips.push(`<span class="chip">${snap.meetings} minutes</span>`);
+  if (snap.channels) chips.push(`<span class="chip">${snap.channels} channel${snap.channels===1?"":"s"}</span>`);
+  if (snap.uploads === true) chips.push(`<span class="chip bad" title="the order lane may really publish">uploads ON</span>`);
+  else if (snap.uploads === false) chips.push(`<span class="chip off" title="everything is staged, nothing is published">uploads off</span>`);
+  $S.uploads = snap.uploads;
+  paintOrderNote();
   $("chips").innerHTML = chips.join("");
   if (s.roles && s.roles.length) { $S.roles = s.roles; renderAgents(); renderChatRoles(); }
   else if (s.roles && !$S.roles.length) { renderChatRoles(); }
@@ -529,6 +566,30 @@ async function loadMinutes(){
     };
   });
 }
+
+/* ---------- publish (orders) ---------- */
+function ordText(){ return ($("ord-text").value || "").trim(); }
+function paintOrderNote(){
+  const up = $S.uploads;
+  const n = $("ord-note");
+  if (up === undefined || up === null){
+    n.innerHTML = "uploads state unknown — Run behaves like the CLI (off by default unless config says otherwise).";
+  } else if (up){
+    n.innerHTML = "⚠️ <b>uploads: ON</b> — Run will really publish. Every click is logged and screenshotted.";
+  } else {
+    n.innerHTML = "🔒 uploads: OFF — Run stages everything and stops before any publish click. Flip it with <code>/desk uploads on</code> in the bot, or <code>desktop.uploads: on</code> in config.yaml.";
+  }
+}
+$("ord-plan").onclick = ()=>{ if(!ordText()) return toast("write the order first"); run("order", {text: ordText(), plan_only: true}); };
+$("ord-dry").onclick  = ()=>{ if(!ordText()) return toast("write the order first"); run("order", {text: ordText(), dry_run: true}); };
+$("ord-run").onclick  = ()=>{
+  if(!ordText()) return toast("write the order first");
+  if ($S.uploads && !confirm("uploads is ON — this run will really publish to your channels.\n\nGo ahead?")) return;
+  run("order", {text: ordText()});
+};
+document.querySelectorAll("[data-order-tool]").forEach(b=>{
+  b.onclick = ()=>run(b.dataset.orderTool, {});
+});
 
 /* ---------- tools ---------- */
 document.querySelectorAll("[data-tool]").forEach(b=>{

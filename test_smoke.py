@@ -7704,6 +7704,64 @@ def t_panel_argmap():
     assert panel.describe("clip", {}) == "clip: next on the list"
 
 
+def t_panel_order_actions():
+    """The Publish section maps to the real CLI, gate and safety included."""
+    import panel
+
+    txt = ("get a link from the database, get 6 clips and post them in 5 "
+           "channels")
+    assert panel.build_argv("order", {"text": txt}) == ["order", txt]
+    assert panel.build_argv("order", {"text": txt, "plan_only": True}) == [
+        "order", txt, "--plan-only"]
+    assert panel.build_argv("order", {"text": txt, "dry_run": True}) == [
+        "order", txt, "--dry-run"]
+    try:
+        panel.build_argv("order", {"text": "  "})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an empty order must be refused")
+    assert panel.build_argv("desktop_status", {}) == ["desktop", "status"]
+    assert panel.build_argv("desktop_channels", {}) == [
+        "desktop", "channels", "list"]
+    assert "plan only" in panel.describe("order", {"text": txt,
+                                                   "plan_only": True})
+    assert "dry run" in panel.describe("order", {"text": txt,
+                                                 "dry_run": True})
+    # plan_only wins over dry_run if both are set: cheapest honest thing
+    assert panel.build_argv("order", {"text": txt, "plan_only": True,
+                                      "dry_run": True})[-1] == "--plan-only"
+
+
+def t_panel_no_button_without_route():
+    """Every action the page can run has an argv mapping — no dead buttons,
+    no button that invents a flag (the invariant this panel was built on)."""
+    import re
+
+    import panel
+
+    page = (Path(__file__).resolve().parent / "panel.html").read_text(
+        encoding="utf-8")
+    actions = set(re.findall(r'run\("([a-z_]+)"', page))
+    actions |= set(re.findall(r'data-tool="([a-z_]+)"', page))
+    actions |= set(re.findall(r'data-order-tool="([a-z_]+)"', page))
+    assert actions, "no actions found in the page — did the wiring change?"
+    for action in sorted(actions):
+        try:
+            argv = panel.build_argv(action, {"text": "x", "url": "http://x",
+                                             "count": 1, "limit": 1,
+                                             "kind": "act"})
+        except ValueError as exc:
+            raise AssertionError(f"page button {action!r} has no route: "
+                                 f"{exc}") from exc
+        assert argv and isinstance(argv[0], str), (action, argv)
+
+    # the Publish section exists and shows the gate; the real run asks first
+    assert "ord-text" in page and "ord-run" in page and "ord-dry" in page
+    assert "uploads ON" in page or "uploads: ON" in page
+    assert "confirm(" in page, "the real-run button must ask before posting"
+
+
 def t_panel_mask():
     """Keys are masked on the way to the page; URLs and paths survive."""
     import panel
@@ -10705,6 +10763,8 @@ def main(argv: list[str] | None = None) -> int:
         ("crew_watch", t_crew_watch),
         ("key_pools", t_key_pools),
         ("panel_argmap", t_panel_argmap),
+        ("panel_order_actions", t_panel_order_actions),
+        ("panel_no_button_without_route", t_panel_no_button_without_route),
         ("panel_mask", t_panel_mask),
         ("panel_events", t_panel_events),
         ("panel_links", t_panel_links),
