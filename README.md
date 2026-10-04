@@ -297,9 +297,14 @@ python main.py order "get a link from the database, get 6 clips and post
 The plan prints first (what it read, which channel gets what, whether posting
 is allowed), then it works: clip the queued source → generate → map items onto
 your channels → stage an upload packet per item in `work/post/<date>/` → and,
-only if `desktop.uploads: on`, drive your Chrome to upload them in Studio.
-`--plan-only` shows the plan and stops; `--dry-run` does everything except the
-final publish click.
+only if `desktop.uploads: on`, drive your browser to upload them in Studio.
+`--plan-only` prints the plan and runs nothing. `--dry-run` suppresses the
+browser post but **still runs** the clip/generate/stage work above; configured
+providers may consume quota. Use `--plan-only` for a truly no-work preview.
+The clip moment-picker already asks its model for the strongest standalone
+hooks/stories. Adding “viral” to an order is acknowledged in the plan, but the
+order lane does not over-generate candidates or filter them with the separate
+pre-gen virality score (a heuristic, not a view prediction).
 
 The driver itself:
 

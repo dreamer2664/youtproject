@@ -348,8 +348,9 @@ One sentence does the whole job — plan first, then work:
 
 ```powershell
 python main.py order "get a link from the database, get 6 clips and post them in 6 channels, and generate 2 videos for 2 channels"
-python main.py order "get 3 clips" --plan-only      # show the plan, run nothing
-python main.py order "get 3 clips and 1 video" --dry-run   # everything except the publish click
+python main.py order "get 3 clips" --plan-only      # plan only; runs nothing
+python main.py order "get 3 clips and 1 video" --dry-run   # clips/renders/stages; no browser post
+# --dry-run may consume configured provider quota; "viral" means AI hook/story picks, not a separate top-score filter
 ```
 
 The desktop lane itself (your own Chrome — the window you watch):

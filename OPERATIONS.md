@@ -480,8 +480,13 @@ first** (what it understood, the channel mapping, whether posting is allowed);
 then it takes the next queued source from the sheet, clips it, generates the
 videos, stages one upload packet per item under `work/post/<date>/<channel>/`,
 and — only when `desktop.uploads: on` — drives your Chrome to upload each one
-in Studio. `--plan-only` stops after the plan; `--dry-run` does everything
-except the final publish click. From the phone it's `/order <sentence>`.
+in Studio. `--plan-only` prints the plan and runs nothing. `--dry-run`
+suppresses the browser post but still runs clip/generate/stage steps; the
+configured providers may consume quota. For a no-work preview use
+`--plan-only`. If the sentence asks for “viral” clips, the moment-picker
+already requests the strongest standalone hooks/stories; `order` does not
+create extra candidates and use the separate heuristic virality score to
+filter them. From the phone it's `/order <sentence>`.
 
 ### The desktop agent (`desktop …`, `/desk …`)
 
