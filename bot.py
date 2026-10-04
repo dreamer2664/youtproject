@@ -48,6 +48,16 @@ Commands:
      /go later — queue it and shut the PC down; it runs at the next
      wake/boot. /go dry — show the plan first. /go status — where is it?
      /go 4 2 — 4 clip sources + 2 generated videos (defaults: 3 and 0).
+/order <sentence> — hand the whole job to me in plain words, e.g.
+     /order get a link from the database, get 6 clips and post them in
+     6 channels, and generate 2 videos for 2 channels
+     I answer with the plan first, then work through it.
+/desk status — desktop agent: backend, uploads on/off, channels, what it learned
+/desk shot — screenshot of the desktop browser, right now
+/desk uploads on|off — allow/block the final publish click
+/desk log — what the last desktop run did, step by step
+/desk stop — kill switch for a running desktop task
+/look <url> — peek at any page (text + screenshot, no API key)
 /status — what I'm rendering right now + uptime
 /queue — the render history table
 /keys — API usage: what's left, when quotas refill
@@ -214,7 +224,9 @@ def parse_incoming(text: str) -> tuple[str, str]:
     'status', 'keys', 'nogemini', 'jarvis' (channel-manager task),
     'crew' (mission), 'stop', 'log', 'today' (best pre-gen clip),
     'clips' (parked-clip list), 'clip' (pull one parked clip),
-    'stats' (channel stats; arg = optional channel-name filter).
+    'stats' (channel stats; arg = optional channel-name filter),
+    'look' (peek at a page in the browser), 'order' (one-sentence order),
+    'desk' (desktop agent: status/shot/log/stop/uploads).
     """
     text = (text or "").strip()
     if not text:
@@ -269,6 +281,13 @@ def parse_incoming(text: str) -> tuple[str, str]:
     # Channel stats: /stats (all tracked channels) or /stats <name>.
     if low == "/stats" or low.startswith("/stats "):
         return ("stats", text[6:].strip())
+    # Desktop agent: /look <url> (peek), /order <sentence>, /desk <cmd>.
+    if low == "/look" or low.startswith("/look "):
+        return ("look", text[5:].strip())
+    if low == "/order" or low.startswith("/order "):
+        return ("order", text[6:].strip())
+    if low == "/desk" or low.startswith("/desk "):
+        return ("desk", text[5:].strip())
     if text.startswith("/"):
         return ("help", "")
     return ("topic", text[:200])
@@ -438,6 +457,15 @@ class PhoneBot:
     def send_message(self, chat_id: int, text: str) -> dict:
         return self._api("sendMessage", data={"chat_id": chat_id,
                                               "text": trim(text)})
+
+    def send_photo(self, chat_id: int, path, caption: str = "") -> dict:
+        """Send a screenshot as a photo (desktop lane reports)."""
+        with open(path, "rb") as handle:
+            return self._api("sendPhoto", timeout=UPLOAD_TIMEOUT,
+                             data={"chat_id": chat_id,
+                                   "caption": trim(caption, MAX_CAPTION)},
+                             files={"photo": (Path(path).name, handle,
+                                              "image/png")})
 
     def send_document(self, chat_id: int, path, filename: str,
                       caption: str = "") -> dict:
@@ -631,6 +659,12 @@ class PhoneBot:
             self._go(chat_id, arg)
         elif action == "night":
             self._run_night(chat_id, arg)
+        elif action == "look":
+            self._look(chat_id, arg)
+        elif action == "order":
+            self._order(chat_id, arg)
+        elif action == "desk":
+            self._desk(chat_id, arg)
         elif action == "stop":
             (self.cfg.root / "crew_stop").write_text("stop", encoding="utf-8")
             print("  [bot] stop requested")
@@ -808,6 +842,142 @@ class PhoneBot:
             f"Roughly {opts['clips'] * 11 + 10} minutes. You can put your "
             "phone down — and if you'd rather shut the PC down right now, "
             "send /go later instead next time: it waits for the next boot.")
+
+    def _look(self, chat_id: int, arg: str) -> None:
+        """`/look <url>` — peek at a page with the browser lane (stage 1)."""
+        url = (arg or "").strip()
+        if not url:
+            self.send_message(chat_id, "Usage: /look https://example.com — "
+                                       "I'll send a screenshot + the text.")
+            return
+        url = url if url.startswith("http") else "https://" + url
+        self.send_message(chat_id, f"🔍 Looking at {url} …")
+
+        def work() -> None:
+            import desktop
+
+            shot = desktop.work_dir(self.cfg) / "shots" / \
+                f"look-{int(time.time())}.png"
+            got = desktop.page_look(self.cfg, url, backend="browser",
+                                    shot_path=shot)
+            if not got.get("ok"):
+                self.send_message(chat_id, f"❌ {got.get('error')}")
+                return
+            if got.get("shot"):
+                try:
+                    self.send_photo(chat_id, got["shot"],
+                                    caption=f"{got.get('title')}\n{got.get('url')}")
+                except Exception:  # noqa: BLE001 - text still goes out
+                    pass
+            body = (got.get("text") or "")[:2500]
+            self.send_message(chat_id, f"📄 {got.get('title')}\n\n{body}")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _order(self, chat_id: int, arg: str) -> None:
+        """`/order <sentence>` — plan first, then work, then a report."""
+        text = (arg or "").strip()
+        if not text:
+            self.send_message(chat_id,
+                              "Usage: /order get a link from the database, "
+                              "get 6 clips and post them in 6 channels, and "
+                              "generate 2 videos for 2 channels")
+            return
+        import orders
+
+        order = orders.parse_order(text)
+        self.send_message(chat_id, orders.plan_text(self.cfg, order))
+        if not order.get("ok"):
+            return
+        self.send_message(chat_id, "🚀 On it — report when it's done. "
+                                   "(/desk stop cancels a browser task.)")
+
+        def work() -> None:
+            try:
+                result = orders.execute(self.cfg, order,
+                                        echo=lambda *a, **k: None)
+            except Exception as exc:  # noqa: BLE001 - the phone must hear it
+                self.send_message(chat_id, f"❌ Order failed hard: {exc}")
+                return
+            self.send_message(chat_id, result["report"][:3400])
+            for post in result.get("posts") or []:
+                if not post.get("ok") and post.get("shot"):
+                    try:
+                        self.send_photo(chat_id, post["shot"],
+                                        caption=f"{post.get('channel')}: "
+                                                f"{str(post.get('error'))[:150]}")
+                    except Exception:  # noqa: BLE001
+                        pass
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _desk(self, chat_id: int, arg: str) -> None:
+        """`/desk` — status/shot/log/stop/uploads for the desktop agent."""
+        import desktop
+
+        cmd = (arg or "status").strip().lower()
+        if cmd in ("", "status"):
+            conf = desktop.dconf(self.cfg)
+            from orders import channel_list
+
+            channels = channel_list(self.cfg)
+            lessons = desktop.load_lessons(self.cfg)
+            books = desktop.load_playbooks(self.cfg)
+            lines = [
+                f"🖥️ Desktop agent",
+                f"backend: {conf['backend']} ({conf['cdp_url']})",
+                f"uploads: {'ON — the publish click is allowed' if conf['uploads'] else 'off — staged only (stops at the publish button)'}",
+                f"channels: " + (", ".join(c["name"] for c in channels)
+                                 if channels else "(none configured)"),
+                f"learned: {len(lessons)} lesson(s), {len(books)} playbook(s)",
+            ]
+            self.send_message(chat_id, "\n".join(lines))
+            return
+        if cmd == "shot":
+            self.send_message(chat_id, "📸 Peeking at the desktop browser…")
+
+            def work() -> None:
+                got = desktop.peek(self.cfg, note="desk-shot")
+                if not got.get("ok"):
+                    self.send_message(chat_id, f"❌ {got.get('error')}")
+                    return
+                if got.get("shot"):
+                    self.send_photo(chat_id, got["shot"],
+                                    caption=f"{got.get('title')}\n{got.get('url')}")
+                else:
+                    self.send_message(chat_id, f"{got.get('url')} — no shot")
+
+            threading.Thread(target=work, daemon=True).start()
+            return
+        if cmd == "stop":
+            desktop.request_stop()
+            self.send_message(chat_id, "🛑 Stop requested — the desktop task "
+                                       "ends after its current step.")
+            return
+        if cmd == "log":
+            logs = sorted((desktop.work_dir(self.cfg) / "logs").glob("*.jsonl"),
+                          reverse=True)
+            if not logs:
+                self.send_message(chat_id, "No desktop runs yet.")
+                return
+            tail = logs[0].read_text(encoding="utf-8").splitlines()[-20:]
+            self.send_message(chat_id,
+                              f"📜 {logs[0].name}\n" + "\n".join(tail)[:3300])
+            return
+        if cmd.startswith("uploads"):
+            part = cmd.split()[1] if len(cmd.split()) > 1 else ""
+            if part in ("on", "off"):
+                desktop.set_setting(self.cfg, "uploads", part == "on")
+                note = ("✅ Uploads ON — the browser lane may now click "
+                        "Publish/Schedule when an order says post."
+                        if part == "on" else
+                        "🅿️ Uploads off again — everything stays staged.")
+                self.send_message(chat_id, note)
+            else:
+                self.send_message(chat_id, "Usage: /desk uploads on | off")
+            return
+        self.send_message(chat_id, "Commands: /desk status | shot | log | "
+                                   "stop | uploads on|off")
 
     def _run_night(self, chat_id: int, arg: str) -> None:
         """`/night` starts tonight's unattended batch; `/night dry` previews.

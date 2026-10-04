@@ -17,6 +17,14 @@ fresh window to be found.
 
 ---
 
+## Bonus: hand it a sentence (optional)
+
+Later, when you want it: `python main.py order "get a link from the database,
+get 6 clips and post them in 6 channels"` — the AI drives your own browser
+(see README "Orders" and OPERATIONS "the desktop lane"). Nothing to set up
+today; uploads stay manual until you allow them.
+
+
 ## After that
 
 ```powershell

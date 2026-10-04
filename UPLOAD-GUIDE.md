@@ -8,6 +8,12 @@ Time per video: about 3 minutes once you've done it twice.
 
 ---
 
+> Optional: the desktop lane (README "Orders") can click through this exact
+> flow for you in your own browser once `desktop.uploads: on`. The manual steps
+> below remain the default and the reference — nothing in the guide changes for
+> channels you keep on manual.
+
+
 ## 1. Before your first upload (one-time, ~10 minutes)
 
 1. **Create the channel** at <https://youtube.com/channel_switcher> if you

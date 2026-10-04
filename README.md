@@ -2,10 +2,16 @@
 
 Makes documentary-style videos with AI and prepares everything for upload.
 **Everything here is free, and no audit or verification can ever be required —
-because there is no upload path anywhere in this code: it cannot call the
+because there are no upload API calls anywhere in this code: it cannot call the
 YouTube upload API, ever.** (The optional `yt` / `snap` commands make
 read-only public-stats calls — no OAuth, no upload scope.) You upload the
 finished files yourself in about 3 minutes per video.
+
+There is also an optional desktop lane: with `desktop.uploads: on` the AI can
+drive *your own browser* to Studio and click through the upload — that is UI
+automation on your machine, not an API call, so the audit story above still
+holds. It is off by default and nothing is ever staged as a public post without
+the word `post` in your order.
 
 ```
 Gemini script -> edge-tts voice -> Pollinations images -> FFmpeg -> YOU upload
@@ -40,7 +46,8 @@ This project sidesteps the whole thing: **no upload API calls means no
 private lock, no OAuth dance, no audit form, nothing to reject.** The price is
 three minutes of manual uploading per video — which also happens to be where
 you tick YouTube's AI-disclosure box, set scheduling, and do all the things the
-API makes awkward anyway.
+API makes awkward anyway. (If you turn on the optional desktop lane below, the *clicking* is automatic;
+the API audit question still never applies, because it never calls the API.)
 
 ---
 
@@ -262,6 +269,54 @@ is the overnight worker (its output goes to `work/nightrun/wake.log`). A
 hibernated PC is what makes this truly overnight — a full shutdown can only
 run it at the next power-on, which is exactly what the second tick covers.
 
+### Orders — hand the AI your browser
+
+One sentence, spoken like a person:
+
+```
+python main.py order "get a link from the database, get 6 clips and post
+                      them in 6 channels, and generate 2 videos for 2 channels"
+```
+
+The plan prints first (what it read, which channel gets what, whether posting
+is allowed), then it works: clip the queued source → generate → map items onto
+your channels → stage an upload packet per item in `work/post/<date>/` → and,
+only if `desktop.uploads: on`, drive your Chrome to upload them in Studio.
+`--plan-only` shows the plan and stops; `--dry-run` does everything except the
+final publish click.
+
+The driver itself:
+
+```
+python main.py desktop setup              # one-time: the browser engine
+Desktop Chrome.bat                        # starts Chrome with the debug port
+python main.py desktop status             # backend, uploads gate, channels, what it learned
+python main.py desktop go "open youtube studio and tell me how the newest video is doing"
+python main.py desktop go "…" --no-hands  # plan and screenshot, click nothing
+python main.py desktop shot               # screenshot of the current page → Telegram (/desk shot)
+python main.py browser data @handle       # public subscriber/video numbers, no API key, no quota
+python main.py browser shot <url>         # screenshot of any allowed page
+```
+
+`/desk stop` (or Ctrl-C) is the kill switch. Every step is logged in
+`work/desktop/logs/` and screenshotted in `work/desktop/shots/`.
+
+Three rules are built in, not optional:
+
+- **Domain allowlist** — the agent can only open sites you listed in
+  `desktop.allowed_domains` (YouTube and Google by default). Anything else
+  aborts the run.
+- **The commit gate** — clicking Publish/Schedule/Save needs
+  `desktop.uploads: on`. Delete/buy/unsubscribe are refused always, whatever
+  the config says.
+- **It learns** — a failed run writes one sentence ("lesson") into
+  `work/desktop/lessons.json` and injects it into the next attempt; a
+  successful run becomes a playbook that is replayed first next time, with no
+  model calls at all.
+
+From the phone: `/order <sentence>`, `/desk status|shot|log|stop|uploads on`,
+`/look <url>`.
+
 ### Phone control (Telegram, free)
 
 Text the bot a topic from your phone, get back the finished video:
@@ -328,6 +383,9 @@ Shorts, long-form and art styles without touching the config.
 | `bot.py` | Telegram phone control (polls, renders, delivers) |
 | `nightreq.py` | the `/go` request file (`work/nightrun/request.json`) — survives a shutdown |
 | `wakeup.py` | wake/boot worker: check Telegram once, run a pending `/go`, hibernate again |
+| `desktop.py` | the desktop agent: drives a real browser (snapshot, click, read, screenshot, gates, lessons, playbooks) |
+| `orders.py` | plain-language orders → clips + videos + channel mapping + staged packets |
+| `Desktop Chrome.bat` | starts Chrome with the debug port so the agent can drive the window you see |
 | `panel.py` / `panel.html` | Click-only control panel (`Start Panel.bat`, or `main.py panel`) |
 | `autopost.py` | Buffer autopost: video hosting + TikTok/YouTube/IG drafts or scheduled posts |
 | `jarvis.py` | Channel manager brain: tasks → render + schedule + report |

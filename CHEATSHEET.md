@@ -341,6 +341,41 @@ python main.py meeting review --dry-run       # agenda only, spend nothing
 
 Nothing here can post. Uploads stay manual.
 
+## 7.8. Orders & the desktop lane (the AI takes the mouse)
+
+One sentence does the whole job — plan first, then work:
+
+```powershell
+python main.py order "get a link from the database, get 6 clips and post them in 6 channels, and generate 2 videos for 2 channels"
+python main.py order "get 3 clips" --plan-only      # show the plan, run nothing
+python main.py order "get 3 clips and 1 video" --dry-run   # everything except the publish click
+```
+
+The desktop lane itself (your own Chrome — the window you watch):
+
+```powershell
+python main.py desktop setup        # once: install the browser engine (~120 MB)
+Desktop Chrome.bat                  # start Chrome with the debug port; log into your channels once
+python main.py desktop status       # backend, uploads gate, channels, lessons/playbooks learned
+python main.py desktop go "open youtube studio and tell me how the newest video is doing"
+python main.py desktop go "…" --no-hands     # look + plan, click nothing
+python main.py desktop shot                 # screenshot of the current page
+python main.py desktop stop                 # kill switch for a running task
+
+python main.py browser data @handle         # public subscriber/video numbers — no API key, no quota
+python main.py browser shot <url>           # screenshot any allowed page
+python main.py browser text <url>           # the page's text as a real browser sees it
+```
+
+Gates, not suggestions: only `desktop.allowed_domains` can be opened; the
+publish/schedule click needs `desktop.uploads: on` (`/desk uploads on`); the
+delete/buy/unsubscribe family is refused always. Every run: log in
+`work/desktop/logs/`, screenshots in `work/desktop/shots/`, lessons in
+`work/desktop/lessons.json`, winning paths in `work/desktop/playbooks.json`.
+
+From the phone: `/order <sentence>` · `/desk status|shot|log|stop|uploads on`
+· `/look <url>`.
+
 ## 8. Your phone (Telegram)
 
 ```powershell
