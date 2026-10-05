@@ -8,10 +8,12 @@ Time per video: about 3 minutes once you've done it twice.
 
 ---
 
-> Optional: the desktop lane (README "Orders") can click through this exact
-> flow for you in your own browser once `desktop.uploads: on`. The manual steps
-> below remain the default and the reference — nothing in the guide changes for
-> channels you keep on manual.
+> The optional desktop lane (README "Orders") can operate your own browser
+> when `desktop.uploads: on`, but this does not make browser automation an
+> audit-free or policy-approved route. YouTube's Terms restrict automated
+> access subject to stated exceptions/permission. Use the manual steps below
+> unless your automated use is permitted; this guide remains the supported
+> manual workflow.
 
 
 ## 1. Before your first upload (one-time, ~10 minutes)

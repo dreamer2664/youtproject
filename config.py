@@ -1,9 +1,11 @@
 """Configuration loading with environment-variable overrides.
 
-youtproject has NO upload API and no OAuth anywhere, so no audit or
-verification can ever be required. Every key it accepts is optional and free
-tier — LLM lanes, stock photos, ElevenLabs, read-only YouTube Data API keys
-(`yt` / `snap`), Telegram, Buffer. Secrets live in config.yaml (git-ignored).
+The project has no YouTube Data API video-upload client. Its optional desktop
+lane may operate an existing signed-in browser session; absence of an API
+upload client is not a blanket policy/audit exemption. Provider keys are
+optional and free-tier — LLM lanes, stock photos, ElevenLabs, read-only
+YouTube Data API keys (`yt` / `snap`), Telegram, Buffer. Secrets live in
+config.yaml (git-ignored).
 """
 
 from __future__ import annotations

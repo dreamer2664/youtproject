@@ -2,8 +2,9 @@
 #  Windows setup. Run from the project folder:
 #      powershell -ExecutionPolicy Bypass -File .\setup.ps1
 #
-#  No Google Cloud project, no OAuth, no audit — this project uploads
-#  nothing by itself. You upload the finished files manually.
+#  No YouTube Data API upload client or OAuth setup is installed here.
+#  Manual Studio upload is the supported flow; optional browser automation is
+#  separate and does not imply policy approval or an audit exemption.
 # ============================================================================
 
 $ErrorActionPreference = "Stop"

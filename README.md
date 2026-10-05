@@ -1,17 +1,18 @@
-# youtproject — free AI video generator (no audit needed, ever)
+# youtproject — free AI video generator with manual upload kits
 
 Makes documentary-style videos with AI and prepares everything for upload.
-**Everything here is free, and no audit or verification can ever be required —
-because there are no upload API calls anywhere in this code: it cannot call the
-YouTube upload API, ever.** (The optional `yt` / `snap` commands make
-read-only public-stats calls — no OAuth, no upload scope.) You upload the
-finished files yourself in about 3 minutes per video.
+The generator has no YouTube Data API video-upload endpoint; `yt` / `snap`
+make read-only public-data calls. Manual upload through YouTube Studio does
+not use this project's API client.
 
-There is also an optional desktop lane: with `desktop.uploads: on` the AI can
-drive *your own browser* to Studio and click through the upload — that is UI
-automation on your machine, not an API call, so the audit story above still
-holds. It is off by default and nothing is ever staged as a public post without
-the word `post` in your order.
+An optional desktop lane can operate your own browser when explicitly enabled.
+That is automated access to YouTube, not an API upload, and the absence of an
+API upload client does **not** imply policy approval or a blanket audit
+exemption. YouTube's [Terms of Service](https://www.youtube.com/t/terms)
+restrict automated access subject to their stated exceptions and permissions.
+Use manual Studio upload unless your automated use is permitted. The browser
+lane is off by default and requires both `desktop.uploads: on` and an order
+that explicitly requests posting.
 
 ```
 Gemini script -> edge-tts voice -> Pollinations images -> FFmpeg -> YOU upload
@@ -27,7 +28,7 @@ tags, captions file, and a step-by-step `CHECKLIST.md` for that exact video.
 
 ---
 
-## Why this project exists (the audit problem, in plain words)
+## YouTube Data API uploads vs. manual Studio uploads
 
 YouTube's rule for API uploads:
 
@@ -38,16 +39,17 @@ Worse, that lock is **permanent**: a video uploaded through an unaudited API
 project cannot be made public afterwards — not via the API, not in YouTube
 Studio — and there is no appeal. You would have to re-upload every video.
 
-Lifting the lock requires passing YouTube's Compliance Audit: a free form, read
-by a human, with no guaranteed approval and no published timeline. Personal and
-hobby projects get rejected often.
+The API-specific restriction is handled through YouTube's developer
+verification/audit process; approval is not guaranteed. Check the current
+YouTube developer requirements for the exact eligibility and review steps.
 
-This project sidesteps the whole thing: **no upload API calls means no
-private lock, no OAuth dance, no audit form, nothing to reject.** The price is
-three minutes of manual uploading per video — which also happens to be where
-you tick YouTube's AI-disclosure box, set scheduling, and do all the things the
-API makes awkward anyway. (If you turn on the optional desktop lane below, the *clicking* is automatic;
-the API audit question still never applies, because it never calls the API.)
+The supported no-API workflow is manual upload in YouTube Studio: the owner
+uploads the finished kit and completes Studio's disclosures/settings. This
+avoids this project's YouTube Data API upload path and its API-client audit
+question; it is not a blanket exemption for other kinds of automation. The
+optional desktop lane is automated browser access, which YouTube's Terms treat
+separately. Do not infer permission or compliance from the fact that it does
+not call `videos.insert`; use it only where your use is permitted.
 
 ---
 
@@ -307,6 +309,9 @@ only if `desktop.uploads: on`, drive your browser to upload them in Studio.
 `--plan-only` prints the plan and runs nothing. `--dry-run` suppresses the
 browser post but **still runs** the clip/generate/stage work above; configured
 providers may consume quota. Use `--plan-only` for a truly no-work preview.
+Clip counts are requested maxima: quality/overlap checks can leave fewer
+usable moments. The report now calls out short output and failed channel posts,
+and the CLI/panel marks the order incomplete instead of returning success.
 The clip moment-picker already asks its model for the strongest standalone
 hooks/stories. Adding “viral” to an order is acknowledged in the plan, but the
 order lane does not over-generate candidates or filter them with the separate
@@ -449,15 +454,15 @@ Shorts, long-form and art styles without touching the config.
 
 ## Security
 
-There is no OAuth here at all, and no upload scope exists to leak. Every
-secret is an optional free-tier key you may never need: the Gemini key, the
+There is no YouTube OAuth client or API upload scope in this code. The
+optional desktop lane uses an existing signed-in browser profile instead; that
+is still automated access, not a policy exemption. API keys for the Gemini,
 other LLM lanes (Groq / OpenRouter / DeepSeek), ElevenLabs, Pexels / Pixabay,
-the read-only YouTube Data API keys (`yt` / `snap` stats only), Telegram,
-Buffer, Cloudinary. They all live in `config.yaml`, which is git-ignored, and
-`hooks/pre-commit` blocks commits containing API keys or tokens. The setup
-scripts install that guard automatically — this repo is public, so that guard
-is not optional. YouTube Data API quota, retention, and cross-channel metric
-policy boundaries are documented in `API-REPORT.md` §11.
+read-only YouTube Data API (`yt` / `snap`), Telegram, Buffer, and Cloudinary
+live in git-ignored `config.yaml`; `hooks/pre-commit` blocks commits containing
+keys or tokens. The setup scripts install that guard automatically. YouTube
+Data API quota, retention, and cross-channel metric policy boundaries are
+documented in `API-REPORT.md` §11.
 
 ---
 
@@ -465,9 +470,10 @@ policy boundaries are documented in `API-REPORT.md` §11.
 
 - **Uploading via the YouTube API from an unaudited project.** Videos get
   permanently locked to private. That is the trap this project exists to avoid.
-- **Selenium / browser automation for uploading.** Violates the YouTube ToS,
-  breaks whenever Studio's HTML changes, and risks your channel. Three minutes
-  of manual uploading is not worth automating at that price.
+- **Browser automation for uploading.** YouTube's Terms restrict automated
+  access subject to stated exceptions/permission; this project cannot grant that
+  permission. It also breaks when Studio changes and risks the channel. Prefer
+  the manual Studio workflow unless your use is permitted.
 - **Dumping dozens of videos on day one.** New channels that publish one solid
   video a day do better than ones that flood. The tool can generate faster than
   you should publish.

@@ -13,9 +13,10 @@
         reels.txt          caption + hashtags for Instagram Reels (portrait videos)
         CHECKLIST.md       step-by-step Studio walkthrough for THIS video
 
-Nothing here touches the YouTube API, so there is no quota, no OAuth and no
-audit involved. The 3 minutes of manual uploading is what buys you freedom
-from all of that.
+This local packaging step does not touch YouTube's API or upload anything.
+Manual upload through Studio uses no API upload client; any optional browser
+automation is a separate access method and is not made policy-approved by
+this package builder.
 """
 
 from __future__ import annotations

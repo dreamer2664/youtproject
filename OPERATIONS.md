@@ -483,9 +483,13 @@ and — only when `desktop.uploads: on` — drives your Chrome to upload each on
 in Studio. `--plan-only` prints the plan and runs nothing. `--dry-run`
 suppresses the browser post but still runs clip/generate/stage steps; the
 configured providers may consume quota. For a no-work preview use
-`--plan-only`. If the sentence asks for “viral” clips, the moment-picker
-already requests the strongest standalone hooks/stories; `order` does not
-create extra candidates and use the separate heuristic virality score to
+`--plan-only`. Clip counts are requested maxima, and quality/overlap checks can
+produce fewer usable moments; the report and exit status mark this partial
+instead of claiming full success. Per-channel upload failures also produce a
+failed order status and local screenshot path. If the sentence asks for
+“viral” clips, the moment-picker already requests the strongest standalone
+hooks/stories; `order` does not create extra candidates or use the separate
+heuristic virality score to
 filter them. From the phone it's `/order <sentence>`.
 
 ### The desktop agent (`desktop …`, `/desk …`)
@@ -580,8 +584,11 @@ the panel log.
 `order` lane. One sentence, three buttons: **Plan** (free), **Dry run**
 (everything up to the publish click), **Run** (respects the uploads gate;
 asks for confirmation when the gate is ON). The header chip shows
-`uploads off / uploads ON` and the channel count at all times, so the page
-can never quietly be one click away from publishing without saying so.
+`uploads off / uploads ON` and the channel count at all times. `ON` means only
+that this app permits its final-click step; it does not prove Studio is signed
+in, on the target channel, or able to accept the file, and it is not YouTube
+policy permission. The page therefore cannot quietly be one click away from
+publishing without saying so.
 
 **Channels:** the lane reads two places — `desktop.channels:` in
 config.yaml (durable) and `work/desktop/channels.json`, written by

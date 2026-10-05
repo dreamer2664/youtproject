@@ -97,13 +97,17 @@ install Python 3.12 from python.org — setup.ps1 will prefer it automatically.
 
 ---
 
-## Why there is no upload command
+## Why there is no YouTube Data API upload command
 
-There is no `upload` command on purpose. Videos uploaded through YouTube's API
-from a project that hasn't passed their Compliance Audit get **permanently
-locked to private** — you can't unlock them in YouTube Studio either, and
-there's no appeal.
+This project has no `videos.insert` upload endpoint. YouTube can restrict API
+uploads from unverified API projects to private visibility; check the current
+YouTube developer requirements before building an API uploader. Manual Studio
+uploads and automated browser interaction are different paths and should not
+be conflated.
 
-Manual uploading has none of that. No audit, no quota, no lock. The
-`CHECKLIST.md` in each kit walks you through YouTube Studio step by step,
-including the captions upload and the AI-disclosure box you're required to tick.
+Manual upload through YouTube Studio does not use this project's Data API
+upload client, so the API upload audit/quota restriction described above does
+not apply to that manual step. This does not create an exemption for browser
+automation. The `CHECKLIST.md` in each kit walks you through Studio step by
+step, including the captions upload and the AI-disclosure box you're required
+to tick.

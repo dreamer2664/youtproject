@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Free AI video generator with manual YouTube upload — no upload API, no audit.
+"""Free AI video generator with manual YouTube upload kits.
 
     python main.py preflight     check setup before anything else
     python main.py generate      AI script -> voice -> images -> subtitled MP4
@@ -37,16 +37,17 @@
     python main.py keys --advice  what each key lane powers + how to grow
     (full workflow: OPERATIONS.md)
 
-Nothing here costs money and nothing here uploads through the YouTube API —
-there are no upload API calls anywhere (only `yt`/`snap` make read-only
-public-data calls) — which is exactly why no audit or verification can ever be
-required. You upload the finished files yourself in ~3 minutes per video (each
-kit has a CHECKLIST.md).
+The generator prepares upload-ready files and has no YouTube Data API
+`videos.insert` upload endpoint. The `yt`/`snap` lanes make read-only public
+Data API calls. Manual upload through Studio does not use this project's API
+client.
 
-Optional: the desktop lane (`desktop`, `order`) can drive YOUR OWN browser on
-your PC — it can click through Studio, learn from mistakes and replay what
-worked. It is local UI automation, never an API call, and its publish click
-stays blocked until you set `desktop.uploads: on`.
+Optional: the desktop lane (`desktop`, `order`) can operate YOUR OWN browser
+on your PC when explicitly enabled. This is automated access to YouTube, not
+an API upload, and the absence of an API upload client does not imply a policy
+exemption or approval; check YouTube's current Terms and obtain any required
+permission. The lane's publish click stays blocked until `desktop.uploads: on`
+and the order explicitly requests posting.
 """
 
 from __future__ import annotations
@@ -67,7 +68,7 @@ from process_utils import no_console_kwargs
 BANNER = """\
 ======================================================================
   Free AI video generator (manual-upload edition)
-  Cost: 0. Audit required: none — no upload API, no OAuth.
+  Cost: 0. No API uploads; browser use has separate policy rules.
 ======================================================================
 """
 

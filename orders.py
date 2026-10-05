@@ -344,7 +344,7 @@ def execute(cfg, order: dict, dry_run: bool = False, runner=None,
 
     # 1) source → clips
     if order["clips"]:
-        rc = step(f"clip {order['clips']} from the sheet",
+        rc = step(f"clip up to {order['clips']} from the sheet",
                   [sys.executable, "-u", main_py, "clip", "--sheet", "1",
                    "--max-clips", str(order["clips"])])
         if rc == 0:
@@ -359,6 +359,14 @@ def execute(cfg, order: dict, dry_run: bool = False, runner=None,
             result["videos"] = resolve_new_videos(cfg, start_ts,
                                                   order["videos"])
 
+    # A successful subprocess can still produce fewer usable items than
+    # requested (the clipper intentionally rejects weak/overlapping moments).
+    # Report that as a partial order, not a full success.
+    for key in ("clips", "videos"):
+        requested = int(order.get(key) or 0)
+        if requested and len(result[key]) < requested:
+            result["ok"] = False
+
     items = result["clips"] + result["videos"]
     channels = channel_list(cfg)
     assignments = assign_channels(items, channels, order.get("channels") or 0)
@@ -369,6 +377,7 @@ def execute(cfg, order: dict, dry_run: bool = False, runner=None,
     if want_post and items:
         conf = dconf(cfg)
         if not channels:
+            result["ok"] = False
             result["post_note"] = ("no channels configured — add "
                                    "desktop.channels to config.yaml")
         elif not conf["uploads"]:
@@ -382,6 +391,11 @@ def execute(cfg, order: dict, dry_run: bool = False, runner=None,
             if r.get("error"):
                 result["ok"] = False
                 result["post_note"] = r["error"]
+            # A started browser is not a successful post: propagate per-channel
+            # upload failures all the way to the CLI/panel exit status.
+            if any(not post.get("ok") or not post.get("committed")
+                   for post in result["posts"]):
+                result["ok"] = False
     elif items and order["post"]:
         result["post_note"] = "dry run — staged only"
 
@@ -445,6 +459,12 @@ def build_report(cfg, order: dict, result: dict) -> str:
         mark = "✅" if done["rc"] == 0 else "❌"
         tail = "" if done["rc"] == 0 else f" — {done.get('tail', '').strip().splitlines()[-1][:120] if done.get('tail', '').strip() else 'see log'}"
         lines.append(f"{mark} {done['label']}{tail}")
+    for key, label in (("clips", "clip(s)"), ("videos", "video(s)")):
+        requested = int(order.get(key) or 0)
+        actual = len(result.get(key) or [])
+        if requested and actual < requested:
+            lines.append(f"⚠️ requested {requested} {label}, produced {actual}; "
+                         "only produced items were staged/mapped.")
     if result.get("clips"):
         lines.append(f"✂️ clips ready: {len(result['clips'])} — "
                      + ", ".join(c["id"] for c in result["clips"]))
@@ -462,8 +482,12 @@ def build_report(cfg, order: dict, result: dict) -> str:
             lines.append(f"🅿️ {post['channel']}: {post.get('error') or 'staged'}")
         else:
             lines.append(f"⚠️ {post['channel']} failed: {post.get('error')}")
+            if post.get("shot"):
+                lines.append(f"   screenshot: {post['shot']}")
     if result.get("post_note"):
         lines.append(f"ℹ️ posting: {result['post_note']}")
+    if not result.get("ok", True):
+        lines.append("⚠️ Order incomplete — see missing items or channel failures above.")
     lines.append("")
     lines.append("Uploads stay manual unless desktop.uploads is on and the "
                  "order says post.")

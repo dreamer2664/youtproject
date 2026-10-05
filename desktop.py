@@ -441,6 +441,8 @@ _SNAPSHOT_JS = """
     out.push({i: i, tag: el.tagName.toLowerCase(),
               role: el.getAttribute('role') || el.tagName.toLowerCase(),
               name: name, disabled: !!el.disabled,
+              input_type: (el.tagName === 'INPUT' ?
+                           String(el.type || '').toLowerCase().slice(0, 20) : ''),
               id: (el.id || '').slice(0, 40),
               attr: (el.getAttribute('name') || '').slice(0, 40)});
     i += 1;
@@ -937,6 +939,19 @@ def _seen_controls(snapshot: dict, limit: int = 10) -> str:
         if len(names) >= limit:
             break
     return ", ".join(names) or "(nothing readable)"
+
+
+def _safe_page_url(url: str) -> str:
+    """URL context for diagnostics without query strings or fragments."""
+    return str(url or "").split("#", 1)[0].split("?", 1)[0][:240]
+
+
+def _looks_like_account_switcher(snapshot: dict) -> bool:
+    """Recognize the English/Italian Studio account switcher from visible UI."""
+    visible = (str(snapshot.get("text") or "") + " "
+               + _seen_controls(snapshot)).casefold()
+    return any(label in visible for label in
+               ("switch account", "change account", "cambia account"))
 
 
 def _resolve_named(snapshot: dict, name, role: str = "", last: bool = False,
@@ -1611,6 +1626,23 @@ def post_one(cfg, driver: BaseDriver, item: dict, channel: dict,
             except Exception:  # noqa: BLE001
                 pass
 
+    def fail(message: str, snap: dict | None = None) -> dict:
+        result["error"] = message
+        if snap is not None:
+            page_url = _safe_page_url(driver.url() or snap.get("url") or "")
+            if page_url:
+                result["page_url"] = page_url
+            if snap.get("title"):
+                result["page_title"] = str(snap["title"])[:120]
+        if last_shot["path"]:
+            result["shot"] = last_shot["path"]
+        if run_log:
+            fields = {"action": "post", "ok": False, "item": item.get("id"),
+                      "channel": name, "note": message}
+            if last_shot["path"]:
+                fields["shot"] = last_shot["path"]
+            run_log.add(**fields)
+        return result
 
     try:
         driver.goto(url)
@@ -1624,21 +1656,36 @@ def post_one(cfg, driver: BaseDriver, item: dict, channel: dict,
                 snap = driver.snapshot()
         shoot("0-open")
 
-        # 1. file input
+        # 1. file input. Never mistake a sign-in/search text box for a file
+        # selector: only an actual input[type=file] (or its explicit marker)
+        # is suitable for set_input_files.
         file_target = None
-        for el in snap.get("elements") or []:      # the tagged one first
-            if el.get("name") == "(file upload)":
+        for el in snap.get("elements") or []:
+            if (el.get("name") == "(file upload)"
+                    or el.get("input_type") == "file"
+                    or el.get("type") == "file"):
                 file_target = int(el["i"])
                 break
         if file_target is None:
-            for el in snap.get("elements") or []:
-                if el.get("tag") == "input":
-                    file_target = int(el["i"])
-                    break
-        if file_target is None:
-            result["error"] = ("no file input found on the upload page - "
-                               "the page showed: " + _seen_controls(snap))
-            return result
+            controls = _seen_controls(snap)
+            page_url = _safe_page_url(driver.url() or snap.get("url") or "")
+            page_title = str(snap.get("title") or "").strip()[:100]
+            if _looks_like_account_switcher(snap):
+                detail = (f"Studio is showing its account/channel chooser, not "
+                          f"the upload form for {name}; no file was selected "
+                          "and nothing was published. Switch to the configured "
+                          "channel in the same Desktop Chrome profile, return "
+                          "to Studio, then retry.")
+            else:
+                detail = (f"Studio did not expose a file input for {name}; "
+                          "no file was selected and nothing was published. "
+                          "Confirm the browser is signed in and on this "
+                          "channel's Studio upload page.")
+            context = " ".join(part for part in (
+                f"Page title: {page_title}." if page_title else "",
+                f"URL: {page_url}." if page_url else "",
+                f"Visible controls: {controls}.") if part)
+            return fail(detail + (" " + context if context else ""), snap)
         driver.set_input_files(file_target, str(item.get("file")))
         time.sleep(pause)
         snap = driver.snapshot()

@@ -2,10 +2,11 @@
 #  CONFIGURATION — edit this file, it is git-ignored so it is safe to keep
 #  your key in it. Copy config.example.yaml -> config.yaml to start.
 #
-#  There is no upload API and no OAuth anywhere in this project, so no audit
-#  or verification can ever be required. Every key below is optional and free
-#  tier — the youtube.api_keys section powers read-only public stats
-#  (`yt` / `snap`) only; nothing here can upload a video.
+#  This project has no YouTube Data API video-upload client; youtube.api_keys
+#  powers read-only public stats (`yt` / `snap`) only. Optional desktop/order
+#  browser automation is separate and does not imply policy approval or an
+#  audit exemption. Use manual Studio uploads unless automated access is
+#  permitted for your use. Provider keys below are optional and free-tier.
 # ============================================================================
 
 channel:
@@ -503,9 +504,11 @@ honeybadger:
 #
 # Safety defaults, kept deliberately strict:
 #   * allowed_domains is an ALLOWLIST — the agent aborts on anything else;
-#   * uploads: off means the upload sequence runs up to the publish button
-#     and STOPS there ("staged only"). `/desk uploads on` flips it at runtime
-#     (written to work/desktop/settings.json, not to this file);
+#   * uploads: off keeps the browser lane from clicking Publish/Schedule.
+#     `on` only opens this app's final-click gate; it does not guarantee that
+#     Studio is signed in/on the target channel or grant YouTube policy
+#     permission. `/desk uploads on` flips it at runtime
+#     (`work/desktop/settings.json`).
 #   * delete/buy/unsubscribe clicks are refused no matter what this says.
 # ---------------------------------------------------------------------------
 desktop:

@@ -3,8 +3,9 @@
 #  Linux / macOS setup. Run from the project folder:
 #      bash setup.sh
 #
-#  No Google Cloud project, no OAuth, no audit — this project uploads
-#  nothing by itself. You upload the finished files manually.
+#  No YouTube Data API upload client or OAuth setup is installed here.
+#  Manual Studio upload is the supported flow; optional browser automation is
+#  separate and does not imply policy approval or an audit exemption.
 # ============================================================================
 set -e
 cd "$(dirname "$0")"
