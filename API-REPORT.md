@@ -97,7 +97,7 @@ Assume the worst mix: all three sources are fresh/uncached and cut.
 |---|---|---|---|
 | Groq Whisper audio | 28,800 s/day (8 h), **org-level** | 3 × 20 min = 60 min | **12.5%** |
 | Groq chat | ~14,400 req/day (see §4 caveat) | ≤36 | <0.3% |
-| Gemini | ~1,000 req/day/key | ≤36 (only if Groq is dry) | ≤3.6% of one key |
+| Gemini | Project- and model/tier-specific limits; active values are shown in AI Studio | ≤36 (only if Groq is dry) | not estimable from API-key count; same-project keys share quota |
 | OpenRouter | 50 req/day on `:free` | 0 (last resort, chain order) | 0% |
 | Pexels / Pixabay | 200/h, 20k/mo · ~100/min | 0 | 0% |
 | ElevenLabs | 10k chars/mo per key | 0 | 0% |
@@ -121,7 +121,7 @@ Legend: ✅ healthy · ⚠️ watch · 💤 dormant by design · 🪦 dead ·
 
 | # | API | Where used | Verdict | Notes / action |
 |---|---|---|---|---|
-| 1 | **Gemini** (text) | script, factcheck, editorial, scout, clipfix/clippick/clipeos, title polish | ✅ | Primary chain link, ~1k req/day/key. Saturates at US peak (503) — chain + EU mornings already handle it. Long-form adds ≤1% load. |
+| 1 | **Gemini** (text) | script, factcheck, editorial, scout, clipfix/clippick/clipeos, title polish | ✅ | Primary chain link. Limits are project-scoped and model/tier-specific; see active values in AI Studio. Same-project keys share quota; 503 is service availability, not an invalid-key verdict. Long-form adds ≤1% of the planned call volume. |
 | 2 | **Gemini** (vision) | image QC, clip smart-crop subject tracking | ✅ | Cached per photo+query, circuit breaker, fails OPEN. Long-form makes **0** vision calls (nothing to pick). |
 | 3 | **Groq chat** | LLM fallback link | ⚠️ | Sources conflict on the daily cap: our ledger says ~14,400/day, a Sep-11-2026 check says 1,000/day on the main chat models — **both agree limits are per organization, not per key**. Verify once in console.groq.com → Limits. Not urgent: Gemini takes the load first. |
 | 4 | **Groq Whisper** | primary transcript for fresh/uncached sources; YouTube captions fallback | ⚠️ **binding constraint** | ~8 h audio/day per account, 25 MB/chunk (hence chunking). The first `ai.groq_transcription_percent` (default 90%) of the ordered Groq keys are Whisper-only, tried in order; the shared cache prevents repeat transcription. |
@@ -274,26 +274,28 @@ provider chain. With two or more keys the default rounding preserves at
 least one text key; a single key is Whisper-only. Set the percent to 0 for
 captions-first (no Whisper through Groq) or 100 for Whisper-only.
 
-Gemini retries now scale with the configured key count: quota/retryable
-model failures sweep every key before that model is abandoned. A hard
-connection failure still fails fast, because another key cannot repair a
-dead host. Whisper itself uses ordered failover (first eligible key until
-it fails, then the next), not round-robin balancing. Groq pools are
-per ACCOUNT — keys within one account share its limits, so `keys --month`
-and the panel show per-key Whisper audio with the limit labelled per
-account. The in-repo code and tests contain no actual key values.
+Gemini retries scale with the configured key count: quota/retryable model
+failures sweep the key list because project IDs are not stored and the
+runner cannot know which keys share a project. This is best-effort failover,
+not proof that each key has an independent quota. Google's current rule is
+per project, not per API key; a 429 may therefore hit every key tied to that
+project. The dashboard now reports Gemini's local use without multiplying
+quota or claiming a remaining balance. A hard connection failure still
+fails fast, because another key cannot repair an unreachable host. Whisper
+uses ordered key failover (not round-robin); Groq keys on one account share
+their account/org pool. The in-repo code and tests contain no actual key
+values.
 
 ---
 
 ## 9. Note on the test counts above (2026-10-03)
 
 §7 (131) and §8 (133/133) are point-in-time records of what shipped with
-each change and are left as written. The suite has grown since: run
-`python test_smoke.py` for the live count (144 as of 2026-10-04, all
-green on CPython 3.11 and 3.13). Since the 138 note: the dead broll.py
-went away with its test, and these joined — Pollinations-402 fail-fast,
-the Whisper probe, `--probe --sample N`, and the stock/vision ledger
-tags. The later YouTube quota correction is recorded below.
+each change and are left as written. The suite has grown since; the live
+count after the Gemini key-pool correction is recorded in §12. Earlier
+additions included Pollinations-402 fail-fast, the Whisper probe,
+`--probe --sample N`, stock/vision ledger tags, and the YouTube quota
+correction. Run `python test_smoke.py` for the current count.
 
 ## 11. YouTube quota correction and policy gate (2026-10-05)
 
@@ -350,3 +352,42 @@ refresh/deletion requirements. No existing snapshots were deleted, rewritten,
 or pruned in this correction; reducing retention can destroy user history and
 must be handled deliberately. The long-form lane itself still makes no
 YouTube Data API calls.
+
+---
+
+## 12. Gemini project quota and key-pool correction (2026-10-05)
+
+Google's current [rate-limit documentation](https://ai.google.dev/gemini-api/docs/rate-limits)
+says Gemini API limits are **per project, not per API key**, and vary by
+model and usage tier; active limits are visible in AI Studio. The prior
+config/dashboard wording that treated every API key as a separate quota
+pool was wrong. The local usage ledger records masked-key traffic only and
+cannot map keys to projects or count other clients, so it must not estimate
+remaining project quota or multiply capacity by key count.
+
+The runtime already rotates to another configured key after a 429, and 429s
+do not mark credentials permanently dead. That can only find an available
+bucket when the next key belongs to a project with an applicable limit; keys
+in the same project share quota. HTTP 429 indicates a rate/quota condition,
+while 503 and network timeouts point to service/network availability—not, by
+themselves, invalid keys. A non-empty `GEMINI_API_KEYS` environment variable
+is a complete override of `ai.gemini_api_keys`; the singular `GEMINI_API_KEY`
+is used only when the plural override is absent and is appended as a legacy
+key. `python main.py keys` now reports the effective source/count without
+showing key material.
+
+Hardening in this correction: the Gemini dashboard no longer claims
+`N keys = N pools`, shows no multiplied remaining-capacity total, and labels
+per-key rows as local self-counted spend only. A process-scoped pool in which
+all Gemini keys were previously rejected now fails over cleanly instead of
+indexing an empty list and crashing. Final error text distinguishes project
+quota, server-side 5xx, network failure, and invalid-key cases. Config and
+retry comments now reflect project scope.
+
+Verification: focused Gemini-key, key-source, and dashboard tests passed;
+the full offline smoke suite passed **198/198** on CPython 3.13.14. Changed
+Python modules compile, `config.example.yaml` parses, and `git diff --check`
+is clean. No live Gemini request, probe, or exposed credential was used.
+The user's Windows environment and local `config.yaml` are not accessible
+from this sandbox; use the safe local source/count line or PowerShell check
+before concluding whether the environment override is shadowing YAML.

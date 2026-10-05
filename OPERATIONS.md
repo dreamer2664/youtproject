@@ -638,8 +638,8 @@ Retention (APV) is only in Studio Analytics — the public API can't see it.
 Everything runs on free tiers. Check the tanks any time:
 
 ```powershell
-python main.py keys           # self-counted use; YouTube quota is project-level
-python main.py keys --probe   # every Gemini key + the reserved Groq text keys
+python main.py keys           # self-counted use; Gemini source/count is shown with values hidden
+python main.py keys --probe   # live request per Gemini key + reserved Groq text keys
 python main.py keys --month   # 30-day spend per provider, split by call tag
 python main.py costs          # Azure spend (if ever configured)
 ```
@@ -649,9 +649,11 @@ The ledger counts everything with an origin tag — `script`, `clipfix`,
 the tokens FOR", including the agent's own diagnostic probes. Whisper-only
 Groq keys are not chat-probed; they are validated during transcription.
 
-- Gemini's free tier saturates at US peak hours — EU mornings are fast and
-  quiet. The full Gemini primary/reserve pool runs before the reserved
-  Groq text keys; the rest of the configured fallback chain stays active.
+- Gemini limits are per project, not per API key; same-project keys share
+  quota, and active limits vary by model/tier. The full configured pool is
+  swept because project IDs are not stored; inspect the safe source/count in
+  `keys` and compare project IDs/active limits in AI Studio. A 503 or timeout
+  is a service/network issue, not proof that keys are invalid.
 - ElevenLabs: 1 premium-voice video/day (`ai.premium_voices`), the rest use
   free edge-tts. Raise/lower the number in config.yaml.
 - `snap` costs ~4 units from the shared 10,000/day YouTube project pool;
@@ -672,11 +674,12 @@ Groq keys are not chat-probed; they are validated during transcription.
 | `snap` · images | **0** | YouTube API units; Pexels/Pixabay fetch only. |
 
 Verdict: nothing left to cut — the diet already happened (premium voices
-off by default, template fallback, single-call scout, heuristic QC). The
-only waste during a Gemini 429-storm is time, not tokens: the chain burns
-~2 min on retries before groq takes over. Generate in EU mornings, or
-`--no-gemini` when a storm is known. A full backlog (8+ topics) also skips
-the top-up call.
+off by default, template fallback, single-call scout, heuristic QC). During
+a Gemini 429 storm, the chain sweeps the configured key list and may spend
+time on retries before Groq takes over; same-project keys do not create new
+quota, and the local ledger cannot tell which keys share a project. Check the
+active model limits in AI Studio; use `--no-gemini` when a provider outage is
+known. A full backlog (8+ topics) also skips the top-up call.
 
 ## When something goes wrong
 
@@ -686,13 +689,14 @@ the top-up call.
 | voice reads markup / odd pacing | old edge-tts (pre-7.2) | `pip install -r requirements.txt` |
 | `Sign in to confirm you're not a bot` | YouTube distrusts the network | `clip.cookies_browser: "firefox"` in config.yaml |
 | mid-download `HTTP 403` | cookies never took effect (wrong path?) | read the `cookies:` line each download prints; `Test-Path` your `clip.cookies_file` |
-| HTTP 503 storms from Gemini | free-tier saturation at US peak | just wait / EU morning; fallbacks engage automatically |
+| Gemini HTTP 429 across many keys | rate/quota limit, often project/model-scoped; same-project keys share it | check the active model limits and project IDs in AI Studio; the local key count is not a quota estimate |
+| HTTP 503 / timeouts from Gemini | transient service-capacity or network issue, not an invalid-key verdict | retry later; fallback providers engage automatically |
 | `[queue] state.json was unreadable` | a crash interrupted a queue write | already auto-quarantined; nothing to do |
 | job shows `reclaimed` | that render was killed mid-run (timeout, Ctrl-C, power cut) | nothing to do — the next generate put its topic back on the backlog |
 | `elevenlabs key ... is dead` | a revoked key | remove it from `ai.elevenlabs_api_keys` |
 | `[image] attempt N/6 failed: HTTP 402` | Pollinations' anonymous image lane refusing (free tier exhausted / gated upstream). It retries, but each attempt also pays the 16 s pacer — ~45 s wasted per image | set a free `ai.pollinations_token` (auth.pollinations.ai), or better: a free `ai.pexels_api_key` / `pixabay.api_keys` so stock photos are primary and Pollinations is only the last fallback |
 | `[image] pacing: next request in Ns` on every image, render takes 20-40 min | no Pexels/Pixabay key, so all ~21 images ride anonymous Pollinations (~1 req/15 s + ~50 s each) | add a Pexels key (200/h, 20k/mo, free, no card) — the single biggest speed win in the generate lane |
-| `keys` shows a wall of Gemini rows and no total | expected with many keys; each is its own ~1,500/day pool | the `all keys  N / M requests today` row under the section is the aggregate; the header says how many pools you hold |
+| `keys` shows many Gemini rows | per-key local usage is shown; Gemini quota is per project and this ledger cannot map keys to projects or see other clients' use | read the safe source/effective-count line; compare project IDs and active model limits in AI Studio. The local total is machine spend, not quota remaining |
 | `keys` shows less Groq audio than you actually spent | the voice-note lane used to be off the books | fixed — `voice.transcribe` now ledgeres with `tag=voicenote`; `keys --month` splits `whisper` (clip/parts/longform) from `voicenote` (bot) |
 
 ## What is automated vs yours
