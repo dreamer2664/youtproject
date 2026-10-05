@@ -114,7 +114,7 @@ now explicitly says limits are per project, vary by model and usage tier, and
 are visible in AI Studio. `python main.py keys` remains a local spend ledger;
 `keys --probe` tests a request, not your remaining quota.
 
-| Provider | Free tier (Oct 2026) | Extra keys on the SAME account |
+| Provider | Free tier (Oct 2026) | Effect of extra keys / quota scope |
 |---|---|---|
 | Gemini | Active request/token/image limits vary by model and usage tier; view them in Google AI Studio. Official scope: **per project, not per API key** ([rate limits](https://ai.google.dev/gemini-api/docs/rate-limits)). | Keys in one project share quota; the app cannot map API keys to project IDs. Another key helps only if its project has an available applicable limit; account/key count alone proves nothing. |
 | Groq | 30 RPM / 6k TPM / ~1,000 req/day per model (14.4k/day org aggregate), ~8h Whisper audio | **NOTHING — the pool is org-level.** All keys on one account share it |
