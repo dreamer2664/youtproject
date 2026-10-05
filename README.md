@@ -1,18 +1,19 @@
-# youtproject — free AI video generator with manual upload kits
+# youtproject — free video generation and local YouTube pipeline
 
-Makes documentary-style videos with AI and prepares everything for upload.
-The generator has no YouTube Data API video-upload endpoint; `yt` / `snap`
-make read-only public-data calls. Manual upload through YouTube Studio does
-not use this project's API client.
+Makes documentary-style videos and YouTube upload kits. The standalone
+`generate` → `package` workflow still supports manual Studio upload. The
+optional local `order` pipeline can also connect generation/clipping/parts,
+staging, QA, and the existing browser-controlled Studio uploader. It uses no
+YouTube Data API upload endpoint; `yt` / `snap` make read-only public-data calls.
 
-An optional desktop lane can operate your own browser when explicitly enabled.
-That is automated access to YouTube, not an API upload, and the absence of an
-API upload client does **not** imply policy approval or a blanket audit
-exemption. YouTube's [Terms of Service](https://www.youtube.com/t/terms)
-restrict automated access subject to their stated exceptions and permissions.
-Use manual Studio upload unless your automated use is permitted. The browser
-lane is off by default and requires both `desktop.uploads: on` and an order
-that explicitly requests posting.
+The uploader is `desktop.py` / `orders.py` controlling the owner's local
+browser—not Buffer and not a direct API publisher. The owner has affirmed
+prior written YouTube permission covering this browser automation; that is an
+owner attestation, not independently reviewed here. Keep use within its scope.
+The browser commit remains off unless `desktop.uploads: on`, the specific job
+is confirmed for an exact channel/visibility, and required per-video answers
+are supplied. No live upload was performed during implementation or testing.
+YouTube's [Terms of Service](https://www.youtube.com/t/terms) still apply.
 
 ```
 Gemini script -> edge-tts voice -> Pollinations images -> FFmpeg -> YOU upload
@@ -151,9 +152,42 @@ python main.py published <id> <url>     # record a manual upload's URL
 python main.py voices --lang it-        # list Italian voiceover voices
 ```
 
-The core workflow stops at a local YouTube kit and **your manual upload**.
-Buffer, crew, and desktop automation commands are separate legacy routes and
-are not part of this workflow; no publishing action was used in this review.
+The default standalone workflow stops at a local YouTube kit for **your
+manual upload**. The separate `order` command/Publish panel section now offer
+a local-PC end-to-end route, using the existing gated Studio browser lane.
+Buffer and other legacy publisher paths are not part of this pipeline. The
+pipeline was tested offline only; no provider call, browser action, or live
+upload was used in this review.
+
+### Implemented local order pipeline
+
+`python main.py order` and the Panel's **Publish** section share a durable
+local-PC pipeline for generation, YouTube-source clipping, splitting into
+parts, staging, QA, and the existing Studio browser upload lane. Details,
+known limits, and rollout status are in
+[`AUTOMATION-PIPELINE-PLAN.md`](AUTOMATION-PIPELINE-PLAN.md).
+
+Each job is journaled under `work/pipeline/jobs/<job-id>/`; staged packets and
+reports are under `work/post/<date>/<job-id>/`. Jobs are resumable with
+`--resume`. A browser commit is blocked unless `desktop.uploads: on`, an exact
+channel/visibility/action is confirmed, source-use rights are attested for
+clips/parts, and altered-content plus audience answers are set. The Panel
+previews the plan and requires typing its exact one-use confirmation phrase.
+An uncertain post is never blindly retried: inspect that channel in Studio,
+then use `pipeline-reconcile` to record the verified result.
+
+The order pipeline always requests free-only provider routes. Standalone Panel
+Generate/Clip/Parts actions do too; Groq Whisper, Gemini image/vision, Azure,
+and premium voices are disabled for these jobs. Public YouTube captions are
+used for free-only transcription; if captions are unavailable, clipping/parts
+fail with a clear message rather than spending Groq transcription quota.
+Free-service quotas and availability can still limit a job.
+
+This is **not** a live-service validation: the offline smoke suite passed, but
+no real render, provider request, Studio browser session, or live upload was
+performed. A fully shut-down PC still cannot run this local worker. Phone-led
+or PC-off processing remains deferred, and hosted/free-runtime feasibility is
+open for a later phase.
 
 ### Picking topics (nothing repeats)
 
@@ -180,21 +214,18 @@ settings, thumbnail availability, and the per-video AI-use disclosure criteria.
 ### The panel (click instead of typing)
 
 Double-click **`Start Panel.bat`** (Windows) — or run `python main.py panel`.
-A local page opens (127.0.0.1 only, no terminal) with buttons for the moves
-you actually make: **Generate** (image route `stock`/`ai`/`free`, style and
-length as clicks), **Clip** and **Parts** (pick a link off your list or take
-the next queued one), the **boardroom** (run it, dry-run it, read minutes,
-or chat with any seat), plus snapshots, keys, queue, kits, and errors. A
-separate **Publish** section can plan or run the legacy desktop `order` lane;
-it is not part of the current manual workflow. Every button runs exactly the
-command you would have typed, streams its output live, and one job runs at a
-time. That section obeys the **uploads gate**: with `uploads: off` a Run stages
-everything and stops
-before any publish click; the header shows `uploads off`/`uploads ON` at all
-times, and with ON the Run button asks before it starts. The panel itself
-contains no upload code. On Windows, FFmpeg/ffprobe runs without opening a
-separate console for every probe/render; the app's progress and reports stay
-in the panel log. If something else already holds port
+A local page opens (127.0.0.1 only, no terminal) with **Generate**, **Clip**,
+and **Parts** actions, plus the boardroom, snapshots, keys, queue, kits, and
+errors. Generate offers free stock photos or Pollinations images; these three
+standalone actions always pass `--free-only`. The **Publish** section previews
+and runs the durable local `order` pipeline. It shows exact channels and
+visibility and requires typing the per-job confirmation phrase before a
+publish request can proceed. Missing consent/answers or `desktop.uploads: off`
+means stage-only. The panel itself has no uploader: it runs the CLI, which
+uses the existing `desktop.py` Studio browser lane. Every button streams its
+output live, and one job runs at a time. On Windows, FFmpeg/ffprobe runs
+without opening a separate console for every probe/render; progress and
+reports stay in the panel log. If something else already holds port
 8765 (an older local project, a dev server) the panel takes the next free
 port and opens *that* window, saying so in the console. Every panel run gets
 its own identity token, so the launcher can tell one of your projects from
@@ -258,41 +289,63 @@ a request for the next time the worker is started; it does not wake a fully
 shut down PC or complete work overnight. A Windows wake task works only when
 the machine is in a supported sleep/hibernate state and has been configured
 for that purpose. This project does not assume the PC stays on while you
-sleep. For now, render when you choose to use the PC and upload manually from
-your phone or Studio.
+sleep. For this phase, run the pipeline on the local PC while it is on; the
+existing gated Studio lane can upload after exact per-job confirmation.
+Phone-triggered/PC-off processing remains deferred.
 
 A genuinely hosted worker would be a separate deployment decision: it would
 need an always-available free host, secrets management, and a fresh privacy /
 reliability review. No remote runner or paid service is enabled here.
 
-### Legacy: orders and the desktop browser lane (outside this manual workflow)
+### Local order pipeline and Studio upload
 
-This separate automation lane is not part of the current YouTube-only manual
-upload workflow and was not used in this review. Do not enable browser upload
-or run publish/schedule actions unless the owner explicitly returns to that
-scope and verifies the applicable permissions.
-
-One sentence, spoken like a person:
+The order pipeline is for an intentional local-PC job; it does not use Buffer
+or a direct YouTube API uploader. For example, a stage-only job:
 
 ```
-python main.py order "get a link from the database, get 6 clips and post
-                      them in 6 channels, and generate 2 videos for 2 channels"
+python main.py order "generate 1 video about Roman aqueducts and stage it" \
+  --topic "How Roman aqueducts carried water" --no-default-channels
 ```
 
-The plan prints first (what it read, which channel gets what, whether posting
-is allowed), then it works: clip the queued source → generate → map items onto
-your channels → stage an upload packet per item in `work/post/<date>/` → and,
-only if `desktop.uploads: on`, drive your browser to upload them in Studio.
-`--plan-only` prints the plan and runs nothing. `--dry-run` suppresses the
-browser post but **still runs** the clip/generate/stage work above; configured
-providers may consume quota. Use `--plan-only` for a truly no-work preview.
-Clip counts are requested maxima: quality/overlap checks can leave fewer
-usable moments. The report now calls out short output and failed channel posts,
-and the CLI/panel marks the order incomplete instead of returning success.
-The clip moment-picker already asks its model for the strongest standalone
-hooks/stories. Adding “viral” to an order is acknowledged in the plan, but the
-order lane does not over-generate candidates or filter them with the separate
-pre-gen virality score (a heuristic, not a view prediction).
+For an actual publish request, select the exact configured channel and supply
+the required per-job answers. The disclosure/audience values below are only
+illustrative: choose them after reviewing the finished video and intended
+audience. The CLI prints the full plan and then requires an exact typed
+phrase; do not run this example unless you intend that action:
+
+```
+python main.py order "generate 1 video about Roman aqueducts and post it" \
+  --topic "How Roman aqueducts carried water" \
+  --channel "Exact channel name" --visibility unlisted \
+  --altered-content no --made-for-kids no --confirm-publish
+```
+
+For source-derived clips/parts, provide a YouTube URL or local file/source
+sheet entry and add `--rights-confirmed` only after verifying your rights.
+Direct source URLs are YouTube-only. The pipeline validates the completed
+video and upload metadata, stages one packet per item/channel, and uses the
+existing `desktop.py` Studio browser only after `desktop.uploads: on` and the
+exact job confirmation. `--plan-only` runs nothing. `--dry-run` still renders
+and stages but suppresses the browser action; free-service quotas may still
+apply. Free-only runs use Pollinations/template text, free stock/Pollinations
+images, edge-tts, and public YouTube captions—Groq Whisper is skipped.
+
+Jobs and reports are journaled locally. Resume a saved job with
+`python main.py order "resume" --resume JOB_ID`. If a browser click may have
+reached Studio but success could not be verified, first inspect the exact
+channel manually, then reconcile:
+
+```
+python main.py pipeline-reconcile --job-id JOB_ID \
+  --outcome committed
+```
+
+When more than one upload is unresolved, add `--key KEY`. Reconciliation
+requires an interactive exact confirmation and must reflect what you actually
+verified in Studio; it is never an automatic retry. The scheduling time is not
+part of this pipeline. No live upload was run in the offline implementation
+tests. Clip counts are requested maxima: if output is short or media QA fails,
+the order is reported incomplete and posting is blocked.
 
 The driver itself:
 
@@ -335,8 +388,10 @@ python main.py desktop channels add "MicroFeed-0" UCWKpOEGAYSgCUzJL-0fO4iQ
 python main.py desktop channels remove "MicroFeed-0"       # runtime ones
 ```
 
-From the phone: `/order <sentence>`, `/desk status|shot|log|stop|uploads on`,
-`/desk channels [add|remove …]`, `/look <url>`.
+Phone-triggered/PC-off processing is deferred for this phase. The Telegram bot
+and local worker still require the PC to be on; the phone command is not a
+replacement for the Panel/CLI's exact per-job publish confirmation. Do not use
+`/desk uploads on` as a substitute for that confirmation.
 
 ### Phone control (Telegram, free)
 
@@ -391,7 +446,7 @@ Shorts, long-form and art styles without touching the config.
 
 | File | Purpose |
 |---|---|
-| `main.py` | CLI |
+| `main.py` | CLI and local order-pipeline entry point |
 | `config.py` | Config loading, env overrides |
 | `scriptgen.py` | Gemini + offline template script writers |
 | `images.py` | Image generation: Pollinations → Gemini fallback |
@@ -403,8 +458,9 @@ Shorts, long-form and art styles without touching the config.
 | `bot.py` | Telegram phone control (polls, renders, delivers) |
 | `nightreq.py` | the `/go` request file (`work/nightrun/request.json`) — survives a shutdown |
 | `wakeup.py` | wake/boot worker: check Telegram once, run a pending `/go`, hibernate again |
-| `desktop.py` | the desktop agent: drives a real browser (snapshot, click, read, screenshot, gates, lessons, playbooks) |
-| `orders.py` | plain-language orders → clips + videos + channel mapping + staged packets |
+| `desktop.py` | local Studio browser control (snapshot, click, read, screenshot, gated upload, lessons, playbooks) |
+| `pipeline.py` | durable local generation/clip/parts → QA → staging → confirmed Studio upload; resume/reconcile |
+| `orders.py` | order parsing, exact channel resolution, staging manifests, and compatibility wrapper |
 | `Desktop Chrome.bat` | starts a Chromium browser (Opera GX, Edge, Chrome, Brave, Vivaldi) with the debug port so the agent can drive the window you see |
 | `panel.py` / `panel.html` | Click-only control panel (`Start Panel.bat`, or `main.py panel`) |
 | `autopost.py` | Optional legacy Buffer adapter; YouTube is the only enabled destination, not used by manual upload |

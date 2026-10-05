@@ -19,6 +19,7 @@ from __future__ import annotations
 import html
 import shutil
 import textwrap
+import uuid
 from pathlib import Path
 
 PART_LEN_DEFAULT = 60.0
@@ -394,26 +395,37 @@ def write_part_kit(clip: Path, title: str, index: int, total: int,
                    source: dict, window: tuple[float, float],
                    siblings: list[str], srt_path: Path | None,
                    ass_path: Path | None, out_root: Path) -> Path:
-    """Upload-style kit for one part: mp4 + titles + credit + captions."""
+    """Build one part kit completely before replacing the previous version."""
+    from package import _commit_kit, _recover_kit
+
+    out_root = Path(out_root)
+    out_root.mkdir(parents=True, exist_ok=True)
     kit = out_root / clip.stem
-    kit.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(clip, kit / clip.name)
-    (kit / "TITLE.txt").write_text(title, encoding="utf-8")
-    (kit / "DESCRIPTION.txt").write_text(
-        build_part_description(title, index, total, source, siblings or []),
-        encoding="utf-8")
-    (kit / "CREDIT.txt").write_text(
-        f"source: {source.get('url', '')}\n"
-        f"channel: {source.get('channel', '')}\n"
-        f"window: {window[0]:.1f}s - {window[1]:.1f}s\n"
-        f"part: {index}/{total}\n",
-        encoding="utf-8")
-    if srt_path and Path(srt_path).exists():
-        shutil.copy2(srt_path, kit / "captions.srt")
-    if ass_path and Path(ass_path).exists():
-        shutil.copy2(ass_path, kit / "part.ass")
-    (kit / "CHECKLIST.md").write_text(_parts_checklist(), encoding="utf-8")
-    return kit
+    _recover_kit(kit)
+    stage = kit.with_name(f".{kit.name}.stage-{uuid.uuid4().hex}")
+    stage.mkdir()
+    try:
+        shutil.copy2(clip, stage / clip.name)
+        (stage / "TITLE.txt").write_text(title, encoding="utf-8")
+        (stage / "DESCRIPTION.txt").write_text(
+            build_part_description(title, index, total, source, siblings or []),
+            encoding="utf-8")
+        (stage / "CREDIT.txt").write_text(
+            f"source: {source.get('url', '')}\n"
+            f"channel: {source.get('channel', '')}\n"
+            f"window: {window[0]:.1f}s - {window[1]:.1f}s\n"
+            f"part: {index}/{total}\n",
+            encoding="utf-8")
+        if srt_path and Path(srt_path).exists():
+            shutil.copy2(srt_path, stage / "captions.srt")
+        if ass_path and Path(ass_path).exists():
+            shutil.copy2(ass_path, stage / "part.ass")
+        (stage / "CHECKLIST.md").write_text(_parts_checklist(), encoding="utf-8")
+        _commit_kit(stage, kit)
+        return kit
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage, ignore_errors=True)
 
 
 # --------------------------------------------------------------------- lane

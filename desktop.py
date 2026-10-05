@@ -423,7 +423,8 @@ _SNAPSHOT_JS = """
   const out = [];
   const els = document.querySelectorAll(
     'a, button, input, textarea, select, [role="button"], [role="tab"],' +
-    ' [contenteditable="true"], label');
+    ' [role="radio"], [role="checkbox"], [role="switch"], [role="group"],' +
+    ' [role="radiogroup"], [contenteditable="true"], label');
   let i = 0;
   for (const el of els) {
     let r; try { r = el.getBoundingClientRect(); } catch (e) { continue; }
@@ -438,13 +439,34 @@ _SNAPSHOT_JS = """
     }
     if (!name) continue;
     try { el.setAttribute('data-desk-idx', String(i)); } catch (e) {}
+    let groupName = '';
+    try {
+      const group = el.closest('[role="radiogroup"], [role="group"], fieldset');
+      if (group) {
+        groupName = (group.getAttribute('aria-label') ||
+                     group.querySelector('legend')?.innerText || '').trim();
+        if (!groupName) {
+          const ids = (group.getAttribute('aria-labelledby') || '').split(/\\s+/);
+          groupName = ids.map(id => document.getElementById(id)?.innerText || '')
+                         .join(' ').trim();
+        }
+      }
+      if (!groupName) {
+        const ids = (el.getAttribute('aria-labelledby') || '').split(/\\s+/);
+        groupName = ids.map(id => document.getElementById(id)?.innerText || '')
+                       .join(' ').trim();
+      }
+    } catch (e) {}
+    const checked = (typeof el.checked === 'boolean') ? el.checked :
+                    el.getAttribute('aria-checked') === 'true';
     out.push({i: i, tag: el.tagName.toLowerCase(),
               role: el.getAttribute('role') || el.tagName.toLowerCase(),
-              name: name, disabled: !!el.disabled,
+              name: name, group: groupName.slice(0, 120),
+              disabled: !!el.disabled, checked: checked,
               input_type: (el.tagName === 'INPUT' ?
                            String(el.type || '').toLowerCase().slice(0, 20) : ''),
               id: (el.id || '').slice(0, 40),
-              attr: (el.getAttribute('name') || '').slice(0, 40)});
+              attr: (el.getAttribute('name') || '').slice(0, 60)});
     i += 1;
     if (i >= %d) break;
   }
@@ -918,6 +940,7 @@ LABELS = {
     "title": ("Add a title", "title", "Titolo", "Aggiungi un titolo"),
     "description": ("Add a description", "description", "Descrizione",
                     "Aggiungi una descrizione"),
+    "show_more": ("Show more", "Mostra altro", "Mostra di più"),
     "public": ("Public", "Pubblica", "Pubblico", "PUBLIC"),
     "private": ("Private", "Privato", "PRIVATE"),
     "unlisted": ("Unlisted", "Non elencato", "Non in elenco", "UNLISTED"),
@@ -944,6 +967,19 @@ def _seen_controls(snapshot: dict, limit: int = 10) -> str:
 def _safe_page_url(url: str) -> str:
     """URL context for diagnostics without query strings or fragments."""
     return str(url or "").split("#", 1)[0].split("?", 1)[0][:240]
+
+
+def _publication_success(snapshot: dict) -> bool:
+    """Only report a browser upload as committed after Studio confirms it."""
+    text = re.sub(r"\s+", " ", str(snapshot.get("text") or "")).casefold()
+    markers = (
+        "your video has been published", "video has been published",
+        "video is published", "video published", "published to youtube",
+        "il tuo video è stato pubblicato", "il video è stato pubblicato",
+        "video è stato pubblicato", "video pubblicato",
+        "il video è stato caricato e pubblicato",
+    )
+    return any(marker in text for marker in markers)
 
 
 def _looks_like_account_switcher(snapshot: dict) -> bool:
@@ -993,6 +1029,55 @@ def _resolve_named(snapshot: dict, name, role: str = "", last: bool = False,
     if not found:
         return None
     return int(found[-1 if last else 0]["i"])
+
+
+def _choose_group_option(driver: BaseDriver, group_hints,
+                         choices) -> tuple[bool, str]:
+    """Select and verify one radio only when its group is uniquely identified."""
+    snap = driver.snapshot()
+    hints = [str(x).casefold().strip() for x in group_hints if str(x).strip()]
+    options = [str(x).casefold().strip() for x in choices if str(x).strip()]
+    radios = []
+    for el in snap.get("elements") or []:
+        role = str(el.get("role") or "").casefold()
+        input_type = str(el.get("input_type") or "").casefold()
+        if role != "radio" and input_type != "radio":
+            continue
+        group = str(el.get("group") or "").casefold()
+        name = str(el.get("name") or "").casefold().strip()
+        attr = str(el.get("attr") or "").casefold()
+        if not any(h in group or h in attr for h in hints):
+            continue
+        if not any(name == c or name.startswith(c + ",") or
+                   name.startswith(c + " ") for c in options):
+            continue
+        radios.append(el)
+    if len(radios) != 1:
+        return False, (f"could not uniquely identify the {', '.join(group_hints)} "
+                       f"choice ({len(radios)} matching controls)")
+    target = radios[0]
+    if target.get("checked") is not True:
+        try:
+            driver.click(int(target["i"]))
+        except Exception as exc:  # noqa: BLE001
+            return False, f"could not set {target.get('name')}: {str(exc)[:120]}"
+    checked = driver.snapshot().get("elements") or []
+    verified = []
+    for el in checked:
+        role = str(el.get("role") or "").casefold()
+        input_type = str(el.get("input_type") or "").casefold()
+        group = str(el.get("group") or "").casefold()
+        name = str(el.get("name") or "").casefold().strip()
+        attr = str(el.get("attr") or "").casefold()
+        if ((role == "radio" or input_type == "radio")
+                and el.get("checked") is True
+                and any(h in group or h in attr for h in hints)
+                and any(name == c or name.startswith(c + ",")
+                        or name.startswith(c + " ") for c in options)):
+            verified.append(el)
+    if len(verified) != 1:
+        return False, f"Studio did not uniquely confirm {target.get('name')}"
+    return True, ""
 
 
 # --------------------------------------------------------------------------
@@ -1596,7 +1681,9 @@ def studio_upload_url(channel: dict) -> str:
 def post_one(cfg, driver: BaseDriver, item: dict, channel: dict,
              dry_run: bool = False, run_log: RunLog | None = None,
              shots: Path | None = None, echo=print,
-             pause: float = 2.0) -> dict:
+             pause: float = 2.0, visibility: str | None = None,
+             altered_content: bool | None = None,
+             made_for_kids: bool | None = None) -> dict:
     """Upload one item to one channel via Studio's own upload page.
 
     Deterministic steps (works even when the model is down), each resolved by
@@ -1609,11 +1696,19 @@ def post_one(cfg, driver: BaseDriver, item: dict, channel: dict,
     url = studio_upload_url(channel)
     ok, reason = domain_allowed(cfg, url)
     if not ok:
-        return {"ok": False, "channel": name, "error": reason}
+        return {"ok": False, "channel": name, "error": reason,
+                "committed": False, "commit_attempted": False}
     title = str(item.get("title") or Path(str(item.get("file") or "")).stem)
     description = str(item.get("description") or "")
+    chosen_visibility = str(visibility or conf["visibility"]).strip().lower()
+    if chosen_visibility not in ("public", "private", "unlisted"):
+        return {"ok": False, "channel": name, "item": item.get("id"),
+                "title": title, "committed": False,
+                "commit_attempted": False,
+                "error": f"unsupported visibility {chosen_visibility!r}"}
     result = {"ok": False, "channel": name, "item": item.get("id"),
-              "title": title, "committed": False, "error": ""}
+              "title": title, "visibility": chosen_visibility,
+              "committed": False, "commit_attempted": False, "error": ""}
 
     last_shot = {"path": ""}
 
@@ -1697,7 +1792,37 @@ def post_one(cfg, driver: BaseDriver, item: dict, channel: dict,
             index = _resolve_named(driver.snapshot(), LABELS[key])
             if index is not None and value:
                 driver.fill(index, value[:4900])
-        shoot("2-meta")
+
+        if altered_content is not None or made_for_kids is not None:
+            show_more = _resolve_named(driver.snapshot(), LABELS["show_more"],
+                                       role="button")
+            if show_more is not None:
+                driver.click(show_more)
+                time.sleep(pause * 0.3)
+            if made_for_kids is not None:
+                audience_choices = (
+                    ("Yes, it's made for kids", "Yes, it is made for kids",
+                     "Sì, è destinato ai bambini", "Sì, è realizzato per i bambini")
+                    if made_for_kids else
+                    ("No, it's not made for kids", "No, it is not made for kids",
+                     "No, non è destinato ai bambini"))
+                selected, why = _choose_group_option(
+                    driver, ("audience", "made for kids", "bambini", "destinat"),
+                    audience_choices)
+                if not selected:
+                    return fail("could not set the YouTube made-for-kids audience "
+                                "setting: " + why, driver.snapshot())
+            if altered_content is not None:
+                altered_choices = (("Yes", "Sì") if altered_content
+                                   else ("No", "No"))
+                selected, why = _choose_group_option(
+                    driver, ("altered content", "synthetic content",
+                             "contenuti alterati", "contenuto alterato",
+                             "contenuti sintetici"), altered_choices)
+                if not selected:
+                    return fail("could not set the YouTube altered-content "
+                                "disclosure: " + why, driver.snapshot())
+        shoot("2-meta-policy")
 
         # 3. Next ×3 (Details -> Video elements -> Checks -> Visibility)
         for attempt in range(3):
@@ -1710,7 +1835,7 @@ def post_one(cfg, driver: BaseDriver, item: dict, channel: dict,
 
         # 4. visibility
         key = {"public": "public", "private": "private",
-               "unlisted": "unlisted"}.get(conf["visibility"], "unlisted")
+               "unlisted": "unlisted"}[chosen_visibility]
         index = _resolve_named(driver.snapshot(), LABELS[key], attr=True)
         if index is not None:
             driver.click(index)
@@ -1749,18 +1874,41 @@ def post_one(cfg, driver: BaseDriver, item: dict, channel: dict,
                 run_log.add(action="post", ok=False, item=item.get("id"),
                             channel=name, note=result["error"])
             return result
+        # Persist/return this fact even if navigation or snapshotting fails:
+        # the caller must never blindly retry after the irreversible click.
+        result["commit_attempted"] = True
         driver.click(commit_index)
         time.sleep(pause * 1.5)
+        final_snap = driver.snapshot()
         shoot("5-done")
-        result.update(ok=True, committed=True)
-        if run_log:
-            run_log.add(action="post", ok=True, item=item.get("id"),
-                        channel=name, note=f"clicked '{commit_name}'")
+        final_url = _safe_page_url(driver.url() or final_snap.get("url") or "")
+        if final_url:
+            result["page_url"] = final_url
+        if _publication_success(final_snap):
+            result.update(ok=True, committed=True, uncertain=False)
+            if run_log:
+                run_log.add(action="post", ok=True, item=item.get("id"),
+                            channel=name, note="Studio displayed publish confirmation")
+        else:
+            result.update(ok=False, committed=False, uncertain=True,
+                          error=("the publish button was clicked, but Studio did "
+                                 "not show a recognized success confirmation; "
+                                 "check Studio manually before retrying"))
+            if run_log:
+                run_log.add(action="post", ok=False, item=item.get("id"),
+                            channel=name, note=result["error"], uncertain=True)
     except Exception as exc:  # noqa: BLE001
-        result["error"] = str(exc)[:300]
+        detail = str(exc)[:240]
+        if result.get("commit_attempted"):
+            result.update(ok=False, committed=False, uncertain=True,
+                          error=("commit may have reached Studio; verify it "
+                                 "manually before retrying. " + detail)[:300])
+        else:
+            result["error"] = detail
         if run_log:
             run_log.add(action="post", ok=False, item=item.get("id"),
-                        channel=name, note=result["error"])
+                        channel=name, note=result["error"],
+                        uncertain=bool(result.get("uncertain")))
     if last_shot["path"]:
         result["shot"] = last_shot["path"]
     return result

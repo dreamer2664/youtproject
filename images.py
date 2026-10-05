@@ -143,7 +143,19 @@ def stylize(prompt: str, style: str) -> str:
 # --- provider chain ------------------------------------------------------
 
 def resolve_chain(cfg: Config) -> list[str]:
-    """Primary + fallbacks, de-duplicated, order preserved."""
+    """Primary + fallbacks; strict free-only runs exclude metered Gemini images."""
+    ai_cfg = (cfg.data.get("ai") or {}) if getattr(cfg, "data", None) else {}
+    if ai_cfg.get("free_only"):
+        free = ("pexels", "pixabay", "pollinations")
+        primary = cfg.image_provider
+        chain = [primary] if primary in free else []
+        for name in cfg.image_fallbacks:
+            if name in free and name not in chain:
+                chain.append(name)
+        for name in free:
+            if name not in chain:
+                chain.append(name)
+        return chain
     chain = [cfg.image_provider]
     for name in cfg.image_fallbacks:
         if name not in chain:

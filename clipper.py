@@ -25,6 +25,7 @@ import shlex
 import shutil
 import subprocess
 import time
+import uuid
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -618,11 +619,21 @@ def transcribe_words(audio: Path, cfg: Config,
     timestamps are word-level; caption line timings are spread evenly
     across words.
     """
-    keys = keypool.live("groq", cfg.groq_transcription_api_keys)
+    ai_cfg = ((getattr(cfg, "data", {}) or {}).get("ai") or {})
+    free_only = bool(ai_cfg.get("free_only"))
+    # The durable/panel free-only lanes must not spend a metered Whisper
+    # quota, even if Groq credentials happen to be configured. Public
+    # YouTube captions remain a no-key, zero-cost fallback.
+    keys = ([] if free_only else
+            keypool.live("groq", cfg.groq_transcription_api_keys))
     whisper_error: Exception | None = None
     whisper_empty = False
 
-    if keys:
+    if free_only:
+        whisper_error = ClipError("free-only mode disables Groq Whisper")
+        print("  [clip] free-only: Groq Whisper disabled; trying public "
+              "YouTube captions")
+    elif keys:
         try:
             total = ffprobe_duration(audio)
             chunks = plan_chunks(total)
@@ -699,6 +710,11 @@ def transcribe_words(audio: Path, cfg: Config,
     if whisper_empty:
         return []  # preserve the silent-source result when captions are absent
     if whisper_error is not None:
+        if free_only:
+            raise ClipError("free-only mode did not call Groq Whisper, and no "
+                            "usable public YouTube captions were available; "
+                            "use a captioned YouTube source or local transcript") \
+                from whisper_error
         if keys:
             raise ClipError(f"Groq Whisper failed and YouTube captions "
                             f"were unavailable ({str(whisper_error)[:180]})") \
@@ -1284,21 +1300,32 @@ def _clip_checklist() -> str:
 
 def write_kit(clip: Path, title: str, cand: Candidate, source: dict,
               out_root: Path) -> Path:
-    """upload-style kit: mp4 + title + credited description."""
+    """Build a complete clip kit off to the side, then swap it into place."""
+    from package import _commit_kit, _recover_kit
+
+    out_root = Path(out_root)
+    out_root.mkdir(parents=True, exist_ok=True)
     kit = out_root / clip.stem
-    kit.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(clip, kit / clip.name)
-    (kit / "TITLE.txt").write_text(title, encoding="utf-8")
-    (kit / "DESCRIPTION.txt").write_text(
-        f"{title}\n\n{cand.hook}\n\nClipped from: {source['title']} — "
-        f"{source['channel']}\nSource: {source['url']}\nFull credit to the "
-        f"original creator.", encoding="utf-8")
-    (kit / "CREDIT.txt").write_text(
-        f"source: {source['url']}\nchannel: {source['channel']}\n"
-        f"window: {cand.start:.1f}s - {cand.end:.1f}s\n",
-        encoding="utf-8")
-    (kit / "CHECKLIST.md").write_text(_clip_checklist(), encoding="utf-8")
-    return kit
+    _recover_kit(kit)
+    stage = kit.with_name(f".{kit.name}.stage-{uuid.uuid4().hex}")
+    stage.mkdir()
+    try:
+        shutil.copy2(clip, stage / clip.name)
+        (stage / "TITLE.txt").write_text(title, encoding="utf-8")
+        (stage / "DESCRIPTION.txt").write_text(
+            f"{title}\n\n{cand.hook}\n\nClipped from: {source['title']} — "
+            f"{source['channel']}\nSource: {source['url']}\nFull credit to the "
+            f"original creator.", encoding="utf-8")
+        (stage / "CREDIT.txt").write_text(
+            f"source: {source['url']}\nchannel: {source['channel']}\n"
+            f"window: {cand.start:.1f}s - {cand.end:.1f}s\n",
+            encoding="utf-8")
+        (stage / "CHECKLIST.md").write_text(_clip_checklist(), encoding="utf-8")
+        _commit_kit(stage, kit)
+        return kit
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage, ignore_errors=True)
 
 
 # ---------------------------------------------------------------- cache

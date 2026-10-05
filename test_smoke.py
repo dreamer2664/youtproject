@@ -3120,6 +3120,40 @@ def t_image_chain():
     assert "skipped" not in describe_chain(cfg)  # both usable now
 
 
+
+def t_free_only_policy():
+    """Paid/metered model, image, vision and premium-voice routes stay off."""
+    import main as main_mod
+    from images import resolve_chain
+    from scriptgen import get_provider
+
+    cfg = tmp_cfg()
+    ai = cfg.data["ai"]
+    ai.update({
+        "provider": "azure", "azure_api_key": "configured-key",
+        "azure_endpoint": "https://example.invalid", "azure_deployment": "paid",
+        "azure_model": "gpt-test", "gemini_api_key": "configured-gemini",
+        "gemini_api_keys": ["configured-gemini"],
+        "groq_api_keys": ["configured-groq"],
+        "image_provider": "gemini", "image_fallbacks": ["gemini"],
+        "premium_voices": 1, "vision_qc": True,
+    })
+    main_mod._apply_free_only(cfg)
+    assert cfg.premium_voices == 0
+    assert cfg.vision_qc is False
+    assert set(resolve_chain(cfg)) <= {"pexels", "pixabay", "pollinations"}
+    assert resolve_chain(cfg)[0] == "pexels"
+    assert [name for name, _ in get_provider(cfg).chain] == [
+        "pollinations", "template"]
+
+    # The explicitly selected free image route survives the sanitizer.
+    cfg.data["ai"]["image_provider"] = "pollinations"
+    main_mod._apply_free_only(cfg)
+    chain = resolve_chain(cfg)
+    assert chain[0] == "pollinations" and set(chain) <= {
+        "pexels", "pixabay", "pollinations"}, chain
+
+
 def t_image_builders():
     import base64
 
@@ -5053,10 +5087,10 @@ def t_dry_run_banner_once():
     cfg = tmp_cfg()
     # The banner's rule line appears twice per banner — count its unique
     # middle line instead.
-    marker = "Free AI video generator (manual-upload edition)"
+    marker = "Free AI video generator + gated local YouTube pipeline"
     assert marker in BANNER
-    assert "Audit required: none" not in BANNER
-    assert "browser use has separate policy rules" in BANNER.lower()
+    assert "No direct YouTube API uploads" in BANNER
+    assert "exact per-job confirmation" in BANNER
     for helper, call in (
             (_dry_run_batch, lambda: _dry_run_batch(cfg, ["t", None])),
             (_dry_run_schedule,
@@ -5344,6 +5378,36 @@ def t_whisper_primary():
                                video_id="vid1")
     assert [word["word"] for word in got] == [
         "caption", "fallback", "works"]
+
+    # Strict free-only mode must skip a configured Groq Whisper pool and use
+    # the no-key YouTube captions route; without captions it fails clearly.
+    free_cfg = tmp_cfg()
+    free_cfg.data["ai"]["groq_api_keys"] = ["gsk-free-only-test-key"]
+    free_cfg.data["ai"]["free_only"] = True
+    with (
+        patch("clipper._whisper_request",
+              side_effect=AssertionError("free-only called Groq")) as whisper,
+        patch("clipper.fetch_youtube_captions",
+              return_value=(fallback_segments, "manual")),
+        redirect_stdout(io.StringIO()),
+    ):
+        got = transcribe_words(Path("audio.opus"), free_cfg, video_id="vid1")
+    assert [word["word"] for word in got] == [
+        "caption", "fallback", "works"]
+    whisper.assert_not_called()
+    with (
+        patch("clipper._whisper_request",
+              side_effect=AssertionError("free-only called Groq")) as whisper,
+        patch("clipper.fetch_youtube_captions", return_value=None),
+        redirect_stdout(io.StringIO()),
+    ):
+        try:
+            transcribe_words(Path("audio.opus"), free_cfg, video_id="vid1")
+        except ClipError as exc:
+            assert "free-only mode" in str(exc) and "captions" in str(exc)
+        else:
+            raise AssertionError("free-only should refuse paid transcription")
+    whisper.assert_not_called()
 
     # Empty Whisper output is not the winner if captions can help.
     with (
@@ -7999,19 +8063,27 @@ def t_panel_argmap():
     """Every panel button -> exact CLI args (the golden mapping)."""
     import panel
 
-    assert panel.build_argv("generate", {}) == ["generate", "--count", "1"]
+    assert panel.build_argv("generate", {}) == [
+        "generate", "--count", "1", "--free-only"]
     assert panel.build_argv("generate", {"count": 3, "seconds": 60,
                                          "style": "cartoon",
                                          "route": "stock"}) == [
         "generate", "--count", "3", "--seconds", "60", "--style", "cartoon",
-        "--image-provider", "stock"]
+        "--image-provider", "stock", "--free-only"]
     assert panel.build_argv("generate", {"count": 99}) == [
-        "generate", "--count", "10"]                     # clamped
+        "generate", "--count", "10", "--free-only"]  # clamped
+    assert panel.build_argv("generate", {"topic": "Roman aqueducts"}) == [
+        "generate", "--count", "1", "--topic", "Roman aqueducts",
+        "--free-only"]
+    assert panel.build_argv("generate", {"route": "free"}) == [
+        "generate", "--count", "1", "--image-provider", "free",
+        "--free-only"]
     assert panel.build_argv("clip", {"url": "https://youtu.be/x"}) == [
-        "clip", "--url", "https://youtu.be/x"]
-    assert panel.build_argv("clip", {}) == ["clip", "--sheet", "1"]
+        "clip", "--url", "https://youtu.be/x", "--free-only"]
+    assert panel.build_argv("clip", {}) == [
+        "clip", "--sheet", "1", "--free-only"]
     assert panel.build_argv("parts", {"url": "https://youtu.be/x"}) == [
-        "parts", "--url", "https://youtu.be/x"]
+        "parts", "--url", "https://youtu.be/x", "--free-only"]
     assert panel.build_argv("meeting", {"kind": "act"}) == [
         "meeting", "act", "--no-send", "--events-json"]
     assert panel.build_argv("meeting", {"kind": "act",
@@ -8047,11 +8119,21 @@ def t_panel_order_actions():
 
     txt = ("get a link from the database, get 6 clips and post them in 5 "
            "channels")
-    assert panel.build_argv("order", {"text": txt}) == ["order", txt]
+    assert panel.build_argv("order", {"text": txt}) == [
+        "order", txt, "--no-default-channels"]
     assert panel.build_argv("order", {"text": txt, "plan_only": True}) == [
-        "order", txt, "--plan-only"]
+        "order", txt, "--no-default-channels", "--plan-only"]
     assert panel.build_argv("order", {"text": txt, "dry_run": True}) == [
-        "order", txt, "--dry-run"]
+        "order", txt, "--no-default-channels", "--dry-run"]
+    selected = panel.build_argv("order", {
+        "text": txt, "topic": "Roman aqueducts", "channel_names": ["One"],
+        "visibility": "private", "rights_confirmed": True,
+        "altered_content": "yes", "made_for_kids": "no"})
+    assert selected[:4] == ["order", txt, "--no-default-channels", "--topic"]
+    assert "--channel" in selected and "One" in selected
+    assert "--visibility" in selected and "private" in selected
+    assert "--rights-confirmed" in selected and "--altered-content" in selected
+    assert "--made-for-kids" in selected
     try:
         panel.build_argv("order", {"text": "  "})
     except ValueError:
@@ -8068,6 +8150,61 @@ def t_panel_order_actions():
     # plan_only wins over dry_run if both are set: cheapest honest thing
     assert panel.build_argv("order", {"text": txt, "plan_only": True,
                                       "dry_run": True})[-1] == "--plan-only"
+
+
+
+def t_panel_confirmation_scope():
+    """Panel consent binds the job topic, exact channel, and publish action."""
+    import panel
+
+    cfg = tmp_cfg(desktop={"uploads": "on", "visibility": "unlisted",
+                           "channels": [
+                               {"name": "One", "studio_url":
+                                "https://studio.youtube.com/channel/UC11111111111111111111"},
+                               {"name": "Two", "studio_url":
+                                "https://studio.youtube.com/channel/UC22222222222222222222"},
+                           ]})
+    params = {
+        "text": "generate 1 video and post it in 1 channel",
+        "topic": "Roman aqueducts",
+        "channel_names": ["One"],
+        "visibility": "private",
+        "altered_content": "no",
+        "made_for_kids": "no",
+        "rights_confirmed": False,
+    }
+    preview = panel._preview_order(cfg, params)
+    assert preview["will_publish"] is True, preview
+    assert preview["channels"] == [{
+        "name": "One", "id": "UC11111111111111111111"}], preview
+    assert "Roman aqueducts" in preview["plan"]
+    assert preview["confirmation_phrase"] == (
+        "CONFIRM PUBLISH to One (UC11111111111111111111) as private")
+
+    confirmation = dict(params, confirm_publish=True,
+                        confirmation_token=preview["confirmation_token"])
+    okay, message = panel._consume_order_confirmation(confirmation)
+    assert okay, message
+    assert confirmation["panel_confirmed"] is True
+    assert confirmation["confirm_publish"] is True
+    assert "confirmation_token" not in confirmation
+    # The one-use token is consumed and the exact params are immutable.
+    replay = dict(params, confirm_publish=True,
+                  confirmation_token=preview["confirmation_token"])
+    okay, message = panel._consume_order_confirmation(replay)
+    assert not okay and "expired or was already used" in message, message
+
+    altered = panel._preview_order(cfg, params)
+    changed = dict(params, topic="Different topic", confirm_publish=True,
+                   confirmation_token=altered["confirmation_token"])
+    okay, message = panel._consume_order_confirmation(changed)
+    assert not okay and "changed after confirmation" in message, message
+
+    blocked = panel._preview_order(cfg, {
+        **params, "altered_content": "", "made_for_kids": ""})
+    assert blocked["will_publish"] is False
+    assert any("altered content" in item for item in blocked["blockers"])
+    assert any("made-for-kids" in item for item in blocked["blockers"])
 
 
 def t_panel_no_button_without_route():
@@ -8093,10 +8230,16 @@ def t_panel_no_button_without_route():
                                  f"{exc}") from exc
         assert argv and isinstance(argv[0], str), (action, argv)
 
-    # the Publish section exists and shows the gate; the real run asks first
+    # Publish previews the exact plan, displays its bound phrase, and sends
+    # a one-use token only after the exact phrase is typed.
     assert "ord-text" in page and "ord-run" in page and "ord-dry" in page
     assert "uploads ON" in page or "uploads: ON" in page
-    assert "confirm(" in page, "the real-run button must ask before posting"
+    assert "--free-only" in page and 'data-v="free"' in page
+    assert 'data-gen="route" data-v="ai"' not in page
+    for needle in ("/api/order/plan", "preview.will_publish",
+                   "preview.confirmation_phrase", "pending.token",
+                   "order-confirm-phrase", "pending.phrase"):
+        assert needle in page, needle
 
 
 def t_panel_mask():
@@ -9229,7 +9372,7 @@ def _studio_page(publish_name="Publish",
     return {
         url: {
             "title": "Upload - YouTube Studio",
-            "text": "Upload videos to your channel",
+            "text": "Upload videos to your channel. Video published.",
             "elements": [
                 {"i": 0, "tag": "input", "role": "input", "name": "file",
                  "input_type": "file"},
@@ -9311,7 +9454,7 @@ def t_order_plan():
     cfg_on = tmp_cfg(desktop={"uploads": "on",
                               "channels": [{"name": "Deep Ocean"}]})
     text_on = orders.plan_text(cfg_on, order)
-    assert "POST: enabled" in text_on, text_on
+    assert "POST: not yet authorized" in text_on, text_on
 
     calls = []
 
@@ -9366,6 +9509,203 @@ def t_order_targets():
     assert plan["title"] == clips[0]["title"], (plan, clips)
     assert plan["posted"] is False
     assert "deep-ocean" in packets[0]
+
+
+
+def t_pipeline_free_only_routing():
+    """Order subprocesses keep clips, parts, and prompts on free-only lanes."""
+    from unittest.mock import patch
+
+    import orders
+    import pipeline
+
+    cfg = tmp_cfg()
+    job_dir = cfg.root / "local-source.mp4"
+    job_dir.write_bytes(b"fixture")
+    state = {"id": "free-routing", "sequence": 0, "steps": {},
+             "items": {"clips": [], "parts": [], "videos": []}}
+    captured = []
+
+    def fake_step(got_cfg, got_state, name, label, argv, runner, echo):
+        captured.append((name, list(argv)))
+        return 0, "offline stub"
+
+    clip_item = {"kind": "clip", "id": "c1", "file": str(job_dir),
+                 "title": "Clip", "description": "Description", "tags": []}
+    part_item = {"kind": "part", "id": "p1", "file": str(job_dir),
+                 "title": "Part", "description": "Description", "tags": []}
+    with (patch.object(pipeline, "_run_step", side_effect=fake_step),
+          patch.object(orders, "resolve_output_kits",
+                       side_effect=[[clip_item], [part_item]])):
+        result = {}
+        pipeline._render_source_steps(
+            cfg, state, {"clips": 1, "parts": 1},
+            {"file": str(job_dir)}, runner=object(), echo=lambda *a, **k: None,
+            result=result)
+    assert [name for name, _ in captured] == ["clips", "parts"]
+    assert all("--free-only" in argv for _, argv in captured), captured
+    assert "clip" in captured[0][1] and "parts" in captured[1][1]
+
+    generated = cfg.root / "generated.mp4"
+    generated.write_bytes(b"generated fixture")
+    video_item = {"kind": "video", "id": "v1", "file": str(generated),
+                  "title": "Video", "description": "Description", "tags": []}
+    captured.clear()
+    state["steps"] = {}
+    with (patch.object(pipeline, "_run_step", side_effect=fake_step),
+          patch.object(orders, "resolve_new_videos",
+                       side_effect=[[], [video_item]])):
+        result = {}
+        okay = pipeline._render_generated(
+            cfg, state, {"videos": 1, "topic": "Roman aqueducts"},
+            runner=object(), echo=lambda *a, **k: None, result=result)
+    assert okay and result["videos"] == [video_item], result
+    argv = captured[0][1]
+    assert "--free-only" in argv and "--topic" in argv
+    assert argv[argv.index("--topic") + 1] == "Roman aqueducts"
+
+
+def t_pipeline_source_validation_and_media_qa():
+    """Only credential-free YouTube URLs and decodable upload media pass QA."""
+    import json as _json
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import orders
+    import pipeline
+
+    for url in (
+        "https://youtube.com/watch?v=abc123",
+        "https://www.youtube.com/shorts/abc123",
+        "https://m.youtube.com/watch?v=abc123",
+        "https://youtu.be/abc123?t=12",
+    ):
+        assert orders.is_youtube_source(url), url
+    for url in (
+        "ftp://youtu.be/abc123",
+        "https://youtube.com.evil.example/watch?v=abc123",
+        "https://user:pass@youtube.com/watch?v=abc123",
+        "https://youtu.be:444/abc123",
+        "https://youtube.com/watch?v=abc123&access_token=secret",
+        "https://youtube.com/watch?v=abc123&refresh_token=secret",
+    ):
+        assert not orders.is_youtube_source(url), url
+
+    cfg = tmp_cfg()
+    state = {"source": {}}
+    try:
+        pipeline._resolve_source(
+            cfg, {"source_url": "https://example.com/video"}, state)
+    except ValueError as exc:
+        assert "YouTube-only" in str(exc)
+    else:
+        raise AssertionError("non-YouTube pipeline URL was accepted")
+    assert not state["source"]
+
+    media = cfg.root / "candidate.mp4"
+    media.write_bytes(b"offline fixture, subprocesses are mocked")
+    ffprobe_ok = SimpleNamespace(
+        returncode=0,
+        stdout=_json.dumps({"streams": [{"codec_type": "video",
+                                         "codec_name": "h264",
+                                         "width": 1080, "height": 1920}]}),
+        stderr="")
+    ffmpeg_ok = SimpleNamespace(returncode=0, stdout="", stderr="")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return ffprobe_ok if len(calls) == 1 else ffmpeg_ok
+
+    with (patch.object(pipeline.subprocess, "run", side_effect=fake_run),
+          patch.object(pipeline.shutil, "which", return_value="/usr/bin/ffmpeg"),
+          patch("assembler.ffprobe_duration", return_value=5.0)):
+        okay, why = pipeline._media_probe(media)
+    assert okay, why
+    assert calls[0][0] == "ffprobe" and calls[1][0] == "/usr/bin/ffmpeg", calls
+    assert "-f" in calls[1] and "null" in calls[1]
+
+    audio_only = SimpleNamespace(
+        returncode=0,
+        stdout=_json.dumps({"streams": [{"codec_type": "audio",
+                                         "codec_name": "aac"}]}),
+        stderr="")
+    with patch.object(pipeline.subprocess, "run", return_value=audio_only):
+        okay, why = pipeline._media_probe(media)
+    assert not okay and "no video stream" in why, why
+
+    item = {"kind": "video", "id": "v1", "file": str(media),
+            "title": "A title", "description": "A description", "tags": ["one"]}
+    with patch.object(pipeline, "_media_probe", return_value=(True, "")):
+        okay, why = pipeline._verify_items([item], probe_media=True)
+        assert okay, why
+        too_long_title = {**item, "title": "x" * 101}
+        okay, why = pipeline._verify_items([too_long_title], probe_media=True)
+        assert not okay and "title" in why, why
+        too_long_description = {**item, "description": "x" * 5001}
+        okay, why = pipeline._verify_items([too_long_description], probe_media=True)
+        assert not okay and "description" in why, why
+        too_many_tags = {**item, "tags": ["x" * 501]}
+        okay, why = pipeline._verify_items([too_many_tags], probe_media=True)
+        assert not okay and "tags" in why, why
+
+
+def t_pipeline_recovery():
+    """Uncertain Studio commits require an owner check and update both journals."""
+    import argparse
+    import io
+    from contextlib import redirect_stdout
+    from unittest.mock import patch
+
+    import main as main_mod
+    import orders
+    import pipeline
+
+    cfg = tmp_cfg()
+    job_id = "reconcile-job"
+    key = "0123456789abcdef0123456789abcdef"
+    state = {"schema": 1, "id": job_id, "status": "needs_owner",
+             "sequence": 0, "steps": {}, "request": {"raw": "post one"},
+             "posts": [{"key": key, "status": "uncertain",
+                         "item": "video-1", "channel": "One"}],
+             "packet_paths": []}
+    orders._save_pipeline_job(cfg, state)
+    pipeline._save_ledger(cfg, {"entries": {
+        key: {"job_id": job_id, "status": "uncertain"}}})
+
+    okay, message = pipeline.reconcile(cfg, job_id, key, "unknown")
+    assert not okay and "outcome must be" in message
+    okay, message = pipeline.reconcile(cfg, job_id, key, "committed")
+    assert okay and "marked committed" in message
+    saved = orders.load_pipeline_job(cfg, job_id)
+    assert saved["posts"][0]["status"] == "committed", saved
+    assert saved["posts"][0]["result"]["manual_reconciliation"] is True
+    entry = pipeline._load_ledger(cfg)["entries"][key]
+    assert entry["status"] == "committed" and entry["result"]["committed"]
+    okay, message = pipeline.reconcile(cfg, job_id, key, "committed")
+    assert not okay and "not needed" in message
+
+    # The CLI adds an interactive exact phrase before reconciliation.
+    cli_cfg = tmp_cfg()
+    cli_state = {"schema": 1, "id": job_id, "status": "needs_owner",
+                 "sequence": 0, "steps": {}, "request": {"raw": "post one"},
+                 "posts": [{"key": key, "status": "uncertain",
+                             "item": "video-1", "channel": "One"}]}
+    orders._save_pipeline_job(cli_cfg, cli_state)
+    phrase = f"CONFIRM RECONCILE {job_id} committed {key[:12]}"
+
+    class TtyInput(io.StringIO):
+        def isatty(self):
+            return True
+
+    args = argparse.Namespace(job_id=job_id, key="", outcome="committed")
+    output = io.StringIO()
+    with (patch("main.sys.stdin", TtyInput(phrase + "\n")),
+          patch("pipeline.reconcile", return_value=(True, "reconciled")) as reconcile,
+          redirect_stdout(output)):
+        rc = main_mod.cmd_pipeline_reconcile(cli_cfg, args)
+    assert rc == 0 and "reconciled" in output.getvalue()
+    reconcile.assert_called_once_with(cli_cfg, job_id, key, "committed")
 
 
 def t_desktop_safety():
@@ -9737,7 +10077,7 @@ def _italian_studio_page():
     return {
         "https://studio.youtube.com/videos/upload": {
             "title": "Carica video - YouTube Studio",
-            "text": "Carica i video sul tuo canale",
+            "text": "Carica i video sul tuo canale. Il tuo video è stato pubblicato.",
             "elements": [
                 {"i": 0, "tag": "input", "role": "input",
                  "name": "(file upload)"},
@@ -10247,71 +10587,60 @@ def t_order_runner_accepts_strings():
 
 
 def t_order_partial_and_post_failure_status():
-    """Short output and per-channel upload failures cannot report success."""
-    from unittest.mock import patch
-
-    import orders
-
-    ids = [f"UC{i:022d}" for i in range(1, 6)]
-    cfg = tmp_cfg(desktop={"uploads": "on", "channels": [
-        {"name": f"Channel {i}",
-         "studio_url": f"https://studio.youtube.com/channel/{cid}"}
-        for i, cid in enumerate(ids, start=1)
-    ]})
-    clips_dir = Path(cfg.root) / "clips"
-    clips_dir.mkdir(parents=True, exist_ok=True)
-    items = []
-    for index in range(4):
-        path = clips_dir / f"clip-{index + 1}.mp4"
-        path.write_bytes(b"offline test clip")
-        items.append({"kind": "clip", "id": f"clip-{index + 1}",
-                      "file": str(path), "title": f"Clip {index + 1}",
-                      "description": "test"})
-
-    failed_posts = [{"ok": False, "committed": False,
-                     "channel": f"Channel {i + 1}", "item": items[i]["id"],
-                     "error": "Studio account chooser; no upload form"}
-                    for i in range(4)]
-    captured = {}
-
-    def runner(argv, log, cwd):
-        return 0, "clipper returned four acceptable moments"
-
-    def fake_posts(got_cfg, assignments, **kwargs):
-        captured["assignments"] = assignments
-        return {"posts": failed_posts}
-
-    order = orders.parse_order(
-        "get a link from the database, get 5 clips and post them in 5 channels")
-    with patch.object(orders, "resolve_new_clips", return_value=items), \
-         patch.object(orders, "_post_items", side_effect=fake_posts):
-        result = orders.execute(cfg, order, runner=runner,
-                                echo=lambda *a, **k: None)
-
-    assert result["ok"] is False, result
-    assert len(result["clips"]) == 4, result
-    assert len(captured["assignments"]) == 4, result
-    assigned = [a["channel"]["name"] for a in captured["assignments"]]
-    assert assigned == ["Channel 1", "Channel 2", "Channel 3", "Channel 4"], \
-        assigned
-    assert ("requested 5 clip(s), produced 4" in result["report"]), \
-        result["report"]
-    assert "Order incomplete" in result["report"], result["report"]
-
-    # The CLI/panel consumes this status as its exit code.
+    """The CLI returns nonzero for an incomplete durable pipeline job."""
+    from contextlib import redirect_stdout
     import argparse
     import io
-    from contextlib import redirect_stdout
+    from unittest.mock import patch
 
     import main as main_mod
+    import orders
 
-    args = argparse.Namespace(text=[order["raw"]], channels=0,
-                              plan_only=False, dry_run=False)
+    cfg = tmp_cfg()
+    sentence = "generate 1 video and stage it"
+    order = orders.parse_order(sentence)
+    result = {"ok": False, "job_id": "job-failure", "day": "2026-10-05",
+              "order": order, "steps": [], "clips": [], "parts": [],
+              "videos": [], "packets": [],
+              "posts": [{"ok": False, "committed": False,
+                         "channel": "One", "item": "video-1",
+                         "error": "media QA failed"}],
+              "errors": ["media QA failed"],
+              "report": "⚠️ Order incomplete — media QA failed."}
+    args = argparse.Namespace(
+        text=[sentence], channels=0, channel=None, no_default_channels=False,
+        visibility=None, rights_confirmed=False, altered_content=None,
+        made_for_kids=None, confirm_publish=False, panel_confirmed=False,
+        source_file=None, topic="Roman aqueducts", resume="",
+        plan_only=False, dry_run=False)
     output = io.StringIO()
-    with patch.object(orders, "execute", return_value=result), \
+    with patch("pipeline.run", return_value=result) as run_pipeline, \
          redirect_stdout(output):
         rc = main_mod.cmd_order(cfg, args)
     assert rc == 1, output.getvalue()
+    assert run_pipeline.called, "cmd_order must delegate to the durable pipeline"
+    assert run_pipeline.call_args.args[1]["topic"] == "Roman aqueducts"
+
+    # Legacy callers still reach the same durable executor, forwarding all
+    # execution controls rather than using the removed one-shot path.
+    wrapper_order = orders.parse_order("generate 1 video and stage it")
+    runner = lambda *a, **k: (0, "")
+    driver = object()
+    echo = lambda *a, **k: None
+    with patch("pipeline.run", return_value=result) as delegated:
+        wrapped = orders.execute(cfg, wrapper_order, dry_run=True,
+                                 runner=runner, driver=driver, echo=echo,
+                                 open_driver=False)
+    assert wrapped is result
+    delegated.assert_called_once_with(
+        cfg, wrapper_order, dry_run=True, runner=runner, driver=driver,
+        echo=echo, open_driver=False)
+    plan_order = {**wrapper_order, "plan_only": True}
+    with patch("pipeline.run",
+               side_effect=AssertionError("plan-only wrapper must not execute")) as delegated:
+        planned = orders.execute(cfg, plan_order, plan_only=True)
+    assert planned["ok"] and "PLAN ONLY" in planned["report"]
+    delegated.assert_not_called()
 
 
 def t_order_dry_run_and_viral_plan():
@@ -10342,20 +10671,19 @@ def t_order_dry_run_and_viral_plan():
     # CLI --dry-run must alter the printed plan as well as execution args.
     captured = {}
 
-    def fake_execute(got_cfg, got_order, dry_run=False):
-        captured.update(order=got_order, dry_run=dry_run)
+    def fake_run(got_cfg, got_order, dry_run=False, **kwargs):
+        captured.update(order=got_order, dry_run=dry_run, kwargs=kwargs)
         return {"ok": True, "report": "dry-run test stub"}
 
     args = argparse.Namespace(text=[sentence], channels=0,
                               plan_only=False, dry_run=True)
     buf = io.StringIO()
-    with patch.object(orders, "execute", fake_execute), \
-         redirect_stdout(buf):
+    with patch("pipeline.run", fake_run), redirect_stdout(buf):
         rc = main_mod.cmd_order(cfg, args)
     out = buf.getvalue()
     assert rc == 0 and captured["dry_run"] is True, captured
     assert captured["order"]["dry"] is True, captured
-    assert "5. no posting this run" in out and "5. POST: enabled" not in out, out
+    assert "5. no posting this run" in out and "POST: not yet authorized" not in out, out
     assert "DRY RUN still performs the clip/generate/stage steps" in out, out
     assert "Use --plan-only for a no-work preview" in out, out
     assert "Viral preference noted" in out, out
@@ -10364,14 +10692,14 @@ def t_order_dry_run_and_viral_plan():
     args = argparse.Namespace(text=[sentence], channels=0,
                               plan_only=True, dry_run=False)
     buf = io.StringIO()
-    with patch.object(orders, "execute",
-                      side_effect=AssertionError("plan-only must not execute")), \
+    with patch("pipeline.run",
+               side_effect=AssertionError("plan-only must not execute")), \
          redirect_stdout(buf):
         rc = main_mod.cmd_order(cfg, args)
     out = buf.getvalue()
     assert rc == 0 and "PLAN ONLY: nothing runs" in out, out
-    assert "normal run would publish (desktop.uploads: on)" in out, out
-    assert "5. POST: enabled" not in out, out
+    assert "normal run requires explicit publish confirmation" in out, out
+    assert "5. POST: not yet authorized" not in out, out
 
 
 def t_desktop_no_post_apis():
@@ -11407,6 +11735,7 @@ def main(argv: list[str] | None = None) -> int:
         ("pollinations_text", t_pollinations_text),
         ("heartbeat", t_heartbeat),
         ("image_chain", t_image_chain),
+        ("free_only_policy", t_free_only_policy),
         ("image_builders", t_image_builders),
         ("stock_lane", t_stock),
         ("director", t_director),
@@ -11494,6 +11823,7 @@ def main(argv: list[str] | None = None) -> int:
         ("key_pools", t_key_pools),
         ("panel_argmap", t_panel_argmap),
         ("panel_order_actions", t_panel_order_actions),
+        ("panel_confirmation_scope", t_panel_confirmation_scope),
         ("panel_no_button_without_route", t_panel_no_button_without_route),
         ("panel_mask", t_panel_mask),
         ("panel_events", t_panel_events),
@@ -11514,6 +11844,10 @@ def main(argv: list[str] | None = None) -> int:
         ("order_parse", t_order_parse),
         ("order_plan", t_order_plan),
         ("order_targets", t_order_targets),
+        ("pipeline_free_only_routing", t_pipeline_free_only_routing),
+        ("pipeline_source_validation_and_media_qa",
+         t_pipeline_source_validation_and_media_qa),
+        ("pipeline_recovery", t_pipeline_recovery),
         ("order_cli", t_order_cli),
         ("process_no_console_kwargs", t_process_no_console_kwargs),
         ("ffmpeg_windows_no_window_calls", t_ffmpeg_windows_no_window_calls),

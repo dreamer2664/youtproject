@@ -136,6 +136,12 @@
   }
   input[type=text]:focus, textarea:focus{outline:none; border-color:#41609f}
   .grid2{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+  .channels-grid{display:flex; flex-wrap:wrap; gap:8px}
+  .channel-pick{display:flex;align-items:center;gap:7px;padding:6px 10px;border:1px solid var(--line);border-radius:9px;background:#101629;color:var(--ink);font-size:12.5px}
+  .channel-pick input{width:auto;margin:0}
+  dialog.order-dialog{max-width:min(760px,94vw);max-height:88vh;background:#111827;color:var(--ink);border:1px solid #3a4c7a;border-radius:16px;padding:20px;box-shadow:0 24px 70px #000}
+  dialog.order-dialog::backdrop{background:rgba(0,0,0,.72);backdrop-filter:blur(3px)}
+  dialog.order-dialog pre{white-space:pre-wrap;max-height:42vh;overflow:auto;background:#0a0f1a;border:1px solid var(--line);border-radius:10px;padding:13px;font:12.5px/1.5 ui-monospace,Consolas,monospace}
   /* chat */
   .chatroles{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px}
   .chatlog{height:260px; overflow:auto; padding:8px 4px; border-top:1px dashed var(--line)}
@@ -206,10 +212,12 @@
     </div>
 
     <div class="optgroup" id="gen-opts" hidden>
+      <label class="note" style="display:block;margin-bottom:9px">Optional topic / prompt
+        <input type="text" id="gen-topic" placeholder="Leave blank to use the topic backlog">
+      </label>
       <div class="optline"><span class="optlabel">Images</span>
-        <span class="pill on" data-gen="route" data-v="stock">📷 Stock photos <small>(Pexels first)</small></span>
-        <span class="pill" data-gen="route" data-v="ai">🎨 AI images <small>(Gemini)</small></span>
-        <span class="pill" data-gen="route" data-v="free">🆓 Free AI <small>(Pollinations)</small></span>
+        <span class="pill on" data-gen="route" data-v="stock">📷 Free stock photos <small>(Pexels / Pixabay)</small></span>
+        <span class="pill" data-gen="route" data-v="free">🆓 Free AI images <small>(Pollinations)</small></span>
       </div>
       <div class="optline"><span class="optlabel">Style</span>
         <span class="pill on" data-gen="style" data-v="photoreal">photoreal</span>
@@ -272,7 +280,50 @@
     <h2>Publish <span style="text-transform:none; color:var(--dim2)">— one sentence: clip, assign, post</span></h2>
     <div class="row" style="margin-bottom:8px">
       <textarea id="ord-text" rows="2" style="flex:1; min-width:280px"
-        placeholder="get a link from the database, get 6 clips and post them in 5 channels">get a link from the database, get 6 clips and post them in 5 channels</textarea>
+        placeholder="generate 1 video about… or clip a source and stage it">generate 1 video about… or clip a source and stage it</textarea>
+    </div>
+    <label class="note" style="display:block;margin:8px 0">Generation topic / prompt (optional; used instead of the backlog for generated videos)
+      <input type="text" id="ord-topic" placeholder="e.g. How ancient Roman aqueducts were built — one focused 60-second story">
+    </label>
+    <div class="optgroup" id="ord-options">
+      <div class="grid2">
+        <label class="note">Exact YouTube destination(s)
+          <div id="ord-channels" class="channels-grid" style="margin-top:7px">
+            <span class="empty">loading configured channels…</span>
+          </div>
+        </label>
+        <label class="note">Visibility
+          <select id="ord-visibility" style="display:block;margin-top:7px;width:100%;font:inherit;color:var(--ink);background:#0f1526;border:1px solid var(--line);border-radius:10px;padding:9px 12px">
+            <option value="unlisted">Unlisted</option>
+            <option value="private">Private</option>
+            <option value="public">Public</option>
+          </select>
+        </label>
+      </div>
+      <div class="grid2" style="margin-top:10px">
+        <label class="note">Altered / synthetic content disclosure
+          <select id="ord-altered" style="display:block;margin-top:7px;width:100%;font:inherit;color:var(--ink);background:#0f1526;border:1px solid var(--line);border-radius:10px;padding:9px 12px">
+            <option value="">Choose after reviewing this video…</option>
+            <option value="yes">Yes — it contains altered/synthetic content</option>
+            <option value="no">No — it does not</option>
+          </select>
+        </label>
+        <label class="note">Audience
+          <select id="ord-kids" style="display:block;margin-top:7px;width:100%;font:inherit;color:var(--ink);background:#0f1526;border:1px solid var(--line);border-radius:10px;padding:9px 12px">
+            <option value="">Choose for this video…</option>
+            <option value="yes">Made for kids</option>
+            <option value="no">Not made for kids</option>
+          </select>
+        </label>
+      </div>
+      <label class="note" style="display:flex;gap:9px;align-items:flex-start;margin-top:10px">
+        <input type="checkbox" id="ord-rights" style="margin-top:3px;width:auto">
+        I own or have permission to use the source footage for this job.
+      </label>
+      <label class="note" style="display:block;margin-top:8px">Local source video path (optional)
+        <input type="text" id="ord-source-file" placeholder="C:\\Videos\\source.mp4 — otherwise use the source link/sheet">
+      </label>
+      <div class="note">These answers apply to this job only. If any required answer or exact channel is missing, the pipeline stages files and blocks publishing.</div>
     </div>
     <div class="row">
       <button class="ghost" id="ord-plan">🧾 Plan (free, runs nothing)</button>
@@ -351,6 +402,19 @@
   </section>
 </main>
 
+<dialog id="order-confirm-dialog" class="order-dialog">
+  <h2 style="margin:0 0 8px">Confirm this exact YouTube upload</h2>
+  <p id="order-confirm-summary" class="note"></p>
+  <pre id="order-confirm-plan"></pre>
+  <label class="note" id="order-confirm-phrase-label" style="display:block;margin:12px 0">
+    Type the exact confirmation phrase shown below:
+    <input type="text" id="order-confirm-phrase" autocomplete="off" style="margin-top:7px">
+  </label>
+  <div class="row">
+    <button class="gold" id="order-confirm-go" disabled>Confirm and start this job</button>
+    <button class="ghost" id="order-confirm-cancel">Cancel</button>
+  </div>
+</dialog>
 <div id="logpane"></div>
 <footer id="jobbar">
   <span class="status" id="job-status">idle</span>
@@ -367,7 +431,8 @@ const $ = (id) => document.getElementById(id);
 const COLORS = {Strategist:"var(--strat)", Analyst:"var(--anal)", Producer:"var(--prod)", Skeptic:"var(--skep)", Chair:"var(--chair)"};
 const $S = {
   gen:{route:"stock", style:"photoreal", seconds:"45", count:"1"},
-  src:null, chatRole:null, chatHistory:[], roles:[], jobId:null, tick:null
+  src:null, chatRole:null, chatHistory:[], roles:[], jobId:null, tick:null,
+  orderChannels:[], pendingOrder:null
 };
 
 /* ---------- tiny helpers ---------- */
@@ -478,11 +543,11 @@ document.querySelectorAll(".pill[data-gen]").forEach(p=>{
 });
 function updateGenNote(){
   const g = $S.gen;
-  const routeLabel = {stock:"real stock photos (Pexels → Pixabay → AI fallback)", ai:"AI images (Gemini)", free:"free AI images (Pollinations)"}[g.route];
-  $("gen-note").innerHTML = `Will run: <b>generate --count ${g.count} --seconds ${g.seconds} --style ${g.style} --image-provider ${g.route}</b><br>
-    Images: ${routeLabel}. This spends API quota (script, voice, images) — that's why it's a click here, not an accident.`;
+  const routeLabel = {stock:"free stock photos (Pexels / Pixabay)", free:"free AI images (Pollinations)"}[g.route] || "free image providers";
+  $("gen-note").innerHTML = `Will run: <b>generate --count ${g.count} --seconds ${g.seconds} --style ${g.style} --image-provider ${g.route} --free-only</b><br>
+    Images: ${routeLabel}. This panel action is pinned to free-only providers; public-service quotas and availability may still limit a run.`;
 }
-$("gen-start").onclick = () => run("generate", {...$S.gen});
+$("gen-start").onclick = () => run("generate", {...$S.gen, topic:$("gen-topic").value.trim()});
 
 /* ---------- make: sources ---------- */
 $("src-next").onclick = async () => {
@@ -573,20 +638,96 @@ function paintOrderNote(){
   const up = $S.uploads;
   const n = $("ord-note");
   if (up === undefined || up === null){
-    n.innerHTML = "uploads state unknown — Run behaves like the CLI (off by default unless config says otherwise).";
+    n.innerHTML = "uploads state unknown — publish confirmation will stay disabled until the local settings load.";
   } else if (up){
-    n.innerHTML = "⚠️ <b>uploads: ON</b> — Run will really publish. Every click is logged and screenshotted.";
+    n.innerHTML = "⚠️ <b>uploads: ON</b> — a real upload still requires the exact channel, visibility, per-video answers, and typed confirmation below.";
   } else {
-    n.innerHTML = "🔒 uploads: OFF — Run stages everything and stops before any publish click. Flip it with <code>/desk uploads on</code> in the bot, or <code>desktop.uploads: on</code> in config.yaml.";
+    n.innerHTML = "🔒 uploads: OFF — this order can generate and stage files, but the browser publish action is blocked.";
   }
 }
-$("ord-plan").onclick = ()=>{ if(!ordText()) return toast("write the order first"); run("order", {text: ordText(), plan_only: true}); };
-$("ord-dry").onclick  = ()=>{ if(!ordText()) return toast("write the order first"); run("order", {text: ordText(), dry_run: true}); };
-$("ord-run").onclick  = ()=>{
+async function loadOrderOptions(){
+  const options = await api("/api/order/options");
+  $S.orderChannels = options.channels || [];
+  $S.uploads = options.uploads;
+  if (options.visibility && $("ord-visibility")) $("ord-visibility").value = options.visibility;
+  const box = $("ord-channels");
+  box.textContent = "";
+  if (!$S.orderChannels.length){
+    box.textContent = "No configured YouTube Studio channels.";
+  } else {
+    for (const channel of $S.orderChannels){
+      const label = document.createElement("label");
+      label.className = "channel-pick";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.dataset.channelName = channel.name;
+      const span = document.createElement("span");
+      span.textContent = channel.id ? `${channel.name} (${channel.id})` : channel.name;
+      label.append(input, span);
+      box.appendChild(label);
+    }
+  }
+  paintOrderNote();
+}
+function orderParams(extra={}){
+  return {
+    text:ordText(),
+    topic:$("ord-topic").value.trim(),
+    channel_names:Array.from(document.querySelectorAll("#ord-channels input:checked"))
+      .map(input=>input.dataset.channelName),
+    visibility:$("ord-visibility").value,
+    altered_content:$("ord-altered").value || "",
+    made_for_kids:$("ord-kids").value || "",
+    rights_confirmed:$("ord-rights").checked,
+    source_file:$("ord-source-file").value.trim(),
+    ...extra
+  };
+}
+async function startOrder(){
   if(!ordText()) return toast("write the order first");
-  if ($S.uploads && !confirm("uploads is ON — this run will really publish to your channels.\n\nGo ahead?")) return;
-  run("order", {text: ordText()});
+  const params = orderParams();
+  const preview = await api("/api/order/plan", {params});
+  if (preview.error) return toast("✋ " + preview.error);
+  if (!preview.valid) return toast("I could not identify an operation in this request; nothing was started.");
+  if (preview.post_requested && preview.will_publish){
+    $S.pendingOrder = {params, token:preview.confirmation_token,
+                       phrase:preview.confirmation_phrase};
+    $("order-confirm-summary").textContent =
+      `You are authorizing the local Studio browser to upload to ${preview.channels.map(c=>c.name).join(", ")} with ${preview.visibility} visibility. This applies to this job only.`;
+    $("order-confirm-plan").textContent = preview.plan;
+    $("order-confirm-phrase-label").childNodes[0].textContent =
+      `Type exactly: ${preview.confirmation_phrase}`;
+    $("order-confirm-phrase").value = "";
+    $("order-confirm-go").disabled = true;
+    $("order-confirm-dialog").showModal();
+    $("order-confirm-phrase").focus();
+    return;
+  }
+  if (preview.post_requested && preview.blockers && preview.blockers.length){
+    toast("Publishing blocked; this run can only stage: " + preview.blockers.join("; "), 6000);
+  }
+  run("order", params);
+}
+$("order-confirm-phrase").addEventListener("input", ()=>{
+  const pending = $S.pendingOrder;
+  $("order-confirm-go").disabled = !pending || $("order-confirm-phrase").value !== pending.phrase;
+});
+$("order-confirm-go").onclick = ()=>{
+  const pending = $S.pendingOrder;
+  if (!pending || $("order-confirm-phrase").value !== pending.phrase) return;
+  const params = {...pending.params, confirmation_token:pending.token,
+                  confirm_publish:true};
+  $S.pendingOrder = null;
+  $("order-confirm-dialog").close();
+  run("order", params);
 };
+$("order-confirm-cancel").onclick = ()=>{
+  $S.pendingOrder = null;
+  $("order-confirm-dialog").close();
+};
+$("ord-plan").onclick = ()=>{ if(!ordText()) return toast("write the order first"); run("order", orderParams({plan_only:true})); };
+$("ord-dry").onclick  = ()=>{ if(!ordText()) return toast("write the order first"); run("order", orderParams({dry_run:true})); };
+$("ord-run").onclick  = startOrder;
 document.querySelectorAll("[data-order-tool]").forEach(b=>{
   b.onclick = ()=>run(b.dataset.orderTool, {});
 });
@@ -756,7 +897,7 @@ es.onmessage = (ev)=>{
 es.onerror = ()=>{ /* the page reconnects on its own */ };
 
 /* ---------- boot ---------- */
-refreshState(); loadLinks(); loadMinutes();
+refreshState(); loadLinks(); loadMinutes(); loadOrderOptions();
 setInterval(refreshState, 20000);
 document.addEventListener("keydown", e=>{ if (e.key === "Escape"){ $("gen-opts").hidden = $("src-opts").hidden = true; }});
 </script>

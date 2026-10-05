@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Free AI video generator with manual YouTube upload kits.
+"""Free AI video generator with local kits and an explicitly gated pipeline.
 
     python main.py preflight     check setup before anything else
     python main.py generate      AI script -> voice -> images -> subtitled MP4
@@ -37,17 +37,19 @@
     python main.py keys --advice  what each key lane powers + how to grow
     (full workflow: OPERATIONS.md)
 
-The generator prepares upload-ready files and has no YouTube Data API
-`videos.insert` upload endpoint. The `yt`/`snap` lanes make read-only public
-Data API calls. Manual upload through Studio does not use this project's API
-client.
+Standalone render/source commands still prepare local media and manual-upload
+kits. `order` runs the durable local pipeline for generation, clipping/parts,
+QA, staging, and—only after explicit per-job confirmation—the existing
+`desktop.py` Studio browser uploader. There is no YouTube Data API upload
+endpoint in this pipeline; `yt`/`snap` use the Data API read-only.
 
-Optional: the desktop lane (`desktop`, `order`) can operate YOUR OWN browser
-on your PC when explicitly enabled. This is automated access to YouTube, not
-an API upload, and the absence of an API upload client does not imply a policy
-exemption or approval; check YouTube's current Terms and obtain any required
-permission. The lane's publish click stays blocked until `desktop.uploads: on`
-and the order explicitly requests posting.
+Studio browser control is automated access to YouTube, not an API upload. The
+owner has affirmed prior written permission covering this local lane; that
+attestation is not independently verified in code or tests, so keep use within
+its scope. The commit gate also requires `desktop.uploads: on`, exact channel
+and visibility confirmation, source-rights attestation for source-derived
+work, and explicit per-video altered-content/audience answers. No live upload
+is run by the offline test suite.
 """
 
 from __future__ import annotations
@@ -68,8 +70,8 @@ from process_utils import no_console_kwargs
 
 BANNER = """\
 ======================================================================
-  Free AI video generator (manual-upload edition)
-  Cost: 0. No API uploads; browser use has separate policy rules.
+  Free AI video generator + gated local YouTube pipeline
+  No direct YouTube API uploads. Studio posts need exact per-job confirmation.
 ======================================================================
 """
 
@@ -418,6 +420,29 @@ def _reclaim_interrupted(queue: Queue, backlog_path: Path,
     return returned
 
 
+def _apply_free_only(cfg) -> None:
+    """Pin this render to free-only provider lanes and disable premium TTS."""
+    ai = cfg.data.setdefault("ai", {})
+    ai["free_only"] = True
+    ai["premium_voices"] = 0       # ElevenLabs remains off, use edge-tts
+    free_images = ("pexels", "pixabay", "pollinations")
+    preferred = str(ai.get("image_provider") or "pexels").strip().lower()
+    if preferred not in free_images:
+        preferred = "pexels"
+    fallbacks = [name for name in (ai.get("image_fallbacks") or [])
+                 if name in free_images and name != preferred]
+    fallbacks.extend(name for name in free_images
+                     if name != preferred and name not in fallbacks)
+    ai["image_provider"] = preferred
+    ai["image_fallbacks"] = fallbacks
+    ai["image_model"] = "flux"    # anonymous, documented free image model
+    ai["pollinations_model"] = "openai"  # anonymous free text lane
+    ai["vision_qc"] = False        # no metered vision calls
+    print("  [free-only] paid/metered LLM, Groq transcription, Gemini image/vision, "
+          "and premium voices are disabled; free public captions, stock/Pollinations "
+          "images, Pollinations/template text, and edge-tts remain available.\n")
+
+
 def cmd_generate(cfg, args) -> int:
     print(BANNER)
     if args.seconds is not None:
@@ -447,6 +472,8 @@ def cmd_generate(cfg, args) -> int:
         cfg.data["ai"]["gemini_api_key"] = ""
         cfg.data["ai"]["gemini_api_keys"] = []
         print("  [chain] gemini skipped (--no-gemini)\n")
+    if getattr(args, "free_only", False):
+        _apply_free_only(cfg)
 
     print(
         f"Settings for this run: {cfg.format} {cfg.width}x{cfg.height}, "
@@ -484,7 +511,8 @@ def cmd_generate(cfg, args) -> int:
         used.append(topic)
         print(f"[{number}/{count}] topic: {topic}  ({source})")
 
-        job = queue.add(topic)
+        job = queue.add(topic, pipeline_id=str(
+            getattr(args, "pipeline_id", "") or ""))
         new_ids.append(job.id)
         job_dir = cfg.work_dir / job.id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -911,7 +939,11 @@ def cmd_batch(cfg, args) -> int:
     import time
 
     print(BANNER)
-    topics: list[str] = []
+    topics: list[str | None] = []
+    topic_inputs = [str(x).strip() for x in (getattr(args, "topic", []) or [])
+                    if str(x).strip()]
+    if args.topics and topic_inputs:
+        die("use either --topics FILE or --topic PROMPT, not both")
     if args.topics:
         topics_path = Path(args.topics)
         if not topics_path.exists():
@@ -921,9 +953,21 @@ def cmd_batch(cfg, args) -> int:
                   if line.strip() and not line.strip().startswith("#")]
         if not topics:
             die(f"no topics in {topics_path} (one per line, # = comment).")
-    count = args.count or (len(topics) if topics else 3)
-    if not topics:
-        topics = [None] * count  # type: ignore[list-item] - auto-pick below
+        count = args.count or len(topics)
+    elif topic_inputs:
+        count = args.count or len(topic_inputs)
+        if len(topic_inputs) == 1 and count > 1:
+            seed = topic_inputs[0]
+            topics = [f"{seed} (variation {i} of {count}: choose a different specific story)"
+                      for i in range(1, count + 1)]
+        elif len(topic_inputs) == count:
+            topics = topic_inputs
+        else:
+            die("the number of --topic prompts must equal --count, unless one "
+                "prompt is supplied for generated variations")
+    else:
+        count = args.count or 3
+        topics = [None] * count
     topics = topics[:count]
     if args.dry_run:
         return _dry_run_batch(cfg, topics)
@@ -934,6 +978,8 @@ def cmd_batch(cfg, args) -> int:
         no_gemini=args.no_gemini, style=args.style,
         keep_work=args.keep_work, keep_going=True, verbose=args.verbose,
         image_provider=getattr(args, "image_provider", None),
+        free_only=bool(getattr(args, "free_only", False)),
+        pipeline_id=str(getattr(args, "pipeline_id", "") or ""),
     )
     results: list[tuple[str, str, str]] = []  # topic, status, detail
     for number, topic in enumerate(topics, start=1):
@@ -1245,6 +1291,8 @@ def cmd_jarvis(cfg, args) -> int:
 def cmd_clip(cfg, args) -> int:
     """Clip lane: one or many source videos -> N subtitled vertical clips."""
     print(BANNER)
+    if getattr(args, "free_only", False):
+        _apply_free_only(cfg)
     from clipper import ClipError, plan_clip_sources, run_clip
     from sheet import mark_sheet, take_pending
 
@@ -1312,6 +1360,8 @@ def cmd_clip(cfg, args) -> int:
 def cmd_parts(cfg, args) -> int:
     """Parts lane: one source video -> N 'Title - Part X' Shorts + kits."""
     print(BANNER)
+    if getattr(args, "free_only", False):
+        _apply_free_only(cfg)
     from clipper import ClipError, plan_clip_sources
     from parts import run_parts
 
@@ -2208,13 +2258,37 @@ def _print_page(cfg, url: str, action: str, backend: str | None,
 
 
 def cmd_order(cfg, args) -> int:
-    """One sentence → sheet clip + generate + stage + (gated) post."""
+    """One typed request → durable local pipeline → explicitly gated Studio upload."""
     import orders
+    import pipeline
 
     text = " ".join(args.text)
     order = orders.parse_order(text)
     if args.channels:
         order["channels"] = args.channels
+    raw_channels = getattr(args, "channel", None)
+    order["channel_names"] = list(raw_channels or [])
+    order["channel_selection_explicit"] = (
+        raw_channels is not None or bool(getattr(args, "no_default_channels", False)))
+    order["visibility"] = getattr(args, "visibility", None) or ""
+    order["rights_confirmed"] = bool(getattr(args, "rights_confirmed", False))
+    altered = getattr(args, "altered_content", None)
+    kids = getattr(args, "made_for_kids", None)
+    order["altered_content"] = None if altered is None else altered == "yes"
+    order["made_for_kids"] = None if kids is None else kids == "yes"
+    confirm_requested = bool(getattr(args, "confirm_publish", False))
+    panel_confirmed = bool(getattr(args, "panel_confirmed", False))
+    order["confirm_publish"] = False
+    order["source_file"] = str(getattr(args, "source_file", None) or "")
+    order["topic"] = str(getattr(args, "topic", "") or "").strip()
+    order["resume"] = str(getattr(args, "resume", "") or "")
+    if order["resume"]:
+        saved = orders.load_pipeline_job(cfg, order["resume"])
+        if saved is None:
+            print(f"Pipeline job {order['resume']} was not found or is corrupt.")
+            return 1
+        order = dict(saved.get("request") or order)
+        order["resume"] = str(getattr(args, "resume", "") or "")
     if getattr(args, "dry_run", False):
         order["dry"] = True
     if getattr(args, "plan_only", False):
@@ -2223,10 +2297,104 @@ def cmd_order(cfg, args) -> int:
     print(orders.plan_text(cfg, order))
     if args.plan_only:
         return 0
-    result = orders.execute(cfg, order, dry_run=args.dry_run)
-    print("")
-    print(result["report"])
-    return 0 if result["ok"] else 1
+    if (order.get("post") and not order.get("dry") and confirm_requested
+            and not order.get("resume")):
+        from desktop import dconf
+
+        ready = True
+        try:
+            selected = orders.resolve_selected_channels(cfg, order)
+        except ValueError as exc:
+            selected, ready = [], False
+            print(f"\nPublish confirmation unavailable: {exc}")
+        if not selected:
+            ready = False
+            print("\nPublish confirmation unavailable: no exact channel selected.")
+        if not dconf(cfg)["uploads"]:
+            ready = False
+            print("\nPublish confirmation unavailable: desktop.uploads is off.")
+        if bool(order.get("clips") or order.get("parts")) \
+                and not order.get("rights_confirmed"):
+            ready = False
+            print("\nPublish confirmation unavailable: source-rights attestation is missing.")
+        if order.get("altered_content") not in (True, False):
+            ready = False
+            print("\nPublish confirmation unavailable: choose --altered-content yes|no.")
+        if order.get("made_for_kids") not in (True, False):
+            ready = False
+            print("\nPublish confirmation unavailable: choose --made-for-kids yes|no.")
+        if ready:
+            names = [f"{c['name']} ({c['id']})" if c.get("id") else c["name"]
+                     for c in selected]
+            visibility = str(order.get("visibility") or dconf(cfg)["visibility"])
+            phrase = f"CONFIRM PUBLISH to {', '.join(names)} as {visibility}"
+            if panel_confirmed:
+                order["confirm_publish"] = True
+            elif not sys.stdin.isatty():
+                print("\nPublish refused: a terminal confirmation is required; "
+                      "this run will only stage files.")
+            else:
+                print("\nTo confirm this exact job, type this line exactly:")
+                print(phrase)
+                try:
+                    typed = input("> ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    typed = ""
+                if typed != phrase:
+                    print("\nConfirmation did not match; no work was started.")
+                    return 1
+                order["confirm_publish"] = True
+    result = pipeline.run(cfg, order, dry_run=args.dry_run,
+                          resume=bool(order["resume"]),
+                          job_id=order["resume"] or None)
+    print("\n" + result.get("report", ""))
+    return 0 if result.get("ok") else 1
+
+
+def cmd_pipeline_reconcile(cfg, args) -> int:
+    """Owner-confirmed recovery after manually checking YouTube Studio."""
+    import pipeline
+    import orders
+
+    state = orders.load_pipeline_job(cfg, args.job_id)
+    if state is None:
+        print(f"Pipeline job {args.job_id} was not found or is corrupt.")
+        return 1
+    unresolved = [p for p in (state.get("posts") or [])
+                  if p.get("status") in ("uploading", "uncertain")]
+    key = str(getattr(args, "key", "") or "").strip()
+    if not key:
+        if len(unresolved) != 1:
+            if not unresolved:
+                print("No unresolved upload attempt is recorded for this job.")
+                return 1
+            print("Several uploads are unresolved; use --key with one of these keys:")
+            for entry in unresolved:
+                print(f"  {entry.get('key')} — {entry.get('item')} → {entry.get('channel')} "
+                      f"({entry.get('status')})")
+            return 1
+        key = str(unresolved[0].get("key") or "")
+    entry = next((p for p in unresolved if p.get("key") == key), None)
+    if entry is None:
+        print("That key is not an unresolved upload in this job.")
+        return 1
+    phrase = f"CONFIRM RECONCILE {args.job_id} {args.outcome} {key[:12]}"
+    print(f"Studio check required: {entry.get('item')} → {entry.get('channel')}.")
+    if not sys.stdin.isatty():
+        print("Reconciliation refused without an interactive terminal.")
+        return 1
+    print("After checking the exact channel in Studio, type:")
+    print(phrase)
+    try:
+        typed = input("> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        typed = ""
+    if typed != phrase:
+        print("Confirmation did not match; no journal changes were made.")
+        return 1
+    okay, message = pipeline.reconcile(cfg, args.job_id, key, args.outcome)
+    print(message)
+    return 0 if okay else 1
 
 
 def cmd_wakeup(cfg, args) -> int:
@@ -2365,7 +2533,7 @@ def main() -> int:
                          MIN_CLIP_SECONDS)
 
     parser = argparse.ArgumentParser(
-        description="Free AI video generator (manual-upload edition).",
+        description="Free AI video generator with a gated local YouTube pipeline.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -2398,9 +2566,14 @@ def main() -> int:
                         "(Pollinations) — or a raw provider name "
                         "(pexels/pixabay/pollinations/gemini)")
     p.add_argument("--verbose", action="store_true")
+    p.add_argument("--pipeline-id", default="", help=argparse.SUPPRESS)
+    p.add_argument("--free-only", action="store_true",
+                   help="disable paid/metered providers and premium voice for this render")
 
     p = sub.add_parser("batch", help="render many videos unattended")
     p.add_argument("--topics", help="text file with one topic per line (# = comment)")
+    p.add_argument("--topic", action="append", default=[],
+                   help="explicit topic/prompt (repeatable; one may be varied across count)")
     p.add_argument("--count", type=int, default=0,
                    help="how many videos (default: all topics, or 3)")
     p.add_argument("--sleep", type=int, default=5,
@@ -2418,6 +2591,9 @@ def main() -> int:
     p.add_argument("--image-provider", dest="image_provider",
                    default=None,
                    help="stock | ai | free | a raw provider name")
+    p.add_argument("--pipeline-id", default="", help=argparse.SUPPRESS)
+    p.add_argument("--free-only", action="store_true",
+                   help="disable paid/metered providers and premium voice for this batch")
 
     p = sub.add_parser("topics", help="view/refill the topic backlog")
     p.add_argument("--topup", action="store_true",
@@ -2468,6 +2644,8 @@ def main() -> int:
                    help="skip the frame quality check")
     p.add_argument("--keep-work", action="store_true",
                    help="keep intermediate files (audio, frames, .ass)")
+    p.add_argument("--free-only", action="store_true",
+                   help="disable paid/metered model providers and premium voice")
     p.add_argument("--out", default=None, help="output folder (default clips/) ")
     p.add_argument("--sub-pos", choices=["default", "auto", "top", "middle",
                                          "bottom"], default="default",
@@ -2503,6 +2681,8 @@ def main() -> int:
                    help="episode cap; past it the target widens (default 50)")
     p.add_argument("--keep-work", action="store_true",
                    help="keep intermediate files (audio, .ass, frames)")
+    p.add_argument("--free-only", action="store_true",
+                   help="disable paid/metered model providers and premium voice")
     p.add_argument("--no-header", action="store_true",
                    help="skip the fading top title header for this run")
     p.add_argument("--out", default=None, help="output folder (default parts/)")
@@ -2832,16 +3012,45 @@ def main() -> int:
 
     p = sub.add_parser("order", help="one sentence → clips + videos + posts "
                                      "(see README: Orders)")
-    p.add_argument("text", nargs="+", help='e.g. "get a link from the '
-                                           'database, get 6 clips and post '
-                                           'them in 6 channels, and generate '
-                                           '2 videos for 2 channels"')
+    p.add_argument("text", nargs="+", help='e.g. "split this source into '
+                                           'parts and post them"')
     p.add_argument("--plan-only", action="store_true", dest="plan_only",
                    help="show the plan; run nothing")
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
-                   help="everything except the final publish click")
+                   help="render and stage but suppress the browser commit")
     p.add_argument("--channels", type=int, default=0,
-                   help="override how many channels to spread across")
+                   help="compatibility: use the first N configured channels")
+    p.add_argument("--channel", action="append", default=None,
+                   help="exact configured channel name or channel ID; repeatable")
+    p.add_argument("--no-default-channels", action="store_true",
+                   help=argparse.SUPPRESS)
+    p.add_argument("--visibility", choices=["public", "unlisted", "private"],
+                   default=None, help="visibility to show and set in Studio")
+    p.add_argument("--confirm-publish", action="store_true",
+                   help="expressly confirm the displayed upload plan")
+    p.add_argument("--rights-confirmed", action="store_true",
+                   help="attest you own/have permission to use each source")
+    p.add_argument("--altered-content", choices=["yes", "no"], default=None,
+                   help="per-job YouTube AI/altered-content answer after review")
+    p.add_argument("--made-for-kids", choices=["yes", "no"], default=None,
+                   help="per-job YouTube audience answer")
+    p.add_argument("--source-file", default=None,
+                   help="local source video for clip/parts instead of a sheet link")
+    p.add_argument("--topic", default="",
+                   help="explicit generation topic/prompt instead of the backlog")
+    p.add_argument("--resume", metavar="JOB_ID", default="",
+                   help="resume a saved local pipeline job; ambiguous uploads pause")
+    p.add_argument("--panel-confirmed", action="store_true",
+                   help=argparse.SUPPRESS)
+
+    p = sub.add_parser("pipeline-reconcile",
+                       help="reconcile an uncertain Studio upload after manually checking it")
+    p.add_argument("--job-id", required=True)
+    p.add_argument("--key", default="",
+                   help="upload ledger key; omitted only when one attempt is unresolved")
+    p.add_argument("--outcome", required=True,
+                   choices=["committed", "not-posted"],
+                   help="what you verified in Studio")
 
     p = sub.add_parser("autopost", help="post a finished video via Buffer")
     p.add_argument("file", nargs="?", help="video to post (default: newest .mp4 in out/)")
@@ -2907,6 +3116,7 @@ def main() -> int:
         "browser": cmd_browser,
         "desktop": cmd_desktop,
         "order": cmd_order,
+        "pipeline-reconcile": cmd_pipeline_reconcile,
     }
     return handlers[args.command](cfg, args)
 

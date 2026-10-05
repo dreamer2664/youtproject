@@ -859,7 +859,15 @@ class ChainedProvider:
 
 
 def get_provider(cfg: Config) -> ScriptProvider:
-    """Primary + fallbacks as a chain; template is always last, never fatal."""
+    """Primary + fallbacks; strict free-only jobs use only Pollinations/template."""
+    ai_cfg = (cfg.data.get("ai") or {}) if getattr(cfg, "data", None) else {}
+    if ai_cfg.get("free_only"):
+        from pollinations_text import PollinationsTextProvider
+
+        return ChainedProvider([
+            ("pollinations", PollinationsTextProvider("openai")),
+            ("template", TemplateProvider()),
+        ])
     primary = cfg.ai_provider
     if primary not in ("azure", "gemini", "groq", "openrouter", "deepseek",
                    "pollinations", "template"):

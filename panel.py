@@ -15,12 +15,11 @@ Deliberate constraints (do not relax these casually):
   * binds 127.0.0.1 by default — a local tool, not a web service;
   * one job at a time, in order — the queue is visible, nothing stacks
     up invisibly and two renders never fight over the same files;
-  * the panel's own buttons still never post; the Publish section drives
-    the same `order` lane as the CLI, which obeys desktop.uploads
-    (off = stage only). The gate is shown in the header, and the
-    real-run button asks before it starts.
-  * no publishing — the panel grew no direct upload code; uploads
-    stay manual (autopost/crew --live are not reachable from here);
+  * Generate/Clip/Parts never publish; the Publish section drives the same
+    durable `order` lane as the CLI. It previews exact channels/action and
+    requires a one-use typed phrase; desktop.uploads off = stage only.
+  * no direct uploader/API in the panel — confirmed posts use only the
+    existing desktop.py local Studio browser lane (not Buffer);
   * keys stay masked — the CLI already masks them; mask_line() is the
     second lock on the same door, because logs are shown on a page.
 
@@ -41,6 +40,7 @@ Routes (all JSON, all local):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import queue
@@ -64,6 +64,127 @@ HISTORY_KEEP = 25
 DEFAULT_PORT = 8765
 
 
+CONFIRM_TTL_SECONDS = 300
+_ORDER_CONFIRMATIONS: dict[str, dict] = {}
+_ORDER_CONFIRM_LOCK = threading.Lock()
+
+
+def _order_confirm_fingerprint(params: dict) -> str:
+    """Bind the one-use panel approval to the exact displayed request."""
+    fields = {
+        "text": str(params.get("text") or "").strip(),
+        "topic": str(params.get("topic") or "").strip(),
+        "channel_names": [str(x).strip() for x in (params.get("channel_names") or [])],
+        "visibility": str(params.get("visibility") or "").strip().lower(),
+        "rights_confirmed": bool(params.get("rights_confirmed")),
+        "altered_content": params.get("altered_content"),
+        "made_for_kids": params.get("made_for_kids"),
+        "source_file": str(params.get("source_file") or "").strip(),
+        "dry_run": bool(params.get("dry_run")),
+        "plan_only": bool(params.get("plan_only")),
+    }
+    encoded = json.dumps(fields, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _preview_order(cfg, params: dict) -> dict:
+    """Resolve a panel order without executing it; mint one-use consent token."""
+    import orders
+    from desktop import dconf
+
+    text = str(params.get("text") or "").strip()
+    if not text:
+        raise ValueError("write the order first")
+    order = orders.parse_order(text)
+    order.update({
+        "channel_names": [str(x).strip() for x in (params.get("channel_names") or [])
+                          if str(x).strip()],
+        "topic": str(params.get("topic") or "").strip(),
+        "channel_selection_explicit": True,
+        "visibility": str(params.get("visibility") or dconf(cfg)["visibility"]),
+        "rights_confirmed": bool(params.get("rights_confirmed")),
+        "altered_content": (None if params.get("altered_content") not in ("yes", "no")
+                            else params.get("altered_content") == "yes"),
+        "made_for_kids": (None if params.get("made_for_kids") not in ("yes", "no")
+                          else params.get("made_for_kids") == "yes"),
+        "source_file": str(params.get("source_file") or ""),
+        "dry": bool(params.get("dry_run")),
+        "plan_only": bool(params.get("plan_only")),
+        "confirm_publish": False,
+    })
+    try:
+        selected = orders.resolve_selected_channels(cfg, order) if order.get("post") else []
+        selection_error = ""
+    except ValueError as exc:
+        selected, selection_error = [], str(exc)
+    plan = orders.plan_text(cfg, order)
+    conf = dconf(cfg)
+    blockers = []
+    if not order.get("ok"):
+        blockers.append("the request does not contain a recognized operation")
+    if order.get("post"):
+        if selection_error:
+            blockers.append(selection_error)
+        if not selected:
+            blockers.append("select at least one exact YouTube channel")
+        if not conf["uploads"]:
+            blockers.append("desktop.uploads is off")
+        if order.get("dry") or order.get("plan_only"):
+            blockers.append("this is a dry/plan-only request")
+        if bool(order.get("clips") or order.get("parts")) and not order.get("rights_confirmed"):
+            blockers.append("source-use rights are not attested")
+        if order.get("altered_content") not in (True, False):
+            blockers.append("choose Yes or No for altered content")
+        if order.get("made_for_kids") not in (True, False):
+            blockers.append("choose Yes or No for the made-for-kids audience setting")
+        if str(order.get("visibility") or "").lower() not in ("public", "unlisted", "private"):
+            blockers.append("choose a valid visibility")
+    will_publish = bool(order.get("post") and not blockers)
+    token = ""
+    phrase = ""
+    channel_rows = [{"name": c.get("name", ""), "id": c.get("id", "")}
+                    for c in selected]
+    if will_publish:
+        token = uuid.uuid4().hex
+        phrase = ("CONFIRM PUBLISH to " + ", ".join(
+            f"{c['name']} ({c['id']})" if c.get("id") else c["name"]
+            for c in selected) + " as " + str(order["visibility"]).lower())
+        with _ORDER_CONFIRM_LOCK:
+            now = time.time()
+            for old in [key for key, value in _ORDER_CONFIRMATIONS.items()
+                        if value.get("expires", 0) < now]:
+                _ORDER_CONFIRMATIONS.pop(old, None)
+            _ORDER_CONFIRMATIONS[token] = {
+                "fingerprint": _order_confirm_fingerprint(params),
+                "expires": now + CONFIRM_TTL_SECONDS,
+                "phrase": phrase,
+            }
+    return {
+        "plan": plan, "valid": bool(order.get("ok")),
+        "post_requested": bool(order.get("post")),
+        "will_publish": will_publish, "uploads": conf["uploads"],
+        "channels": channel_rows,
+        "visibility": str(order.get("visibility") or "").lower(),
+        "blockers": blockers, "confirmation_token": token,
+        "confirmation_phrase": phrase,
+    }
+
+
+def _consume_order_confirmation(params: dict) -> tuple[bool, str]:
+    token = str(params.pop("confirmation_token", "") or "")
+    if not token:
+        return False, "publish confirmation is missing; preview and confirm the exact plan first"
+    with _ORDER_CONFIRM_LOCK:
+        confirmation = _ORDER_CONFIRMATIONS.pop(token, None)
+    if not confirmation or confirmation.get("expires", 0) < time.time():
+        return False, "publish confirmation expired or was already used; preview the plan again"
+    if confirmation.get("fingerprint") != _order_confirm_fingerprint(params):
+        return False, "publish request changed after confirmation; preview the exact plan again"
+    params["confirm_publish"] = True
+    params["panel_confirmed"] = True
+    return True, ""
+
+
 # --------------------------------------------------------------- actions
 def build_argv(action: str, params: dict | None = None) -> list[str]:
     """Turn a click into exact CLI args (pure, tested).
@@ -75,21 +196,29 @@ def build_argv(action: str, params: dict | None = None) -> list[str]:
     if action == "generate":
         count = max(1, min(10, int(p.get("count") or 1)))
         argv = ["generate", "--count", str(count)]
+        if p.get("topic"):
+            argv += ["--topic", str(p["topic"])]
         if p.get("seconds"):
             argv += ["--seconds", str(int(p["seconds"]))]
         if p.get("style") in ("photoreal", "cartoon", "stickman"):
             argv += ["--style", str(p["style"])]
         if p.get("route"):
             argv += ["--image-provider", str(p["route"])]
+        # Standalone panel generation follows the same no-paid provider policy
+        # as the durable order pipeline; explicit UI routes cannot enable a
+        # metered provider for this click.
+        argv.append("--free-only")
         return argv
     if action == "clip":
         url = (p.get("url") or "").strip()
-        return ["clip", "--url", url] if url else ["clip", "--sheet", "1"]
+        argv = ["clip", "--url", url] if url else ["clip", "--sheet", "1"]
+        argv.append("--free-only")
+        return argv
     if action == "parts":
         url = (p.get("url") or "").strip()
         if not url:
             raise ValueError("parts needs a source link")
-        return ["parts", "--url", url]
+        return ["parts", "--url", url, "--free-only"]
     if action == "meeting":
         kind = p.get("kind") if p.get("kind") in ("act", "stats", "pick") else "act"
         argv = ["meeting", kind, "--no-send"]
@@ -105,14 +234,31 @@ def build_argv(action: str, params: dict | None = None) -> list[str]:
     if action == "order":
         text = (p.get("text") or "").strip()
         if not text:
-            raise ValueError("the order needs words — e.g. \"get a link from "
-                             "the database, get 6 clips and post them in 5 "
-                             "channels\"")
-        argv = ["order", text]
+            raise ValueError("the order needs words — e.g. \"generate 1 video and stage it\"")
+        argv = ["order", text, "--no-default-channels"]
+        if p.get("topic"):
+            argv += ["--topic", str(p["topic"])]
         if p.get("plan_only"):
             argv.append("--plan-only")
         elif p.get("dry_run"):
             argv.append("--dry-run")
+        for channel in p.get("channel_names") or []:
+            if str(channel).strip():
+                argv += ["--channel", str(channel).strip()]
+        if p.get("visibility"):
+            argv += ["--visibility", str(p["visibility"])]
+        if p.get("rights_confirmed"):
+            argv.append("--rights-confirmed")
+        if p.get("altered_content") in ("yes", "no"):
+            argv += ["--altered-content", str(p["altered_content"])]
+        if p.get("made_for_kids") in ("yes", "no"):
+            argv += ["--made-for-kids", str(p["made_for_kids"])]
+        if p.get("source_file"):
+            argv += ["--source-file", str(p["source_file"])]
+        if p.get("resume"):
+            argv += ["--resume", str(p["resume"])]
+        if p.get("confirm_publish"):
+            argv += ["--confirm-publish", "--panel-confirmed"]
         return argv
     if action == "desktop_status":
         return ["desktop", "status"]
@@ -743,6 +889,14 @@ def make_handler(cfg, hub: Hub, runner: Runner):
                             "out_dir": str(cfg.out_dir),
                             "sheet_path": str(cfg.sources_sheet)})
                 return
+            if route.path == "/api/order/options":
+                import orders
+                from desktop import dconf
+
+                self._json({"channels": orders.channel_list(cfg),
+                            "visibility": dconf(cfg)["visibility"],
+                            "uploads": dconf(cfg)["uploads"]})
+                return
             if route.path == "/api/links":
                 self._json({"rows": links_payload(cfg)})
                 return
@@ -759,10 +913,22 @@ def make_handler(cfg, hub: Hub, runner: Runner):
         def do_POST(self) -> None:  # noqa: N802
             route = urlparse(self.path).path
             data = self._body()
+            if route == "/api/order/plan":
+                params = data.get("params") if isinstance(data.get("params"), dict) else {}
+                try:
+                    self._json(_preview_order(cfg, params))
+                except ValueError as exc:
+                    self._json({"error": str(exc)}, 400)
+                return
             if route == "/api/run":
                 action = str(data.get("action") or "")
-                params = data.get("params") if isinstance(
-                    data.get("params"), dict) else {}
+                params = dict(data.get("params") if isinstance(
+                    data.get("params"), dict) else {})
+                if action == "order" and params.get("confirm_publish"):
+                    okay, why = _consume_order_confirmation(params)
+                    if not okay:
+                        self._json({"error": why}, 400)
+                        return
                 try:
                     job = runner.submit(action, params)
                 except ValueError as exc:
@@ -1148,9 +1314,8 @@ def serve(cfg, host: str = "127.0.0.1", port: int = DEFAULT_PORT,
     print(f"  [panel] {url}  (Ctrl+C stops it)")
     print("  [panel] every button runs the real CLI — same behavior as "
           "the terminal")
-    print("  [panel] no upload code in this app: the Publish section drives "
-          "the same `order` lane,\n  [panel] and that lane only publishes when "
-          "desktop.uploads is on (off = stage only, always)")
+    print("  [panel] Publish uses the existing local Studio browser lane only "
+          "after exact per-job confirmation; desktop.uploads off = stage only.")
     if host not in ("127.0.0.1", "localhost", "::1"):
         print("  [panel] WARNING: bound beyond this machine — anyone who "
               "can reach this port can click these buttons")

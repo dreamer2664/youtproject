@@ -32,6 +32,7 @@ class Job:
     package_dir: str = ""
     published_url: str = ""
     error: str = ""
+    pipeline_id: str = ""
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -72,8 +73,9 @@ class Queue:
         tmp.replace(self.path)
 
     # -- operations ------------------------------------------------------
-    def add(self, topic: str) -> Job:
-        job = Job(id=uuid.uuid4().hex[:12], topic=topic)
+    def add(self, topic: str, pipeline_id: str = "") -> Job:
+        job = Job(id=uuid.uuid4().hex[:12], topic=topic,
+                  pipeline_id=str(pipeline_id or ""))
         self.jobs.append(job)
         self.save()
         return job
