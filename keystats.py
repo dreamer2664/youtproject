@@ -27,7 +27,7 @@ from process_utils import no_console_kwargs
 ORDER = ["gemini", "groq", "openrouter", "deepseek", "elevenlabs", "pexels",
          "pixabay", "youtube", "pollinations"]
 
-# Free-tier limits, re-verified 2026-10-02 (sources in CAPACITY.md).
+# Free-tier limits, re-verified 2026-10-02; YouTube quota scope corrected 2026-10-05 (CAPACITY.md).
 LIMITS = {
     "gemini": {
         "title": "GEMINI",
@@ -70,8 +70,10 @@ LIMITS = {
         "rule": "~100 requests/minute per key · no published monthly cap"},
     "youtube": {
         "title": "YOUTUBE DATA API",
-        "day": 10000, "unit": "units",
-        "rule": "10,000 quota units/day per key · resets midnight US Pacific",
+        "day": 10000, "search_day": 100, "unit": "units",
+        "rule": "10,000 units/day per Cloud project; separate 100 "
+                "search.list calls/day/project (1 unit/call); project keys "
+                "share quota · resets midnight US Pacific",
         "tz": "pac"},
     "pollinations": {
         "title": "POLLINATIONS",
@@ -80,7 +82,7 @@ LIMITS = {
 }
 
 # What each lane is good for + how to actually add capacity
-# (re-verified 2026-10-02; plain truths, sources in CAPACITY.md).
+# (general notes re-verified 2026-10-02; YouTube corrected 2026-10-05).
 ADVICE = {
     "gemini": [
         "Powers: scripts + titles + fact-check + boardroom Strategist "
@@ -115,9 +117,13 @@ ADVICE = {
         "ADDING CAPACITY: the free grant is balance-based — check "
         "platform.deepseek.com; top-ups are cheap if it ever runs dry."],
     "youtube": [
-        "Powers: snap stats (3 units/channel/day) + yt search (100).",
-        "10,000 units/day is far beyond this stack's use — one key "
-        "is enough; a second from another Cloud project is spare."],
+        "Powers: snap stats (~3 units/channel/run) + yt search (1 unit/call, "
+        "with a separate 100 search.list calls/day/project bucket).",
+        "The standard 10,000-unit pool and search bucket are PROJECT-level; "
+        "keys in a project share them. This ledger is per-key and cannot "
+        "infer project groupings or count other apps. Do not spread one "
+        "use case across projects to evade quota; on quota exhaustion, "
+        "stop and use cached/manual data until reset."],
     "pexels": [
         "Powers: real stock photos for the generate lane (the board's "
         "'make a video' action rides this).",
@@ -140,7 +146,7 @@ ADVICE = {
 def advice_report() -> str:
     """`keys --advice`: what each key does + how to add capacity."""
     lines = ["Key strategy — what each lane powers, and how to grow it",
-             "(free tiers re-verified 2026-10-02; sources in CAPACITY.md)",
+             "(free tiers re-verified 2026-10-02; YouTube corrected 2026-10-05)",
              ""]
     for provider in ORDER:
         if provider not in ADVICE:
@@ -157,8 +163,9 @@ def advice_report() -> str:
         "limits at zero minimum spend.",
         "  3. Gemini: extra keys from separate Google accounts/projects "
         "— each carries its own ~1,500/day pool (the legit multiplier).",
-        "  4. More accounts on any provider multiplies pools but rides "
-        "the ToS gray zone — know that's what it is.",
+        "  4. Extra accounts/projects are not a universal quota multiplier; "
+        "check each provider's rules. YouTube forbids spreading one API "
+        "use case across projects to increase quota.",
         "",
         "Rotating keys: revoke + re-create freely; the ledger tracks "
         "keys MASKED, so new keys just start fresh rows."]
@@ -237,12 +244,40 @@ def bump(provider: str, key: str, req: int = 0, tok: int = 0,
         pass
 
 
+def _normalize_legacy_youtube_search(event: dict) -> dict:
+    """Correct pre-2026-10-05 ledger rows without rewriting the ledger.
+
+    The old client uniquely recorded `search.list` as 100 units with the
+    generic `api` tag. The current official cost is 1 unit/call, so those
+    recognizable rows become one `yt-search` call when read.
+    """
+    if event.get("p") != "youtube" or event.get("tag") != "api":
+        return event
+    try:
+        units = int(event.get("units") or 0)
+        req = int(event.get("req") or 0)
+    except (TypeError, ValueError):
+        return event
+    if units != 100:
+        return event
+    normalized = dict(event)
+    normalized.update({"units": 1, "req": max(1, req), "tag": "yt-search"})
+    return normalized
+
+
 def window_sum(events: list[dict], provider: str,
-               since: datetime) -> dict[str, dict]:
-    """Per-key sums for one provider since a cutoff (pure, tested)."""
+               since: datetime, tag: str | None = None) -> dict[str, dict]:
+    """Per-key sums for one provider since a cutoff (pure, tested).
+
+    An optional tag isolates a call type. Legacy YouTube search rows are
+    normalized at read time so old ledger data remains accurate.
+    """
     sums: dict[str, dict] = {}
-    for event in events:
+    for raw_event in events:
+        event = _normalize_legacy_youtube_search(raw_event)
         if event.get("p") != provider:
+            continue
+        if tag is not None and event.get("tag") != tag:
             continue
         try:
             when = datetime.fromisoformat(str(event.get("t")))
@@ -346,18 +381,18 @@ def _fmt_audio(seconds: int) -> str:
 def _keys_note(count: int, shared: bool, provider: str = "") -> str:
     """Header suffix explaining what N keys actually buy (pure, tested).
 
-    The multi-key truth (CAPACITY.md, re-verified 2026-10-02): Groq and
-    OpenRouter pools are ACCOUNT/org-level, so extra keys on one account
-    add nothing — the aggregate below is capacity you do NOT have. Gemini,
-    YouTube, ElevenLabs, Pexels and Pixabay are per key/project, so the
-    aggregate is real. Saying which is which, right where the numbers are,
-    is the difference between a dashboard and a trap.
+    Groq and OpenRouter pools are account/org-level. YouTube is
+    Cloud-project-level, but the ledger does not know which configured keys
+    belong to the same project, so it must not multiply or aggregate quota.
     """
     if count < 2:
         return ""
     if provider == "groq":
         return (f"  ·  {count} keys, ACCOUNT-level pools — keys on one "
                 f"account share it; separately owned accounts do not")
+    if provider == "youtube":
+        return (f"  ·  {count} keys; project grouping is unknown, keys in one "
+                f"project share quota — no additive capacity shown")
     if shared:
         return (f"  ·  {count} keys, ONE shared pool — the extra keys add "
                 f"no capacity")
@@ -375,7 +410,10 @@ def build_status(cfg, now: datetime | None = None) -> str:
         spec = LIMITS[provider]
         keys = [k for k in _configured_keys(cfg, provider) if k]
         masks = [_mask(k) for k in keys]
-        day = window_sum(events, provider, _window(provider, now)[0])
+        day_start = _window(provider, now)[0]
+        day = window_sum(events, provider, day_start)
+        search_day = (window_sum(events, provider, day_start, tag="yt-search")
+                      if provider == "youtube" else {})
         month_sums: dict[str, dict] = {}
         if provider == "pexels":
             # The daily/hourly window above is NOT the month: Pexels shows
@@ -423,8 +461,16 @@ def build_status(cfg, now: datetime | None = None) -> str:
             elif provider in ("pollinations", "deepseek"):
                 # No published daily cap: report spend, not remaining.
                 lines.append(f"  {mask:<12} {row['req']} requests today")
+            elif provider == "youtube":
+                search_row = search_day.get(mask) or {"req": 0}
+                _, reset, label = _window(provider, now)
+                lines.append(
+                    f"  {mask:<12} {row['units']} units self-counted today · "
+                    f"{search_row['req']}/{spec['search_day']} search.list "
+                    f"calls self-counted · resets {label} "
+                    f"(in {_fmt_delta(reset - now)})")
             else:
-                unit = "units" if provider == "youtube" else "requests"
+                unit = "requests"
                 used, limit = (row["units"] if provider == "youtube"
                                else row["req"]), spec["day"]
                 _, reset, label = _window(provider, now)
@@ -454,19 +500,14 @@ def build_status(cfg, now: datetime | None = None) -> str:
                              f"{_fmt_audio(audio_used)} / "
                              f"~{_fmt_audio(spec['audio_day'])} today")
         elif (len(masks) > 1 and spec.get("day")
-              and provider not in ("elevenlabs", "groq")):
-            # PER-KEY pools (Gemini, YouTube, Pexels, Pixabay): with a wall
-            # of keys the individual rows are unreadable and the number
-            # that actually gates the day is the aggregate. This is
-            # capacity you really have — unlike a `shared` pool.
-            # ElevenLabs is skipped: its limit is per CALENDAR MONTH while
-            # this row sums a daily window, and its per-key rows already
-            # read "N chars this month / M left".
-            # Groq is skipped: its pool is per ACCOUNT (ai.groq_api_keys
-            # may hold several accounts), so multiplying the limit by the
-            # key count would invent capacity that does not exist.
-            unit = "units" if provider == "youtube" else "requests"
-            field = "units" if provider == "youtube" else "req"
+              and provider not in ("elevenlabs", "groq", "youtube")):
+            # PER-KEY pools (Gemini, Pexels, Pixabay): with a wall of keys
+            # the individual rows are unreadable and the aggregate is real.
+            # ElevenLabs is monthly; Groq is account-level; YouTube is
+            # project-level with unknown key grouping. Those must not get a
+            # multiplied aggregate row.
+            unit = "requests"
+            field = "req"
             used = sum((day.get(m) or {}).get(field, 0) for m in masks)
             capacity = int(spec["day"]) * len(masks)
             _, reset, label = _window(provider, now)
@@ -506,7 +547,8 @@ def month_totals(events: list[dict], now: datetime | None = None) -> dict:
     now = now or datetime.now(timezone.utc)
     cutoff = now - timedelta(days=30)
     out: dict = {}
-    for event in events:
+    for raw_event in events:
+        event = _normalize_legacy_youtube_search(raw_event)
         try:
             when = datetime.fromisoformat(str(event.get("t")))
         except ValueError:

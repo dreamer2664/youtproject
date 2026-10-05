@@ -470,17 +470,20 @@ DEFAULTS: dict[str, Any] = {
         "sheet": "sources/sheet.csv",
     },
     # `snap` stats tracker (public Data API, ~3 units/channel per run).
+    # Policy caveat: public non-authorized statistics may be limited to
+    # 30 days; this legacy 180-day default needs owner review (API-REPORT §11).
     "snap": {
         "recent": 10,        # videos shown per channel
         "fetch_limit": 50,   # newest uploads fetched + stored per channel
-        "keep_days": 180,    # daily history kept in work/snapshots.json
+        "keep_days": 180,    # legacy daily history in work/snapshots.json
     },
     "youtube": {
         # YouTube Data API v3 keys (https://console.cloud.google.com/apis/
-        # library/youtube.googleapis.com) — one Cloud project per key, each
-        # with its own free 10k-units/day pool. Powers `python main.py yt`:
-        # video/channel stats (1 unit) and Shorts niche search (100 units).
-        # Env: YOUTUBE_KEYS (space/comma-separated) wins.
+        # library/youtube.googleapis.com). Keys in one project share its
+        # 10,000 standard units/day and separate 100 search.list calls/day
+        # bucket (1 unit/call). Do not spread one use case across projects
+        # to evade quota. Usage is self-counted per key. Env YOUTUBE_KEYS
+        # (space/comma-separated) wins.
         "api_keys": [],
     },
     "crew": {
@@ -489,7 +492,7 @@ DEFAULTS: dict[str, Any] = {
         "cycle_minutes": 10,  # loop cadence; the stop file is checked more often
         "digest_hour": 21,  # local hour for the nightly Herald digest
         "premium_voices": 1,  # ElevenLabs videos/day, rest use edge-tts
-        "max_searches": 3,  # YouTube niche searches/day (100 units each)
+        "max_searches": 3,  # self-imposed searches/day; 1 unit/call, separate 100-call project bucket
     },
     "jarvis": {
         # Channel manager: `python main.py jarvis "..."` + Telegram /jarvis.

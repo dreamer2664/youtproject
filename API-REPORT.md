@@ -101,7 +101,7 @@ Assume the worst mix: all three sources are fresh/uncached and cut.
 | OpenRouter | 50 req/day on `:free` | 0 (last resort, chain order) | 0% |
 | Pexels / Pixabay | 200/h, 20k/mo · ~100/min | 0 | 0% |
 | ElevenLabs | 10k chars/mo per key | 0 | 0% |
-| YouTube Data API | 10,000 units/day/key | 0 | 0% |
+| YouTube Data API | 10,000 standard units/day/project; separate 100 `search.list` calls/day/project (1 unit/call) | 0 | 0% |
 | Pollinations | paced, no hard cap | 0 | 0% |
 
 **Conclusion: you can run long-form daily on every channel without
@@ -132,7 +132,7 @@ Legend: ✅ healthy · ⚠️ watch · 💤 dormant by design · 🪦 dead ·
 | 9 | **Pexels** | primary stock images | ✅ | 200/h + 20k/mo. Generate-lane only. |
 | 10 | **Pixabay** | stock fallback | 🫥→✅ | In code + `config.py` defaults (first fallback!), **undocumented in the example config** — your config.yaml likely has the old fallback list. **Fixed in this commit**: documented, and the example's `image_fallbacks` now matches the real default (`pixabay` first fallback). Add a key if you want the second stock lane. |
 | 11 | **ElevenLabs** | premium voice (generate lane) | 💤 | Off unless keys set; `crew.premium_voices` caps daily use. Untouched. |
-| 12 | **YouTube Data API v3** | `snap`, `yt` | ✅ | ~3-4 units/channel/day of 10,000. Long-form: 0 units. |
+| 12 | **YouTube Data API v3** | `snap`, `yt` | ✅ | ~3-4 units/channel/run from the shared 10,000-units/day Cloud-project pool. `search.list` is 1 unit/call with a separate 100-calls/day/project bucket. Long-form: 0 units. |
 | 13 | **youtube-transcript-api** | captions harvest | ✅ | Keyless. Cloud IPs are blocked; your residential PC is fine — this is why the lane runs on your machine, not a server. |
 | 14 | **yt-dlp** | source downloads | ✅ | Unmetered; bot-wall handled via cookies config. |
 | 15 | **Telegram** | bot, pregen phone queue | ✅ | Bot API is free at our volume. 50 MB/file cap — long-form is excluded from the phone queue on purpose. |
@@ -293,6 +293,35 @@ each change and are left as written. The suite has grown since: run
 green on CPython 3.11 and 3.13). Since the 138 note: the dead broll.py
 went away with its test, and these joined — Pollinations-402 fail-fast,
 the Whisper probe, `--probe --sample N`, and the stock/vision ledger
-tags. Nothing else in this report changes — the quota accounting is
-still measured against the same prompt builders, and the daily question
-is still "how many fresh audio-minutes did we transcribe today".
+tags. The later YouTube quota correction is recorded below.
+
+## 11. YouTube quota correction and policy gate (2026-10-05)
+
+The old client counted one `search.list` call as 100 units and attempted
+to rotate to another key on quota/rate errors. The current official rules
+are 10,000 standard quota units/day per Cloud project, plus separate
+100-calls/day/project buckets for `search.list` and `videos.insert`, at
+1 unit/call. Keys in a project share quota. This correction now counts
+search calls separately, corrects identifiable old `units=100` search
+ledger rows at read time (without rewriting the ledger), and stops on
+quota/rate errors rather than switching projects to bypass the limit.
+The self-counted ledger is per key and does not know project groupings or
+other applications' usage, so it intentionally does not claim exact
+project quota remaining. See the [official quota calculator](https://developers.google.com/youtube/v3/determine_quota_cost)
+and [Developer Policies guide](https://developers.google.com/youtube/terms/developer-policies-guide).
+
+**New cross-channel feature gate:** the current YouTube policies guide
+explicitly lists gamifying channel performance by ranking/tracking views
+between different channels, or stoking creator rivalries, as a prohibited
+API use. Do not build an API-powered cross-channel view contest, leaderboard,
+prize trigger, or derived view score unless the use case obtains the
+required policy review/permission. A manual, private Studio-entered scorecard
+is a possible lower API-data-risk alternative, not a legal determination.
+
+The existing public-key-only `snap` path also deserves an owner policy
+review before it is expanded: YouTube's policy limits retention of
+non-authorized API statistics to 30 days, while this repo's default
+`snap.keep_days` is 180. No existing snapshots were deleted, rewritten, or
+pruned in this correction; reducing retention can destroy user history and
+must be handled deliberately. The long-form lane itself still makes no
+YouTube Data API calls.

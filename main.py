@@ -1120,8 +1120,8 @@ def cmd_yt(cfg, args) -> int:
             "at https://console.cloud.google.com/apis/library/youtube.googleapis.com")
     client = YouTubeClient(cfg.youtube_api_keys)
     if args.search:
-        print(f"  [yt] niche search costs ~100 quota units "
-              f"(key has 10k/day).")
+        print("  [yt] search.list costs 1 unit and uses a separate "
+              "100-calls/day/project bucket.")
         results = search_shorts(client, args.search)
         for pos, item in enumerate(results, start=1):
             print(f"  {pos}. {item['title'][:70]} — {item['channel'][:30]} "
@@ -2603,7 +2603,7 @@ def main() -> int:
     p = sub.add_parser("yt", help="YouTube stats: video/channel lookup or Shorts niche search")
     p.add_argument("ref", nargs="?", help="video/channel URL, ID, or @handle (1 quota unit)")
     p.add_argument("--search", metavar="QUERY", default="",
-                   help="top Shorts for a niche query (~100 quota units)")
+                   help="top Shorts; 1 unit plus separate 100 calls/day/project bucket")
 
     p = sub.add_parser("stats", help="channel performance from Buffer")
     p.add_argument("--days", type=int, default=30, help="lookback window")
