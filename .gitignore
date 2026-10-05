@@ -1,6 +1,7 @@
 # ============================================================================
 #  SECRETS — never commit these. The repo is PUBLIC, so this matters.
-#  (There is no OAuth here at all; the only secret is the Gemini key.)
+#  Provider/API keys, bot tokens, and local config contain secrets; the
+#  optional desktop lane uses a separate signed-in browser profile.
 # ============================================================================
 .env
 .env.*

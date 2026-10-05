@@ -1,9 +1,8 @@
-# No Google/YouTube client libraries on purpose — this project has no upload
-# path (nothing can reach videos.insert), which is exactly why no audit or
-# verification can ever be required. The optional read-only stats commands
-# call the Data API over plain HTTPS, so no client library is needed.
-# (youtube-transcript-api below is keyless caption scraping, not the Data
-# API — no quota, no audit, no key.)
+# No Google/YouTube client libraries: there is no YouTube Data API video-
+# upload client; optional read-only stats use plain HTTPS. Manual Studio upload
+# is separate from the API client, and the optional browser lane does not imply
+# a policy/audit exemption. youtube-transcript-api uses captions without a
+# YouTube Data API key or quota.
 # Ceilings block breaking majors; minors float for security fixes.
 requests>=2.31.0,<3
 edge-tts>=7.2.8,<8   # 7.2+ required: older builds are 403-locked out of the service

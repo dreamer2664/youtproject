@@ -4812,6 +4812,8 @@ def t_dry_run_banner_once():
     # middle line instead.
     marker = "Free AI video generator (manual-upload edition)"
     assert marker in BANNER
+    assert "Audit required: none" not in BANNER
+    assert "browser use has separate policy rules" in BANNER.lower()
     for helper, call in (
             (_dry_run_batch, lambda: _dry_run_batch(cfg, ["t", None])),
             (_dry_run_schedule,
@@ -8999,7 +9001,8 @@ def _studio_page(publish_name="Publish",
             "title": "Upload - YouTube Studio",
             "text": "Upload videos to your channel",
             "elements": [
-                {"i": 0, "tag": "input", "role": "input", "name": "file"},
+                {"i": 0, "tag": "input", "role": "input", "name": "file",
+                 "input_type": "file"},
                 {"i": 1, "tag": "input", "role": "textbox",
                  "name": "Add a title (required)"},
                 {"i": 2, "tag": "div", "role": "textbox",
@@ -9297,6 +9300,8 @@ def t_desktop_loop():
 
 def t_desktop_post_one():
     """The posting sequence: staged without the flag, committed with it."""
+    import json as _json
+
     import desktop
 
     item = {"id": "c-aa11bb22-01", "file": __file__, "title": "Tiny Test",
@@ -9337,6 +9342,53 @@ def t_desktop_post_one():
     got = desktop.post_one(cfg_on, drv, item, channel,
                            echo=lambda *a, **k: None, pause=0)
     assert got["ok"] is False and "file input" in got["error"], got
+
+    # A generic login/search textbox is not a file picker.
+    text_url = "https://studio.youtube.com/videos/upload"
+    drv = ScriptedDriver(pages={text_url: {
+        "title": "Sign in",
+        "elements": [{"i": 0, "tag": "input", "role": "textbox",
+                      "name": "Email", "input_type": "text"}],
+        "text": "Sign in",
+    }})
+    got = desktop.post_one(cfg_on, drv, item, channel,
+                           echo=lambda *a, **k: None, pause=0)
+    assert got["ok"] is False and drv.files_set == [], got
+    assert "Email" in got["error"] and "file input" in got["error"], got
+
+    # A real failure shape from Studio: Run/POST was enabled, but navigation
+    # landed on the account chooser. It must fail before selecting a file or
+    # clicking Publish, while preserving a local screenshot and failure log.
+    picker_url = "https://studio.youtube.com/videos/upload"
+    picker = {picker_url: {
+        "title": "YouTube Studio",
+        "text": "Cambia account Torna a Studio",
+        "elements": [
+            {"i": 0, "tag": "button", "role": "button",
+             "name": "Cambia account"},
+            {"i": 1, "tag": "a", "role": "link",
+             "name": "Torna a Studio"},
+        ],
+    }}
+    drv = ScriptedDriver(pages=picker)
+    log_path = Path(cfg_on.root) / "work" / "desktop" / "picker.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    shot_dir = Path(cfg_on.root) / "work" / "desktop" / "shots" / "picker"
+    got = desktop.post_one(
+        cfg_on, drv, item, channel, run_log=desktop.RunLog(log_path),
+        shots=shot_dir, echo=lambda *a, **k: None, pause=0)
+    assert got["ok"] is False and not got["committed"], got
+    assert "account/channel chooser" in got["error"], got
+    assert ("no file was selected" in got["error"]
+            and "nothing was published" in got["error"]), got
+    assert "Cambia account" in got["error"] and "URL:" in got["error"], got
+    assert drv.files_set == []
+    assert not any("Publish" in x for x in drv.clicked), drv.clicked
+    assert got.get("shot") and Path(got["shot"]).is_file(), got
+    logged = [_json.loads(line) for line in log_path.read_text(
+        encoding="utf-8").splitlines()]
+    assert logged and logged[-1]["ok"] is False, logged
+    assert logged[-1]["shot"] == got["shot"], logged
 
 
 def t_snap_empty_channel():
@@ -9962,6 +10014,74 @@ def t_order_runner_accepts_strings():
         [sys.executable, "-c", "print('runner-path-object-ok')"],
         log, cfg.root)
     assert rc == 0 and "runner-path-object-ok" in tail, tail
+
+
+def t_order_partial_and_post_failure_status():
+    """Short output and per-channel upload failures cannot report success."""
+    from unittest.mock import patch
+
+    import orders
+
+    ids = [f"UC{i:022d}" for i in range(1, 6)]
+    cfg = tmp_cfg(desktop={"uploads": "on", "channels": [
+        {"name": f"Channel {i}",
+         "studio_url": f"https://studio.youtube.com/channel/{cid}"}
+        for i, cid in enumerate(ids, start=1)
+    ]})
+    clips_dir = Path(cfg.root) / "clips"
+    clips_dir.mkdir(parents=True, exist_ok=True)
+    items = []
+    for index in range(4):
+        path = clips_dir / f"clip-{index + 1}.mp4"
+        path.write_bytes(b"offline test clip")
+        items.append({"kind": "clip", "id": f"clip-{index + 1}",
+                      "file": str(path), "title": f"Clip {index + 1}",
+                      "description": "test"})
+
+    failed_posts = [{"ok": False, "committed": False,
+                     "channel": f"Channel {i + 1}", "item": items[i]["id"],
+                     "error": "Studio account chooser; no upload form"}
+                    for i in range(4)]
+    captured = {}
+
+    def runner(argv, log, cwd):
+        return 0, "clipper returned four acceptable moments"
+
+    def fake_posts(got_cfg, assignments, **kwargs):
+        captured["assignments"] = assignments
+        return {"posts": failed_posts}
+
+    order = orders.parse_order(
+        "get a link from the database, get 5 clips and post them in 5 channels")
+    with patch.object(orders, "resolve_new_clips", return_value=items), \
+         patch.object(orders, "_post_items", side_effect=fake_posts):
+        result = orders.execute(cfg, order, runner=runner,
+                                echo=lambda *a, **k: None)
+
+    assert result["ok"] is False, result
+    assert len(result["clips"]) == 4, result
+    assert len(captured["assignments"]) == 4, result
+    assigned = [a["channel"]["name"] for a in captured["assignments"]]
+    assert assigned == ["Channel 1", "Channel 2", "Channel 3", "Channel 4"], \
+        assigned
+    assert ("requested 5 clip(s), produced 4" in result["report"]), \
+        result["report"]
+    assert "Order incomplete" in result["report"], result["report"]
+
+    # The CLI/panel consumes this status as its exit code.
+    import argparse
+    import io
+    from contextlib import redirect_stdout
+
+    import main as main_mod
+
+    args = argparse.Namespace(text=[order["raw"]], channels=0,
+                              plan_only=False, dry_run=False)
+    output = io.StringIO()
+    with patch.object(orders, "execute", return_value=result), \
+         redirect_stdout(output):
+        rc = main_mod.cmd_order(cfg, args)
+    assert rc == 1, output.getvalue()
 
 
 def t_order_dry_run_and_viral_plan():
@@ -11161,6 +11281,8 @@ def main(argv: list[str] | None = None) -> int:
         ("process_no_console_kwargs", t_process_no_console_kwargs),
         ("ffmpeg_windows_no_window_calls", t_ffmpeg_windows_no_window_calls),
         ("order_runner_accepts_strings", t_order_runner_accepts_strings),
+        ("order_partial_and_post_failure_status",
+         t_order_partial_and_post_failure_status),
         ("order_dry_run_and_viral_plan", t_order_dry_run_and_viral_plan),
         ("desktop_safety", t_desktop_safety),
         ("desktop_lessons_playbooks", t_desktop_lessons_playbooks),
