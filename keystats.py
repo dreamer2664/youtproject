@@ -92,8 +92,7 @@ ADVICE = {
         "Quota scope: per project, not per API key. Keys in one project "
         "share limits; this key-only config and local ledger cannot infer "
         "project grouping or other clients' use. Do not treat key count as "
-        "a capacity estimate. API image generation is not on the free tier; "
-        "AI Studio web-UI image allowances are a separate product surface."],
+        "a capacity estimate."],
     "groq": [
         "Powers: Whisper transcription (the stack's binding constraint, "
         "~8h audio/day) + fast LLM answers (Llama/Qwen/gpt-oss) + "
