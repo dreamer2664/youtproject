@@ -76,6 +76,23 @@ BANNER = """\
 """
 
 
+def _configure_console_errors() -> None:
+    """Keep Unicode status/plan text from aborting Windows CLI runs.
+
+    Windows pipes can default to cp1252 even when the plan contains emoji or
+    other non-encodable symbols. Preserve the selected encoding, but replace
+    unsupported characters instead of raising UnicodeEncodeError.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def die(message: str, code: int = 1) -> None:
     print(f"\n\u274c {message}\n")
     sys.exit(code)
@@ -2529,6 +2546,7 @@ def cmd_keys(cfg, args) -> int:
 
 
 def main() -> int:
+    _configure_console_errors()
     from clipper import (MAX_CLIP_SECONDS, MAX_CLIPS_DEFAULT,
                          MIN_CLIP_SECONDS)
 

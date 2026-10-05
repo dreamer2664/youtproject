@@ -84,10 +84,24 @@ or account action was performed in this pass.
 
 ## Working-tree / history
 
-Branch: `fix/manual-pipeline-hardening`. The pipeline/docs/test pass is
-committed locally as `feat: add gated local YouTube pipeline`. This checkout
-initially had no configured remote; `origin` was restored from the documented
-clone URL, but the push was blocked because Git authentication is unavailable
-in this environment. No credential was inspected or printed, and no force-push
-was attempted. Preserve pre-existing mode-only changes to `hooks/pre-commit`
-and `setup.sh`; they were not included in the task commit.
+Branch: `fix/manual-pipeline-hardening`. The pipeline/docs/test pass was
+committed as `feat: add gated local YouTube pipeline` and transferred by bundle;
+the owner confirmed fetching and pushing it from their local checkout. The
+initial push attempt from this sandbox lacked Git authentication; no
+credential was inspected or printed and no force-push was attempted.
+
+## Windows test follow-up (2026-10-05)
+
+- The owner ran the suite on Windows: 209 passed, with `order_cli` failing on
+  cp1252 emoji output and `panel_launch` detecting an unrelated live Panel in
+  the default port scan.
+- `main.py` now configures CLI stdout/stderr to replace unencodable characters
+  instead of crashing; the `order_cli` regression explicitly forces cp1252.
+- The `panel_launch` test uses its own ephemeral port range so an already
+  running user's Panel cannot create a false failure.
+- Targeted regressions passed and the full offline suite again reports **211
+  passed, 0 failed**. These follow-up changes are prepared separately from the
+  already-pushed pipeline commit.
+
+Preserve the pre-existing mode-only changes to `hooks/pre-commit` and
+`setup.sh`; neither is part of the pipeline commit.

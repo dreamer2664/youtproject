@@ -8456,9 +8456,11 @@ def t_panel_launch():
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         return srv, srv.server_address[1]
 
-    cfg = tmp_cfg()
     foreign, fport = spin(Foreign)
     ours, oport = spin(Ours)
+    # Isolate the scan range from a real Panel the developer may have running
+    # on the default 8765 port while the smoke suite executes.
+    cfg = tmp_cfg(panel={"port": fport})
     try:
         assert panel.probe_ours("127.0.0.1", fport) is False   # not ours
         assert panel.probe_ours("127.0.0.1", oport) is True    # ours
@@ -10473,17 +10475,23 @@ def t_desktop_settings_override():
 
 
 def t_order_cli():
-    """The real CLI: plan-only works end to end without a browser."""
+    """Plan-only works through the real CLI, even with a Windows code page."""
+    import os
     import subprocess
     import sys as _sys
 
     cfg = tmp_cfg(desktop={"channels": [{"name": "Only Channel"}]})
     root = Path(__file__).resolve().parent
+    env = os.environ.copy()
+    # Reproduce Windows pipes that use cp1252: the plan contains emoji and
+    # arrows that must not crash the CLI while it prints the plan.
+    env["PYTHONIOENCODING"] = "cp1252"
     res = subprocess.run(
         [_sys.executable, "main.py", "--config", str(cfg.root / "config.yaml"),
          "order", "get a link from the database, get 6 clips and post them "
          "in 6 channels", "--plan-only"],
-        capture_output=True, text=True, timeout=120, cwd=str(root))
+        capture_output=True, text=True, encoding="cp1252", env=env,
+        timeout=120, cwd=str(root))
     assert res.returncode == 0, (res.returncode, res.stdout[-500:],
                                  res.stderr[-500:])
     assert "Only Channel" in res.stdout, res.stdout[-800:]
