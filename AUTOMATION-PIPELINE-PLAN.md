@@ -51,13 +51,13 @@ duplicate post on retry.
   runs generated videos, clips, and parts. URL sources are restricted to
   credential-free YouTube/youtu.be hosts; local source files remain allowed.
   Other destinations and third-party publisher adapters are out of scope.
-- **Free-only provider routing:** order subprocesses always receive
-  `--free-only`; standalone Panel Generate/Clip/Parts actions do too. Text is
-  Pollinations/template, images are limited to Pexels/Pixabay/Pollinations,
-  voice uses edge-tts, and metered LLM/Groq Whisper/Gemini image or vision/
-  premium voice routes are disabled. Transcription tries public YouTube
-  captions; if unavailable, the free-only clip/parts job stops rather than
-  calling Groq. Free-service quotas/availability can still limit work.
+- **Provider routing:** order subprocesses follow the configured provider
+  chain by default. Groq Whisper is preferred for transcription, with public
+  YouTube captions as fallback; the configured AI provider (Gemini by default)
+  handles moment selection and script work. Add `--free-only` to an order to
+  explicitly force the keyless Pollinations/template, caption, stock-image,
+  and edge-tts routes. Standalone Panel Generate/Clip/Parts actions remain
+  free-only. Provider quotas and account billing rules apply.
 - **QA and staging:** completed media is checked with ffprobe for video stream,
   codec, dimensions, and positive duration; ffmpeg performs a full decode when
   installed. Upload metadata bounds and artifact checksums are verified before

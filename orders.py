@@ -190,7 +190,11 @@ def plan_text(cfg, order: dict) -> str:
     for part in order.get("understood") or []:
         lines.append(f"  • {part}")
     lines.append("")
-    lines.append("Provider policy: free-only — Pollinations/template text, free stock/Pollinations images, and edge-tts; no paid or premium service is called (free-service quotas may limit availability).")
+    if order.get("free_only"):
+        lines.append("Provider policy: explicit --free-only — Pollinations/template text, public YouTube captions (Groq Whisper/Gemini disabled), free stock/Pollinations images, and edge-tts.")
+    else:
+        primary = str(getattr(cfg, "ai_provider", "gemini") or "gemini")
+        lines.append(f"Provider policy: configured provider chain (AI primary: {primary}); Groq Whisper first for transcription, with public YouTube captions as fallback. Provider quotas/account limits apply; pass --free-only to opt into keyless routes.")
     if order["get_link"]:
         if order.get("source_file"):
             lines.append(f"1. use the supplied local source file: {order['source_file']}")

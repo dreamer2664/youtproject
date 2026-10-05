@@ -105,5 +105,18 @@ credential was inspected or printed and no force-push was attempted.
   passed, 0 failed**. The owner fetched and pushed follow-up `1e6eb83`; this
   additional panel-test isolation refinement is prepared as another follow-up.
 
+## Provider-routing correction (2026-10-05)
+
+The owner clarified that configured Gemini keys are on a no-card free plan and
+that Groq Whisper should be preferred over YouTube captions. The initial
+pipeline's unconditional `--free-only` child flag contradicted that preference:
+it disabled Groq Whisper/Gemini and forced captions plus Pollinations/template.
+Follow-up changes remove that default from the order pipeline, add an explicit
+`--free-only` order opt-in, show the selected route in the plan, and test both
+modes. The order now follows the configured provider chain (Gemini is the
+sample/default AI primary; Groq Whisper precedes captions). Standalone Panel
+Generate/Clip/Parts actions remain explicitly free-only. Keys stay in the
+owner's local config/environment; no credentials are requested or copied.
+
 Preserve the pre-existing mode-only changes to `hooks/pre-commit` and
 `setup.sh`; neither is part of the pipeline commit.

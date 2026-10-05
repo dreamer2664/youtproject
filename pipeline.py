@@ -305,7 +305,12 @@ def _render_source_steps(cfg, state: dict, order: dict, source: dict,
             argv += ["--max-clips", str(max(1, min(10, request_count)))]
         elif request_count > 1:
             argv += ["--max-parts", str(max(1, min(50, request_count)))]
-        argv.append("--free-only")
+        # Respect the selected order policy. By default, the child clipper
+        # uses configured providers (Groq Whisper first; YouTube captions as
+        # fallback, and the configured script provider for moment selection).
+        # The strict keyless route is an explicit per-order opt-in.
+        if order.get("free_only"):
+            argv.append("--free-only")
         rc, tail = _run_step(cfg, state, kind,
                              f"{'clip up to ' + str(request_count) if kind == 'clips' else 'split source into parts'}",
                              argv, runner, echo)
@@ -345,8 +350,9 @@ def _render_generated(cfg, state: dict, order: dict, runner, echo,
     if len(items) < requested:
         missing = requested - len(items)
         argv = [os.sys.executable, "-u", main_py, "batch", "--count",
-                str(missing), "--sleep", "1", "--pipeline-id", state["id"],
-                "--free-only"]
+                str(missing), "--sleep", "1", "--pipeline-id", state["id"]]
+        if order.get("free_only"):
+            argv.append("--free-only")
         topic = str(order.get("topic") or "").strip()
         if topic:
             argv += ["--topic", topic]

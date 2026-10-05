@@ -2289,6 +2289,7 @@ def cmd_order(cfg, args) -> int:
         raw_channels is not None or bool(getattr(args, "no_default_channels", False)))
     order["visibility"] = getattr(args, "visibility", None) or ""
     order["rights_confirmed"] = bool(getattr(args, "rights_confirmed", False))
+    order["free_only"] = bool(getattr(args, "free_only", False))
     altered = getattr(args, "altered_content", None)
     kids = getattr(args, "made_for_kids", None)
     order["altered_content"] = None if altered is None else altered == "yes"
@@ -3036,6 +3037,8 @@ def main() -> int:
                    help="show the plan; run nothing")
     p.add_argument("--dry-run", action="store_true", dest="dry_run",
                    help="render and stage but suppress the browser commit")
+    p.add_argument("--free-only", action="store_true",
+                   help="opt in to keyless Pollinations/template and caption routes")
     p.add_argument("--channels", type=int, default=0,
                    help="compatibility: use the first N configured channels")
     p.add_argument("--channel", action="append", default=None,

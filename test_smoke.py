@@ -9524,8 +9524,8 @@ def t_order_targets():
 
 
 
-def t_pipeline_free_only_routing():
-    """Order subprocesses keep clips, parts, and prompts on free-only lanes."""
+def t_pipeline_provider_routing():
+    """Orders use configured keys by default; keyless free-only is opt-in."""
     from unittest.mock import patch
 
     import orders
@@ -9534,8 +9534,6 @@ def t_pipeline_free_only_routing():
     cfg = tmp_cfg()
     job_dir = cfg.root / "local-source.mp4"
     job_dir.write_bytes(b"fixture")
-    state = {"id": "free-routing", "sequence": 0, "steps": {},
-             "items": {"clips": [], "parts": [], "videos": []}}
     captured = []
 
     def fake_step(got_cfg, got_state, name, label, argv, runner, echo):
@@ -9546,35 +9544,60 @@ def t_pipeline_free_only_routing():
                  "title": "Clip", "description": "Description", "tags": []}
     part_item = {"kind": "part", "id": "p1", "file": str(job_dir),
                  "title": "Part", "description": "Description", "tags": []}
-    with (patch.object(pipeline, "_run_step", side_effect=fake_step),
-          patch.object(orders, "resolve_output_kits",
-                       side_effect=[[clip_item], [part_item]])):
-        result = {}
-        pipeline._render_source_steps(
-            cfg, state, {"clips": 1, "parts": 1},
-            {"file": str(job_dir)}, runner=object(), echo=lambda *a, **k: None,
-            result=result)
-    assert [name for name, _ in captured] == ["clips", "parts"]
-    assert all("--free-only" in argv for _, argv in captured), captured
-    assert "clip" in captured[0][1] and "parts" in captured[1][1]
+
+    def run_source_steps(free_only=False, suffix="default"):
+        captured.clear()
+        state = {"id": f"provider-routing-{suffix}", "sequence": 0,
+                 "steps": {},
+                 "items": {"clips": [], "parts": [], "videos": []}}
+        with (patch.object(pipeline, "_run_step", side_effect=fake_step),
+              patch.object(orders, "resolve_output_kits",
+                           side_effect=[[clip_item], [part_item]])):
+            result = {}
+            pipeline._render_source_steps(
+                cfg, state, {"clips": 1, "parts": 1,
+                            "free_only": free_only},
+                {"file": str(job_dir)}, runner=object(),
+                echo=lambda *a, **k: None, result=result)
+        return list(captured)
+
+    default_source = run_source_steps()
+    assert [name for name, _ in default_source] == ["clips", "parts"]
+    assert all("--free-only" not in argv for _, argv in default_source), \
+        default_source
+    assert "clip" in default_source[0][1] and "parts" in default_source[1][1]
+
+    strict_source = run_source_steps(True, "strict")
+    assert all("--free-only" in argv for _, argv in strict_source), strict_source
 
     generated = cfg.root / "generated.mp4"
     generated.write_bytes(b"generated fixture")
     video_item = {"kind": "video", "id": "v1", "file": str(generated),
                   "title": "Video", "description": "Description", "tags": []}
-    captured.clear()
-    state["steps"] = {}
-    with (patch.object(pipeline, "_run_step", side_effect=fake_step),
-          patch.object(orders, "resolve_new_videos",
-                       side_effect=[[], [video_item]])):
-        result = {}
-        okay = pipeline._render_generated(
-            cfg, state, {"videos": 1, "topic": "Roman aqueducts"},
-            runner=object(), echo=lambda *a, **k: None, result=result)
+
+    def run_generated(free_only=False, suffix="default"):
+        captured.clear()
+        state = {"id": f"provider-routing-video-{suffix}", "sequence": 0,
+                 "steps": {},
+                 "items": {"clips": [], "parts": [], "videos": []}}
+        with (patch.object(pipeline, "_run_step", side_effect=fake_step),
+              patch.object(orders, "resolve_new_videos",
+                           side_effect=[[], [video_item]])):
+            result = {}
+            okay = pipeline._render_generated(
+                cfg, state, {"videos": 1, "topic": "Roman aqueducts",
+                             "free_only": free_only},
+                runner=object(), echo=lambda *a, **k: None, result=result)
+        return okay, result, list(captured)
+
+    okay, result, default_generated = run_generated()
     assert okay and result["videos"] == [video_item], result
-    argv = captured[0][1]
-    assert "--free-only" in argv and "--topic" in argv
+    argv = default_generated[0][1]
+    assert "--free-only" not in argv and "--topic" in argv, argv
     assert argv[argv.index("--topic") + 1] == "Roman aqueducts"
+
+    okay, _, strict_generated = run_generated(True, "strict")
+    assert okay and "--free-only" in strict_generated[0][1], strict_generated
 
 
 def t_pipeline_source_validation_and_media_qa():
@@ -10505,7 +10528,21 @@ def t_order_cli():
     assert res.returncode == 0, (res.returncode, res.stdout[-500:],
                                  res.stderr[-500:])
     assert "Only Channel" in res.stdout, res.stdout[-800:]
+    assert "Groq Whisper first" in res.stdout, res.stdout[-1200:]
+    assert "AI primary: gemini" in res.stdout, res.stdout[-1200:]
     assert "PLAN ONLY: nothing runs" in res.stdout, res.stdout[-800:]
+
+    # Strict keyless routing is an explicit opt-in, not the order default.
+    res = subprocess.run(
+        [_sys.executable, "main.py", "--config", str(cfg.root / "config.yaml"),
+         "order", "get a link from the database, get 6 clips and post them "
+         "in 6 channels", "--plan-only", "--free-only"],
+        capture_output=True, text=True, encoding="cp1252", env=env,
+        timeout=120, cwd=str(root))
+    assert res.returncode == 0, (res.returncode, res.stdout[-500:],
+                                 res.stderr[-500:])
+    assert "explicit --free-only" in res.stdout, res.stdout[-1200:]
+    assert "Groq Whisper first" not in res.stdout, res.stdout[-1200:]
 
     res = subprocess.run([_sys.executable, "main.py", "--help"],
                          capture_output=True, text=True, timeout=60,
@@ -11862,7 +11899,7 @@ def main(argv: list[str] | None = None) -> int:
         ("order_parse", t_order_parse),
         ("order_plan", t_order_plan),
         ("order_targets", t_order_targets),
-        ("pipeline_free_only_routing", t_pipeline_free_only_routing),
+        ("pipeline_provider_routing", t_pipeline_provider_routing),
         ("pipeline_source_validation_and_media_qa",
          t_pipeline_source_validation_and_media_qa),
         ("pipeline_recovery", t_pipeline_recovery),

@@ -176,12 +176,13 @@ previews the plan and requires typing its exact one-use confirmation phrase.
 An uncertain post is never blindly retried: inspect that channel in Studio,
 then use `pipeline-reconcile` to record the verified result.
 
-The order pipeline always requests free-only provider routes. Standalone Panel
-Generate/Clip/Parts actions do too; Groq Whisper, Gemini image/vision, Azure,
-and premium voices are disabled for these jobs. Public YouTube captions are
-used for free-only transcription; if captions are unavailable, clipping/parts
-fail with a clear message rather than spending Groq transcription quota.
-Free-service quotas and availability can still limit a job.
+The order pipeline follows configured providers by default: Groq Whisper is
+preferred for transcription, with public YouTube captions as fallback; the
+configured AI provider (Gemini by default) handles clip selection and script
+work. Provider quotas and account billing rules still apply. Add `--free-only`
+to `python main.py order` to explicitly force the keyless Pollinations/template
+and captions route. Standalone Panel Generate/Clip/Parts actions remain
+free-only; the Publish section uses the order pipeline's configured route.
 
 This is **not** a live-service validation: the offline smoke suite passed, but
 no real render, provider request, Studio browser session, or live upload was
