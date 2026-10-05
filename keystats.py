@@ -1,10 +1,10 @@
 """API key usage ledger + quota dashboard (`python main.py keys`).
 
 Free APIs don't expose "tokens remaining" — so this module counts what WE
-spend: every provider call site bumps the ledger (work/usage_ledger.json),
-and the dashboard renders per-key usage against each provider's free-tier
-limit with refill times (Gemini/YouTube reset midnight US Pacific, Groq/
-OpenRouter midnight UTC, Pexels hourly, ElevenLabs monthly).
+spend: every provider call site bumps the ledger (work/usage_ledger.json).
+The dashboard shows self-counted use and only estimates remaining quota
+where the scope is known. Gemini and YouTube are project-scoped, but the
+ledger cannot map keys to projects or count other applications' usage.
 
 Design rules:
   * bump() NEVER raises and never slows a call — bookkeeping is optional.
@@ -27,14 +27,15 @@ from process_utils import no_console_kwargs
 ORDER = ["gemini", "groq", "openrouter", "deepseek", "elevenlabs", "pexels",
          "pixabay", "youtube", "pollinations"]
 
-# Free-tier limits, re-verified 2026-10-02; YouTube quota scope corrected 2026-10-05 (CAPACITY.md).
+# Free-tier scope re-verified 2026-10-05; Gemini and YouTube are
+# project-scoped, but this ledger cannot infer project groupings or external use.
 LIMITS = {
     "gemini": {
         "title": "GEMINI",
-        "day": 1500, "unit": "requests",
-        "rule": "~1,500 requests/day per PROJECT/key on Flash models "
-                "(3 Flash 10 RPM · 250k tokens/min · 3.1 Flash-Lite "
-                "1,000/day · Pro 50/day) · resets midnight US Pacific",
+        "unit": "requests",
+        "rule": "Rate limits are per project, not per API key; they vary "
+                "by model and usage tier. Keys in one project share quota. "
+                "This ledger cannot map projects or count other clients' use.",
         "tz": "pac"},
     "groq": {
         "title": "GROQ",
@@ -82,17 +83,16 @@ LIMITS = {
 }
 
 # What each lane is good for + how to actually add capacity
-# (general notes re-verified 2026-10-02; YouTube corrected 2026-10-05).
+# (Gemini/YouTube quota scope re-verified 2026-10-05; see CAPACITY.md).
 ADVICE = {
     "gemini": [
         "Powers: scripts + titles + fact-check + boardroom Strategist "
-        "(chain head). Models: Gemini 3 Flash (default), 3.1 Flash-Lite, "
-        "2.5 Flash — all ~1,500 requests/day per project.",
-        "ADDING CAPACITY: each Google ACCOUNT (and each Cloud project) "
-        "carries its own pool — extra keys from separate projects are "
-        "the one legit multiplier. API image generation is NOT on the "
-        "free tier; Nano Banana stills are free ~500/day in the AI "
-        "Studio web UI, not via API."],
+        "(chain head). Active limits vary by model and usage tier; check "
+        "the current project limits in Google AI Studio.",
+        "Quota scope: per project, not per API key. Keys in one project "
+        "share limits; this key-only config and local ledger cannot infer "
+        "project grouping or other clients' use. Do not treat key count as "
+        "a capacity estimate."],
     "groq": [
         "Powers: Whisper transcription (the stack's binding constraint, "
         "~8h audio/day) + fast LLM answers (Llama/Qwen/gpt-oss) + "
@@ -146,7 +146,7 @@ ADVICE = {
 def advice_report() -> str:
     """`keys --advice`: what each key does + how to add capacity."""
     lines = ["Key strategy — what each lane powers, and how to grow it",
-             "(free tiers re-verified 2026-10-02; YouTube corrected 2026-10-05)",
+             "(Gemini and YouTube quota scopes re-verified 2026-10-05)",
              ""]
     for provider in ORDER:
         if provider not in ADVICE:
@@ -161,8 +161,9 @@ def advice_report() -> str:
         "requests/day (beats 19 extra accounts, fully legit).",
         "  2. Groq: add a credit card -> Developer tier, ~10x rate "
         "limits at zero minimum spend.",
-        "  3. Gemini: extra keys from separate Google accounts/projects "
-        "— each carries its own ~1,500/day pool (the legit multiplier).",
+        "  3. Gemini: limits are per project and vary by model/tier; keys "
+        "in the same project share them. Check Google AI Studio — key count "
+        "alone cannot estimate remaining quota.",
         "  4. Extra accounts/projects are not a universal quota multiplier; "
         "check each provider's rules. YouTube forbids spreading one API "
         "use case across projects to increase quota.",
@@ -381,16 +382,16 @@ def _fmt_audio(seconds: int) -> str:
 def _keys_note(count: int, shared: bool, provider: str = "") -> str:
     """Header suffix explaining what N keys actually buy (pure, tested).
 
-    Groq and OpenRouter pools are account/org-level. YouTube is
-    Cloud-project-level, but the ledger does not know which configured keys
-    belong to the same project, so it must not multiply or aggregate quota.
+    Gemini and YouTube are project-scoped; the ledger cannot map keys to
+    projects, so neither may claim multiplied or remaining quota. Groq and
+    OpenRouter have account/org-level pools.
     """
     if count < 2:
         return ""
     if provider == "groq":
         return (f"  ·  {count} keys, ACCOUNT-level pools — keys on one "
                 f"account share it; separately owned accounts do not")
-    if provider == "youtube":
+    if provider in ("gemini", "youtube"):
         return (f"  ·  {count} keys; project grouping is unknown, keys in one "
                 f"project share quota — no additive capacity shown")
     if shared:
@@ -432,6 +433,10 @@ def build_status(cfg, now: datetime | None = None) -> str:
         lines.append(f"{spec['title']}  ·  {spec['rule']}"
                      + _keys_note(len(masks), bool(spec.get("shared")),
                                   provider))
+        if provider == "gemini":
+            source = getattr(cfg, "gemini_api_key_source", "unknown")
+            lines.append(f"  key source (values hidden): {source}; "
+                         f"{len(keys)} effective unique key(s)")
         if provider == "groq":
             lines.append(
                 f"  key split: Whisper×{len(cfg.groq_transcription_api_keys)}"
@@ -461,6 +466,16 @@ def build_status(cfg, now: datetime | None = None) -> str:
             elif provider in ("pollinations", "deepseek"):
                 # No published daily cap: report spend, not remaining.
                 lines.append(f"  {mask:<12} {row['req']} requests today")
+            elif provider == "gemini":
+                _, reset, label = _window(provider, now)
+                line = (f"  {mask:<12} {row['req']} requests "
+                        "self-counted today · no project-quota remainder estimate "
+                        f"· resets {label} (in {_fmt_delta(reset - now)})")
+                if row["tok"]:
+                    tok = row["tok"]
+                    tok_txt = f"~{tok // 1000}k" if tok >= 1000 else f"~{tok}"
+                    line += f" · {tok_txt} tokens estimated"
+                lines.append(line)
             elif provider == "youtube":
                 search_row = search_day.get(mask) or {"req": 0}
                 _, reset, label = _window(provider, now)
@@ -487,6 +502,12 @@ def build_status(cfg, now: datetime | None = None) -> str:
                     lines.append(
                         f"    Whisper audio: {_fmt_audio(row['audio'])} / "
                         f"~{_fmt_audio(spec['audio_day'])} per account today")
+        if provider == "gemini":
+            # This total is local observed traffic only: it is not a project
+            # quota bucket because keys may share projects and model limits.
+            local_total = sum((day.get(m) or {}).get("req", 0) for m in masks)
+            lines.append(f"  {'local total':<12} {local_total} requests "
+                         "self-counted today (not remaining project quota)")
         if spec.get("shared"):
             total = sum((day.get(m) or {}).get("req", 0) for m in masks)
             _, reset, label = _window(provider, now)
@@ -501,11 +522,11 @@ def build_status(cfg, now: datetime | None = None) -> str:
                              f"~{_fmt_audio(spec['audio_day'])} today")
         elif (len(masks) > 1 and spec.get("day")
               and provider not in ("elevenlabs", "groq", "youtube")):
-            # PER-KEY pools (Gemini, Pexels, Pixabay): with a wall of keys
-            # the individual rows are unreadable and the aggregate is real.
-            # ElevenLabs is monthly; Groq is account-level; YouTube is
-            # project-level with unknown key grouping. Those must not get a
-            # multiplied aggregate row.
+            # PER-KEY pools (Pexels/Pixabay): with a wall of keys the
+            # individual rows are unreadable and the aggregate is real.
+            # ElevenLabs is monthly; Groq is account-level; Gemini and
+            # YouTube are project-level with unknown key grouping. Those must
+            # not get a multiplied aggregate row.
             unit = "requests"
             field = "req"
             used = sum((day.get(m) or {}).get(field, 0) for m in masks)

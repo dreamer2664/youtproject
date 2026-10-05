@@ -403,14 +403,19 @@ class GeminiProvider:
     def _try_model(self, model: str, payload: dict, tag: str = "script") -> tuple[dict | None, int, str]:
         """One model, with retries across keys. Returns (result, status, error)."""
         keys = keypool.live("gemini", self.api_keys)
+        if not keys:
+            return (None, -2,
+                    "No live Gemini API keys remain; every configured key "
+                    "was rejected earlier in this process.")
         last_status = 0
         last_error = ""
-        # 429 budget: every key gets one immediate shot (spent per-key quota
-        # is the common case), minimum 3 attempts like the single-key days.
+        # Google scopes Gemini limits per project, not per API key. Project
+        # IDs are not present in this key-only config, so each key gets one
+        # immediate shot as a best-effort chance that it belongs to another
+        # project. Keys within a shared project will still share the 429.
         failover_after = max(3, len(keys))
-        # Sweep every independently-quota'd key once before falling back;
-        # keep the legacy retry patience, plus three delayed retries after
-        # a large pool's first sweep.
+        # Sweep all configured keys once before falling back; keep the legacy
+        # retry patience, plus three delayed retries after the first sweep.
         attempt_budget = max(self.MAX_RETRIES, len(keys) + 3)
         tried_429 = 0
         net_errors = 0
@@ -471,9 +476,11 @@ class GeminiProvider:
                     continue
                 return None, last_status, last_error
 
-            # 429: rotate immediately (a different key = a different quota
-            # bucket; sleeping helps nothing). Every key 429'd -> the model
-            # itself is saturated, fail over to the next model.
+            # 429: rotate immediately without sleeping. A different key only
+            # helps if it belongs to a project with remaining quota; keys in
+            # the same project share limits. The key-only config has no
+            # project mapping, so try the pool once, then move to the next
+            # model/provider.
             if response.status_code == 429:
                 tried_429 += 1
                 keys.append(keys.pop(0))
@@ -482,10 +489,11 @@ class GeminiProvider:
                 continue
 
             if response.status_code in self.RETRYABLE and attempt < attempt_budget:
-                # A different key sometimes routes around a saturated shard,
-                # and trying it costs nothing — so every key gets one INSTANT
-                # shot before anyone sleeps. (The old code slept ~107s on the
-                # first key and never tried the rest, then dropped a model.)
+                # A different project/key may route around a transiently
+                # saturated path, so give each configured credential one
+                # immediate chance before backoff. This is best-effort only:
+                # keys in the same project share quota, and failed requests
+                # are still requests. (The old code slept ~107s on key one.)
                 keys.append(keys.pop(0))
                 if attempt >= len(keys):
                     # Second sweep: all keys failed once, back off now.
@@ -515,7 +523,7 @@ class GeminiProvider:
 
             last_status, last_error = status, error
 
-            if status == -1:
+            if status in (-1, -2):
                 raise RuntimeError(f"{error} — failing over to the next provider.")
             if status in (400, 401, 403):
                 hint = ""
@@ -538,10 +546,26 @@ class GeminiProvider:
                 f"ID such as 'gemini-flash-lite-latest'. Last error: {last_error}"
             )
         detail = last_error if last_status == 0 else f"HTTP {last_status}"
+        if last_status == 429:
+            cause = (
+                "Rate/quota limit, not evidence of an invalid API key. "
+                "Google scopes Gemini limits per project (and model/tier), "
+                "so keys in the same project share them. Check the active "
+                "limits and project association in Google AI Studio; a short-"
+                "window limit may clear with backoff, while an exhausted "
+                "daily limit waits for its reset."
+            )
+        elif last_status in (500, 502, 503, 504):
+            cause = ("Transient Gemini service capacity error, not evidence "
+                     "that the API keys are invalid. Retry later.")
+        elif last_status == 0:
+            cause = ("Network timeout/error, not evidence that the API keys "
+                     "are invalid. Check connectivity and retry.")
+        else:
+            cause = "Check the request and provider response details."
         raise RuntimeError(
             f"Gemini unavailable after trying {len(chain)} model(s) with retries "
-            f"(last: {detail}). This is free-tier saturation — wait a few "
-            f"minutes and re-run; nothing was lost. {last_error}"
+            f"(last: {detail}). {cause} {last_error}"
         )
 
     def generate_text(self, prompt: str, temperature: float = 0.7,
@@ -900,7 +924,7 @@ def get_provider(cfg: Config) -> ScriptProvider:
                           PollinationsTextProvider(cfg.pollinations_model)))
         elif name == "template":
             chain.append(("template", TemplateProvider()))
-    # Gemini's best models run first (huge quota), then the scarce brains
+    # Gemini's best models run first, then the scarce brains
     # (OpenRouter 550B), then Gemini's weaker reserves. The small Groq text
     # pool is inserted AFTER the whole Gemini primary+reserve group, unless
     # Groq was explicitly chosen as the primary provider.

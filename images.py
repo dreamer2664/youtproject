@@ -382,8 +382,10 @@ def _gemini_fetch(prompt: str, dest: Path, cfg: Config, seed: int, attempts: int
     # signature parity with the other providers.
     del seed
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # 2026-09-16: image quota is per-key (429 seen on key 1 while other
-    # keys were fresh) — cycle ALL keys instead of pinning the first.
+    # 429 observations once suggested per-key capacity, but Google documents
+    # Gemini rate limits per project, not per API key. Project IDs are not in
+    # this key list, so cycling is best-effort only; keys in one project share
+    # its quota.
     pool = [cfg.gemini_api_key, *cfg.gemini_api_keys]
     keys = keypool.live("gemini", pool)
     if not keys:

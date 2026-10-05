@@ -326,10 +326,11 @@ ai:
 
   # Legacy single Gemini key (kept working); prefer the list below.
   gemini_api_key: ""
-  # Free Gemini keys (https://aistudio.google.com/apikey) — one per Google
-  # account. Rejected/rate-limited keys rotate automatically, so five keys
-  # is roughly 5x the free quota. Env GEMINI_API_KEYS (space/comma-separated)
-  # wins, else GEMINI_API_KEY (single).
+  # Gemini API keys (https://aistudio.google.com/apikey). Google applies
+  # rate limits per project, not per API key: keys in one project share
+  # quota. The runner rotates keys but cannot infer their project IDs.
+  # A non-empty GEMINI_API_KEYS environment variable replaces this list;
+  # otherwise GEMINI_API_KEY is appended as a legacy single key.
   gemini_api_keys:
     - ""
   # Script-writing model. The default tracks the current Flash automatically;

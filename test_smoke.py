@@ -3072,8 +3072,8 @@ def t_gemini_key_sweep():
         GeminiProvider(api_key="k")._try_model("m", {}, tag="t")
     assert sleeper1.call_count == 5
 
-    # Large unique-account pools must be swept fully before the provider
-    # gives up to the next model/provider.
+    # Large key pools are swept fully because project IDs are not present in
+    # this config; the provider cannot know which keys share a project.
     for count in (35, 80):
         keys = [f"g{i:03d}" for i in range(count)]
         denied = Mock(status_code=429, text="account quota")
@@ -3854,9 +3854,14 @@ def t_no_gemini():
     assert "groq" in labels and "template" in labels, labels
 
 def t_keystats():
+    import os
     from datetime import datetime, timedelta, timezone
     from unittest.mock import Mock, patch
 
+    # The suite is intentionally offline and deterministic even if a developer
+    # has Gemini environment variables set locally.
+    for name in ("GEMINI_API_KEYS", "GEMINI_API_KEY"):
+        os.environ.pop(name, None)
     import keystats
 
     # bump before init(): a no-op that never raises.
@@ -3992,19 +3997,29 @@ def t_keystats():
     yt_note = keystats._keys_note(2, False, "youtube")
     assert "project grouping is unknown" in yt_note
     assert "separate pools" not in yt_note
-    # A wall of PER-KEY pools (the real setup: ~35 Gemini keys) gets an
-    # aggregate row — 35 individual "N left of 1,500" rows are unreadable
-    # and the aggregate is the number that gates the day. The legacy key
-    # bumped earlier in this test is still in the ledger, so it keeps its
-    # row (rotated-out keys still show their spend) and counts once.
+    gem_note = keystats._keys_note(2, False, "gemini")
+    assert "project grouping is unknown" in gem_note
+    assert "separate pools" not in gem_note
+    # Gemini quotas are project-scoped, and this config has no project IDs.
+    # Show local per-key spend/source only; never claim 36 separate quota
+    # pools or a multiplied "left" total. The legacy key from earlier remains
+    # in the effective pool and the ledger retains its masked usage row.
     cfg.data["ai"]["gemini_api_keys"] = [f"gkey-{i:02d}-secret-ab{i:02d}"
                                          for i in range(35)]
     gem = keystats._configured_keys(cfg, "gemini")
     assert len(gem) == 36                      # 35 listed + 1 legacy
     out = keystats.build_status(cfg)
-    assert "36 keys = 36 separate pools" in out
-    assert "all keys" in out
-    assert f"{36 * keystats.LIMITS['gemini']['day']:,}" in out   # 54,000
+    gem_section = out.split("GEMINI  ·", 1)[1].split("\n\n", 1)[0]
+    assert "project grouping is unknown" in gem_section
+    assert "36 effective unique key(s)" in gem_section
+    assert "local total" in gem_section
+    assert "no project-quota remainder estimate" in gem_section
+    assert "all keys" not in gem_section
+    assert "separate pools" not in gem_section
+    assert "54,000" not in gem_section
+    assert "left" not in gem_section
+    assert "per project" in keystats.LIMITS["gemini"]["rule"]
+    assert "day" not in keystats.LIMITS["gemini"]
     assert not any(f"gkey-{i:02d}-secret" in out for i in range(35))
     # Account-level pools must NOT claim multiplied capacity, and the note
     # says WHICH kind of pool this is. (The clipfix bump above left a
@@ -7181,6 +7196,22 @@ def t_key_env_aliases():
     assert cfg.gemini_api_keys == ["g1", "g2"], cfg.gemini_api_keys
     assert cfg.groq_api_keys == ["k1", "k2"], cfg.groq_api_keys
 
+    # A non-empty plural env var replaces the YAML list; the diagnostic is
+    # safe to show because it reports source/count only, never key contents.
+    with patch.dict(os.environ, {"GEMINI_API_KEYS": "env-a, env-b env-a"}):
+        assert cfg.gemini_api_keys == ["env-a", "env-b"]
+        source = cfg.gemini_api_key_source
+        assert "GEMINI_API_KEYS environment override" in source
+        assert "2 unique" in source and "YAML list ignored" in source
+        assert "env-a" not in source and "env-b" not in source
+    # The legacy singular env var is appended only when the plural override
+    # is absent; the source report still never exposes its value.
+    with patch.dict(os.environ, {"GEMINI_API_KEY": "legacy-env"}):
+        assert cfg.gemini_api_keys == ["g1", "g2", "legacy-env"]
+        source = cfg.gemini_api_key_source
+        assert "GEMINI_API_KEY environment" in source
+        assert "legacy-env" not in source
+
 
 def t_chat_tools():
     from unittest.mock import Mock, patch
@@ -7376,6 +7407,42 @@ def t_gemini_keys():
     assert result is None and status == 404 and post.call_count == 1
     # Single string still works (backward compat).
     assert GeminiProvider(api_key="k").api_keys == ["k"]
+
+    # A previously rejected pool must not crash on keys[0] or emit more
+    # requests. _post stops immediately so the rest of the provider chain can
+    # take over.
+    keypool.reset()
+    no_live = GeminiProvider(api_key=["already-rejected"],
+                             models=["m1", "m2"])
+    keypool.dead("gemini", "already-rejected")
+    with patch("requests.post") as post:
+        result, status, error = no_live._try_model("m1", {}, tag="t")
+        assert result is None and status == -2
+        assert "No live Gemini API keys remain" in error
+        try:
+            no_live._post({})
+        except RuntimeError as exc:
+            assert "No live Gemini API keys remain" in str(exc)
+            assert "next provider" in str(exc)
+        else:
+            raise AssertionError("all-dead key pool should fail over")
+        assert post.call_count == 0
+    keypool.reset()
+
+    # Final user-facing diagnosis distinguishes project/model quota from an
+    # invalid-key failure and explains why rotation may not multiply quota.
+    with patch("requests.post",
+               return_value=Mock(status_code=429,
+                                 text="RESOURCE_EXHAUSTED")), \
+            patch("time.sleep", return_value=None):
+        try:
+            GeminiProvider(api_key=["quota-key"], models=["m"])._post({})
+        except RuntimeError as exc:
+            quota_error = str(exc)
+        else:
+            raise AssertionError("expected a Gemini quota failure")
+    assert "not evidence of an invalid API key" in quota_error
+    assert "per project" in quota_error and "same project share" in quota_error
 
 
 def t_elevenlabs():

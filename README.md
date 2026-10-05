@@ -98,8 +98,12 @@ ai:
   gemini_api_key: "AQ.your-key-here"
 ```
 
-`config.yaml` is git-ignored, so it will not be committed. No key? Set
-`provider: "template"` and it runs fully offline with lower-quality scripts.
+`config.yaml` is git-ignored, so it will not be committed. Gemini rate limits
+are per project—not per API key—and keys in the same project share quota.
+A non-empty `GEMINI_API_KEYS` environment variable replaces the YAML key list;
+`python main.py keys` reports the effective source/count without revealing key
+contents. No key? Set `provider: "template"` and it runs fully offline with
+lower-quality scripts.
 
 ### Check it
 

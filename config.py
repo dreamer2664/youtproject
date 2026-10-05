@@ -201,10 +201,12 @@ DEFAULTS: dict[str, Any] = {
         "provider": "gemini",
         # Legacy single key (kept working); prefer the list below.
         "gemini_api_key": "",
-        # Free Gemini keys (https://aistudio.google.com/apikey) — one per
-        # Google account. Rejected/rate-limited keys rotate automatically,
-        # so five keys is roughly 5x the free quota. Env: GEMINI_API_KEYS
-        # (space/comma-separated) wins, else GEMINI_API_KEY (single).
+        # Gemini API-key pool (https://aistudio.google.com/apikey).
+        # Google rate limits are per project, not per API key; keys in the
+        # same project share quota. The runner rotates across configured
+        # keys but cannot infer their project IDs. A non-empty
+        # GEMINI_API_KEYS environment variable replaces this YAML list;
+        # otherwise GEMINI_API_KEY is appended as a legacy single key.
         "gemini_api_keys": [],
         "gemini_model": "gemini-3.8-flash",
         # Free Groq keys (https://console.groq.com/keys) — script/topic/
@@ -1257,7 +1259,7 @@ class Config:
 
     @property
     def gemini_api_keys(self) -> list[str]:
-        """All configured Gemini keys; env wins over config.yaml (never crash)."""
+        """Effective Gemini key pool; non-empty GEMINI_API_KEYS replaces YAML."""
         env = _env_keys("GEMINI_API_KEYS")
         if env:
             return _dedupe_keys(env)
@@ -1270,6 +1272,29 @@ class Config:
         if legacy and legacy not in keys:
             keys.append(legacy)
         return keys
+
+    @property
+    def gemini_api_key_source(self) -> str:
+        """Effective key source/count, without disclosing any key material."""
+        env = _env_keys("GEMINI_API_KEYS")
+        if env:
+            return ("GEMINI_API_KEYS environment override "
+                    f"({len(_dedupe_keys(env))} unique; YAML list ignored)")
+
+        raw = self.data["ai"].get("gemini_api_keys") or []
+        if isinstance(raw, str):
+            raw = [raw]
+        keys = _dedupe_keys(raw)
+        sources = ["ai.gemini_api_keys YAML list"] if keys else []
+        legacy_env = (os.environ.get("GEMINI_API_KEY") or "").strip()
+        legacy_yaml = str(self.data["ai"].get("gemini_api_key") or "").strip()
+        if legacy_env:
+            sources.append("GEMINI_API_KEY environment"
+                            + (" (duplicate; no extra key)"
+                               if legacy_env in keys else " (legacy key)"))
+        elif legacy_yaml and legacy_yaml not in keys:
+            sources.append("ai.gemini_api_key legacy field")
+        return " + ".join(sources) if sources else "none"
 
     @property
     def gemini_api_key(self) -> str:

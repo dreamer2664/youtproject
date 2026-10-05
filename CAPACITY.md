@@ -1,8 +1,7 @@
 # Daily capacity: what the free stack can actually produce
 
-Researched 2026-09-16; most quotas re-verified 2026-10-02, with YouTube's
-quota scope corrected 2026-10-05 (see the bottom section). All quotas below
-are free-tier, no credit card.
+Researched 2026-09-16; Gemini and YouTube quota scopes corrected 2026-10-05
+(see the update sections below). All quotas below are free-tier, no credit card.
 
 **Bottom line at a planning cadence** (one clip per channel per day, five
 channels currently, eight after the three planned additions, plus a boardroom
@@ -18,8 +17,9 @@ For volume runs the honest ceilings are below, but **do not plan from this
 table** — run `python main.py keys` for self-counted usage and
 `python main.py keys --advice` for the multi-key truths. The dashboard only
 aggregates where independent pools are known; it deliberately does not
-multiply YouTube keys because that quota is project-level. Quotas move; the
-ledger shows local spend, not provider-side remaining balances.
+multiply Gemini or YouTube keys because those quotas are project-scoped and
+the ledger cannot map API keys to projects. Quotas move; the ledger shows
+local spend, not provider-side remaining balances.
 
 ## What one ~65s generated video costs the stack
 
@@ -39,7 +39,7 @@ Key counts below are the ones this project actually runs with as of
 
 | Lane | Free quota (Oct 2026) | Generated videos/day |
 |---|---|---|
-| Gemini (**~35 keys**) | ~1,500 req/day **per project/key** on Flash (3 Flash 10 RPM · 250k TPM · 3.1 Flash-Lite 1,000/day · Pro 50/day). Separate Google accounts/Cloud projects genuinely multiply ([pecollective](https://www.pecollective.com/tools/gemini-free-tier-guide), [tokenmix](https://tokenmix.ai/blog/gemini-api-free-tier-limits)) | **effectively unbounded for this workload** — 35 pools × 1,500 ≈ 52,500 req/day ÷ 6 per video, IF the keys are on separate projects. Verify with `keys --probe`; anything on one shared project is ONE pool. |
+| Gemini (configured API-key pool) | Limits vary by model and usage tier; Google applies them **per project, not per API key**. Check the active values in [Google AI Studio](https://aistudio.google.com/) and the official [rate-limit page](https://ai.google.dev/gemini-api/docs/rate-limits). | **Unknown from key count alone.** Keys in the same project share limits; this app stores no project IDs and cannot know whether the pool represents one project or many. `keys --probe` tests a request, not remaining quota. |
 | Groq (**5 keys**) | 30 RPM · ~1,000 req/day per model (14.4k/day org aggregate) · **~8 h Whisper audio/day** — **org-level: 5 keys on one account = 5 keys' worth of nothing extra** ([cloudzero](https://www.cloudzero.com/blog/groq-pricing), [layer3labs](https://www.layer3labs.io/guides/groq-pricing)) | ~165 chat-bound, but the real gate is Whisper: **~24 uncaptioned 20-min sources/day**, and captions-first ingest means most sources cost 0 |
 | OpenRouter | 20 RPM + **50 req/day per unfunded ACCOUNT**; one-time $10 credit → 1,000/day forever ([costgoat](https://costgoat.com/deals/openrouter.ai)) | **~8** unfunded (50 ÷ 6), **~165** after the $10 credit. Last-resort lane: normally spends 0 |
 | DeepSeek | balance-based free grant (platform.deepseek.com) | overflow lane, normally 0 |
@@ -79,23 +79,16 @@ Key counts below are the ones this project actually runs with as of
 `python main.py keys` shows self-counted requests/characters/audio and
 refill windows; providers do not expose remaining quota to this ledger.
 With multiple keys, section headers explain shared pools. For known
-per-key providers it can show an aggregate row. YouTube is different:
-quota is per Cloud project, but the ledger cannot map keys to projects or
-count other apps, so it shows per-key usage and search calls without
-claiming project quota remaining or adding capacities. `keys --month`
-splits spend by call tag, including which lane ate the Whisper pool.
+per-key providers it can show an aggregate row. Gemini and YouTube are
+project-scoped; the ledger cannot map keys to projects or count other apps,
+so it shows per-key local use without claiming project quota remaining or
+adding capacities. Gemini's active limits are model/tier-specific and live
+in AI Studio; `keys --probe` only checks whether one request succeeds.
+`keys --month` splits spend by call tag, including which lane ate the
+Whisper pool.
 
 ## Re-verification 2026-10-01 (what moved, what to check)
 
-- **Gemini**: Google removed the public free-tier RPM/RPD tables (now
-  only inside AI Studio, per project). Third-party reports CONFLICT on
-  the newest models: gemini-3.8/3.7/3.6/3.5 Flash ~20 RPD/key vs older
-  Flash/Flash-Lite 500–1,500 RPD. Treat the tight number as real for the
-  newest Flash and **run `python main.py keys --probe`** to measure your
-  own keys; the model sandwich already falls back to the bigger-quota
-  older models. If probes confirm ~20 RPD on 3.8-flash, set
-  `ai.gemini_model` to a Flash-Lite id for the bulk lanes and keep the
-  newest Flash for scripts only.
 - **Groq** (gpt-oss-120b/20b, Qwen): 30 RPM, **1,000 req/day but only
   ~200k tokens/day**, org-level — extra keys on one account do NOT add
   quota. The clip lane's Whisper minutes are a separate pool.
@@ -114,14 +107,16 @@ splits spend by call tag, including which lane ate the Whisper pool.
   ~3–25k tokens depending on the agenda size. Two meetings/day is noise
   next to any lane.
 
-## Re-verification 2026-10-02 (fresh quotas + the multi-key truth)
+## Re-verification 2026-10-05 (Gemini project-scope correction)
 
-Current free-tier consensus (sources below; `python main.py keys` stays
-the live ledger, `keys --probe` measures your own keys):
+Free-tier limits move; the official [Gemini rate-limit page](https://ai.google.dev/gemini-api/docs/rate-limits)
+now explicitly says limits are per project, vary by model and usage tier, and
+are visible in AI Studio. `python main.py keys` remains a local spend ledger;
+`keys --probe` tests a request, not your remaining quota.
 
-| Provider | Free tier (Oct 2026) | Extra keys on the SAME account |
+| Provider | Free tier (Oct 2026) | Effect of extra keys / quota scope |
 |---|---|---|
-| Gemini | Gemini 3 Flash 10 RPM / 250k TPM / **1,500 req/day per project**; 3.1 Flash-Lite 15 RPM / 1,000/day; Pro 50/day | nothing — the quota is per PROJECT. New keys from *other projects/accounts* = new pools (the legit multiplier) |
+| Gemini | Active request/token/image limits vary by model and usage tier; view them in Google AI Studio. Official scope: **per project, not per API key** ([rate limits](https://ai.google.dev/gemini-api/docs/rate-limits)). | Keys in one project share quota; the app cannot map API keys to project IDs. Another key helps only if its project has an available applicable limit; account/key count alone proves nothing. |
 | Groq | 30 RPM / 6k TPM / ~1,000 req/day per model (14.4k/day org aggregate), ~8h Whisper audio | **NOTHING — the pool is org-level.** All keys on one account share it |
 | OpenRouter | 25+ `:free` models, 20 RPM, **50 req/day per account**; one-time $10 credit → **1,000/day** (credit never expires) | nothing — the cap is per ACCOUNT, keys share it |
 | DeepSeek | balance-based free grant (platform.deepseek.com) | new account = new grant |
@@ -141,22 +136,22 @@ the live ledger, `keys --probe` measures your own keys):
    each get the org pool. The clean move: **add a credit card** — the
    Developer tier has zero minimum spend and multiplies rate limits
    ~10x (that's 10x Whisper minutes too, our binding constraint).
-3. Gemini: keys from separate Google accounts (or separate Cloud
-   projects) genuinely multiply — each carries its own ~1,500/day.
-   This is the provider where multiple keys are unambiguously worth it.
-4. The 2026-10-01 caveat stands for the very newest Flash ids
-   (3.5–3.8): third-party tables disagree (some report ~20 RPD early in
-   a model's life); our model sandwich falls back to older Flash ids
-   automatically. `keys --probe` settles it on your own keys.
+3. Gemini: quotas are project-scoped, not key-scoped. Keys in the same
+   project share limits; verify each key's project in AI Studio/Cloud
+   Console before treating the pool as independent. Google account count
+   alone is not enough to infer project count.
+4. The exact active Gemini RPM/TPM/RPD and image limits vary by model and
+   usage tier. AI Studio is the current source of truth; the local probe
+   only shows that one request succeeded and does not measure quota.
 
-Sources (fetched 2026-10-02): pecollective.com/tools/gemini-free-tier-guide
-(Gemini 3 Flash 10 RPM / 250k TPM / 1,500 RPD; 3.1 Flash-Lite 1,000 RPD),
-tokenmix.ai/blog/gemini-api-free-tier-limits (2.5 Flash 1,500 RPD; Pro 50
-RPD), cloudzero.com/blog/groq-pricing (Groq org-level: 30 RPM / 6k TPM /
-14.4k RPD, "multiple API keys don't help"; Developer tier 10x),
-layer3labs.io/guides/groq-pricing (Whisper ~20 RPM / 2,000 req/day
-separate pool), costgoat.com/deals/openrouter.ai + buldrr.com (50/day →
-$10 credit → 1,000/day, credits never expire).
+Sources (checked 2026-10-05): Google [Gemini API rate limits](https://ai.google.dev/gemini-api/docs/rate-limits)
+— project scope, model/tier variation, and AI Studio as the active-limit
+view; Google [troubleshooting guide](https://ai.google.dev/gemini-api/docs/troubleshooting)
+— recommends backoff for 429/503 errors; neither status alone proves a bad
+key. Other provider estimates below were previously checked 2026-10-02:
+cloudzero.com/blog/groq-pricing (Groq org-level limits),
+layer3labs.io/guides/groq-pricing (Whisper pool), and
+costgoat.com/deals/openrouter.ai + buldrr.com (OpenRouter free tier).
 
 ## Transcript routing + key split update (2026-10-04)
 

@@ -11,7 +11,8 @@ The rules each lane already applied, now remembered process-wide:
 
   * 401/403 (revoked key, wrong account, keyInvalid) -> dead(): the key
     is dropped for the rest of the process.
-  * 429 -> NOT death: quota refills; per-key rotation handles it.
+  * 429 -> NOT death: quota refills; lanes may rotate keys, but this does
+    not imply independent quota buckets (Gemini limits are project-scoped).
   * 404 / 5xx / request-shaped 400s -> not the key's fault; lanes decide.
 
 Deadness is deliberately process-scoped: CLI runs are short, and a fresh
