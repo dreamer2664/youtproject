@@ -97,11 +97,13 @@ credential was inspected or printed and no force-push was attempted.
   the default port scan.
 - `main.py` now configures CLI stdout/stderr to replace unencodable characters
   instead of crashing; the `order_cli` regression explicitly forces cp1252.
-- The `panel_launch` test uses its own ephemeral port range so an already
-  running user's Panel cannot create a false failure.
-- Targeted regressions passed and the full offline suite again reports **211
-  passed, 0 failed**. These follow-up changes are prepared separately from the
-  already-pushed pipeline commit.
+- The first `panel_launch` isolation attempt chose a port range around one
+  fake server; Windows allocated the other fake server adjacent to it, so that
+  test still failed. It now chooses a currently unused scan range separate
+  from both fixtures and the default Panel port.
+- `order_cli`, `panel_launch`, and the full offline suite now pass: **211
+  passed, 0 failed**. The owner fetched and pushed follow-up `1e6eb83`; this
+  additional panel-test isolation refinement is prepared as another follow-up.
 
 Preserve the pre-existing mode-only changes to `hooks/pre-commit` and
 `setup.sh`; neither is part of the pipeline commit.

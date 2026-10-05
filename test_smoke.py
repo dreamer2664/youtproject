@@ -8458,9 +8458,19 @@ def t_panel_launch():
 
     foreign, fport = spin(Foreign)
     ours, oport = spin(Ours)
-    # Isolate the scan range from a real Panel the developer may have running
-    # on the default 8765 port while the smoke suite executes.
-    cfg = tmp_cfg(panel={"port": fport})
+    # Use an empty scan range that doesn't include the real Panel default or
+    # either test server. OS-assigned ephemeral ports can be adjacent, so using
+    # fport itself as the scan start would discover the `ours` fixture while
+    # testing the foreign recorded-port case.
+    scan_start = 20000
+    test_ports = {fport, oport}
+    while (any(scan_start <= port < scan_start + 11 for port in test_ports)
+           or any(panel._port_live("127.0.0.1", port)
+                  for port in range(scan_start, scan_start + 11))):
+        scan_start += 11
+        if scan_start > 64000:
+            scan_start = 10000
+    cfg = tmp_cfg(panel={"port": scan_start})
     try:
         assert panel.probe_ours("127.0.0.1", fport) is False   # not ours
         assert panel.probe_ours("127.0.0.1", oport) is True    # ours
