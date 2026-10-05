@@ -38,6 +38,24 @@ UPLOAD_TIMEOUT = 600      # seconds for sending the finished video
 HEARTBEAT_SECONDS = 240   # "still rendering..." nudge while a video cooks
 MAX_MESSAGE = 4000        # Telegram caps messages at 4096 chars
 MAX_CAPTION = 1000        # ... and file captions at 1024
+TELEGRAM_TEXT_LIMIT = 3800  # Telegram message hard limit is 4096 characters
+
+
+def _telegram_text_chunks(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> list[str]:
+    """Split long copy-paste details at line boundaries below Telegram's cap."""
+    text = str(text or "")
+    if limit < 1:
+        raise ValueError("Telegram text chunk limit must be positive")
+    chunks: list[str] = []
+    while len(text) > limit:
+        cut = text.rfind("\\n", 0, limit + 1)
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(text[:cut])
+        text = text[cut:].lstrip("\\n")
+    if text:
+        chunks.append(text)
+    return chunks
 
 HELP_TEXT = """🎬 Send me any topic and I'll render a vertical video for it.
 
@@ -1205,7 +1223,7 @@ class PhoneBot:
                 pass
 
     def _deliver(self, chat_id: int, job_id: str, topic: str) -> None:
-        from package import build_platform_caption
+        from package import build_description, fit_tags
 
         queue = Queue(self.cfg.state_file)
         job = queue.get(job_id)
@@ -1226,15 +1244,25 @@ class PhoneBot:
                          f"Telegram caps bot files at 50 MB — grab it from the PC: "
                          f"{video}")
             return
-        caption = build_platform_caption(meta, "tiktok")
+        description = build_description(meta, self.cfg)
+        tags = ", ".join(fit_tags(meta.get("tags") or []))
+        details = (
+            "Manual YouTube upload details — review before posting.\n\n"
+            f"Title:\n{title}\n\n"
+            f"Description:\n{description}\n\n"
+            f"Tags:\n{tags or '(none)'}\n\n"
+            "Check YouTube Studio's AI-use setting against this video's actual "
+            "content; the description note is not a substitute.\n\n"
+            f"After uploading, record the URL: python main.py published "
+            f"{job.id} <url>\n"
+            f"Local kit (when the PC is on): upload/{job.id}/")
+        chunks = _telegram_text_chunks(details)
         try:
             self.send_document(chat_id, video, slugify(title, job.id) + ".mp4",
                                caption=f"🎬 {title}"[:MAX_CAPTION])
-            self.send_message(
-                chat_id, f"Caption + hashtags (copy-paste):\n\n{caption}\n"
-                         f"After uploading, track it on your PC:\n"
-                         f"`python main.py published {job.id} <url>`\n"
-                         f"Full YouTube kit: upload/{job.id}/")
+            for index, chunk in enumerate(chunks, start=1):
+                header = f"Upload details ({index}/{len(chunks)})\n\n" if len(chunks) > 1 else ""
+                self.send_message(chat_id, header + chunk)
         except TelegramError as exc:
             print(f"  [bot] delivery failed: {exc}")
             try:

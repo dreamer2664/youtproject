@@ -103,14 +103,15 @@ def resolve_image_route(value: str) -> str:
         f"{', '.join(sorted(IMAGE_ROUTES))} (stock, ai, free) or "
         f"{', '.join(IMAGE_PROVIDERS)}")
 
-# Buffer autopost targets (autopost.py). Order in config = posting order.
-BUFFER_SERVICES = ("youtube", "tiktok", "instagram")
+# Manual-upload scope is YouTube-only. Other platform adapters stay disabled
+# until the owner explicitly asks to add those destinations.
+BUFFER_SERVICES = ("youtube",)
 
 DEFAULTS: dict[str, Any] = {
     "channel": {
         "topic": "unusual true stories from maritime history",
         "tone": "fast, punchy, high-energy",
-        "audience": "scrolling TikTok/Shorts viewers with short attention spans",
+        "audience": "scrolling YouTube Shorts viewers with short attention spans",
         "target_seconds": 65,
         "voice": "en-GB-RyanNeural",
         # Narration speed for edge-tts: "+40%" is brisk TikTok pacing (~180 wpm),
@@ -190,9 +191,9 @@ DEFAULTS: dict[str, Any] = {
         "mask_profanity": True,
     },
     "disclosure": {
-        # Appended to description.txt at package time (meta.json stays clean).
-        # YouTube also asks you to tick the "altered content" box in Studio —
-        # see the per-video CHECKLIST.md. Both is the correct answer.
+        # Optional AI-tools transparency note appended to description.txt.
+        # It does not decide or replace YouTube Studio's per-video AI-use answer;
+        # see the conditional guidance in UPLOAD-GUIDE.md and each checklist.
         "append_to_description": True,
         "text": (
             "Disclosure: the narration and visuals in this video "
@@ -293,8 +294,8 @@ DEFAULTS: dict[str, Any] = {
         # Free key from https://publish.buffer.com/settings/api — enables
         # `python main.py autopost`. Or export BUFFER_API_KEY.
         "api_key": "",
-        # Connected channels to post to (order = posting order).
-        "channels": ["youtube", "tiktok"],
+        # Optional Buffer lane; YouTube-only and unused in manual-upload mode.
+        "channels": ["youtube"],
         # YouTube upload defaults.
         "youtube_privacy": "public",
         "youtube_category_id": "27",
@@ -1493,12 +1494,12 @@ class Config:
 
     @property
     def buffer_channels(self) -> list[str]:
-        """Wanted autopost services; junk dropped, empty -> default pair."""
+        """Enabled autopost services; this release is intentionally YouTube-only."""
         raw = self.data["buffer"].get("channels") or []
         if isinstance(raw, str):
             raw = [raw]
         out = [str(name).lower() for name in raw if str(name).lower() in BUFFER_SERVICES]
-        return out or ["youtube", "tiktok"]
+        return out or ["youtube"]
 
     @property
     def youtube_privacy(self) -> str:

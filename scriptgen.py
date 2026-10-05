@@ -23,6 +23,7 @@ import keystats
 
 from config import Config
 from images import style_spec
+from safe_errors import configured_secrets, redact_error
 
 
 @dataclass
@@ -432,14 +433,16 @@ class GeminiProvider:
                 # DNS/refused/reset: the host itself is down — no other key
                 # or model on this host will answer. Abort Gemini at once
                 # so the provider chain (groq/...) picks up immediately.
-                return None, -1, f"Gemini unreachable: {exc}"
+                detail = redact_error(exc, self.api_keys)
+                return None, -1, f"Gemini unreachable: {detail}"
             except requests.exceptions.RequestException as exc:
                 # Timeout (server stalled) or other transient: one spare key
                 # in case of a blip, then fail over to the next model. Never
                 # sleeps — a stalled host never recovers on a timescale
                 # worth sitting silent for.
                 net_errors += 1
-                last_status, last_error = 0, f"network error: {exc}"
+                detail = redact_error(exc, self.api_keys)
+                last_status, last_error = 0, f"network error: {detail}"
                 print(f"  [{tag}] {model}: {last_error} — "
                       f"trying {'next key' if net_errors < 2 else 'next model'}")
                 keys.append(keys.pop(0))
@@ -455,7 +458,7 @@ class GeminiProvider:
                 return response.json(), 200, ""
 
             last_status = response.status_code
-            last_error = response.text[:300]
+            last_error = redact_error(response.text[:300], self.api_keys)
 
             # Dead model ID: retrying is pointless — fail over at once.
             if response.status_code == 404:
@@ -471,8 +474,7 @@ class GeminiProvider:
                     keypool.dead("gemini", key)
                 keys.pop(0)
                 if keys:
-                    print(f"  [{tag}] Gemini key ...{key[-4:]} rejected — "
-                          f"trying next key")
+                    print(f"  [{tag}] Gemini key rejected — trying next key")
                     continue
                 return None, last_status, last_error
 
@@ -584,12 +586,12 @@ class GeminiProvider:
         except (KeyError, IndexError) as exc:
             raise RuntimeError(f"Unexpected Gemini response shape: {str(data)[:400]}") from exc
 
-    @staticmethod
-    def _save_debug(cfg: Config, raw: str) -> None:
-        """Keep the raw model output so a parse failure is diagnosable."""
+    def _save_debug(self, cfg: Config, raw: str) -> None:
+        """Keep model output for parse failures, with credentials redacted."""
         try:
             cfg.work_dir.mkdir(parents=True, exist_ok=True)
-            (cfg.work_dir / "gemini_last.txt").write_text(raw, encoding="utf-8")
+            (cfg.work_dir / "gemini_last.txt").write_text(
+                redact_error(raw, self.api_keys), encoding="utf-8")
         except OSError:
             pass
 
@@ -743,46 +745,35 @@ def derive_tags(text: str, limit: int = 12) -> list[str]:
 class TemplateProvider:
     name = "template"
 
-    FRAMINGS = [
-        "The untold story of",
-        "What really happened during",
-        "The strange truth about",
-        "Nobody talks about",
-        "A forgotten chapter of",
-    ]
-
     def generate(self, cfg: Config, topic_override: str | None = None) -> Script:
         topic = topic_override or cfg.topic
-        seed = random.choice(self.FRAMINGS)
-        title = f"{seed} {topic}"[:100]
+        title = f"How to research {topic}"[:100]
         scene_len = 10 if cfg.format == "portrait" else 20
         count = max(3, min(8, round(cfg.target_seconds / scene_len)))
 
-        # Fast-paced even offline: cold open, short sentences, a twist, an
-        # open loop, and a payoff. Beats run ~25 words each so the offline
-        # path lands near the target length instead of a 25-second short.
+        # The offline provider has no research/source access. Its content is
+        # therefore an honest research-method scaffold, not invented topic
+        # facts or claims that anything was checked, witnessed, or documented.
         core = [
-            f"Stop scrolling. Nobody knows this about {topic}. The real story "
-            "is stranger than anything heard. Listen close, because this gets "
-            "wild fast. Do not blink. Stay with me.",
-            f"Here is the part they always skip. {topic} started with one "
-            "strange decision. Nobody understood it then. Nobody predicted it. "
-            "That single choice changed everything after.",
-            "The details sound fake. Every one is documented and checked twice. "
-            "Witnesses who were there confirmed it. Truth beats fiction every "
-            "time. Believe it. Check the archives.",
-            "But here is the twist nobody talks about. Everything flips right "
-            "here. What looked like luck was something else entirely. Nobody "
-            "saw it coming. Watch closely. Rewind that twice.",
-            f"Think that is wild? The last fact about {topic} tops it all. "
-            "Almost nobody has heard it. Stay until the very end for the payoff. "
-            "You will see why.",
-            "Records from the time back it up. Witnesses agreed on every detail. "
-            "The papers printed it twice. This really happened, start to finish. "
-            "History kept the receipts. Case closed.",
-            f"So remember this. {topic} changed everything after. The world "
-            "still feels it today. That is the untold story nobody taught you. "
-            "Pass it on. Tell a friend.",
+            f"Every good question about {topic} starts with evidence, not a viral "
+            "headline. Separate the claim from the storyteller, then ask what "
+            "would prove it. Trace the claim to its origin before repeating it.",
+            "Find an original record or a trusted expert source. Note the author, "
+            "date, and evidence they provide. A confident retelling is not proof. "
+            "Keep notes on the original wording.",
+            "Check important names, numbers, and dates against an independent "
+            "reference. If both sources repeat the same claim, they are not "
+            "independent confirmation. Follow each citation to its source.",
+            "Watch for details that change between versions. Missing context can "
+            "turn a careful statement into something far more certain than the "
+            "evidence supports.",
+            "If reliable sources disagree, describe that disagreement and what is "
+            "known. Do not invent a neat answer just to make the story dramatic.",
+            "If support for a detail is missing, remove it or label it uncertain. "
+            "Saying \"I don't know\" is more trustworthy than filling the gap "
+            "with a guess.",
+            "A compelling story does not need fake certainty. Verify each claim, "
+            "credit reliable sources, and let the evidence shape what you say.",
         ]
         # When the rotating CTA is on, main.py appends this video's line —
         # the template must not add its own or the ending repeats itself.
@@ -810,9 +801,10 @@ class TemplateProvider:
         return Script(
             title=title,
             description=(
-                f"{title}\n\nA fast-paced short about {topic}.\n\n"
-                "Generated with the offline template provider — add a free Gemini key "
-                "to config.yaml for much better scripts."
+                f"{title}\n\nA research-method scaffold about {topic}.\n\n"
+                "This offline template is not independently researched and makes no "
+                "topic-specific factual claims. Add source-supported details and "
+                "verify them yourself before publishing."
             ),
             tags=[w for w in re.findall(r"[A-Za-z]{4,}", topic)][:12],
             scenes=scenes,
@@ -850,10 +842,11 @@ class ChainedProvider:
                           f"{usable[index - 1][0]} failed")
                 return result
             except Exception as exc:  # noqa: BLE001 - fall through, report all
-                errors.append(f"{label}: {exc}")
+                clean = redact_error(exc, configured_secrets(provider))
+                errors.append(f"{label}: {clean}")
                 if index < len(usable) - 1:
                     print(f"  [script] {label} failed — trying "
-                          f"{usable[index + 1][0]} ({str(exc)[:110]})")
+                          f"{usable[index + 1][0]} ({clean[:110]})")
         raise RuntimeError("all script providers failed: " + " | ".join(errors))
 
     def generate(self, cfg: Config, topic_override: str | None = None) -> Script:

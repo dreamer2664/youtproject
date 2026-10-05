@@ -4,6 +4,12 @@ Windows PowerShell assumed (you're on Windows). On mac/Linux the commands
 are identical; only venv activation differs (noted in §1). All commands
 run from the project folder. `python` = inside your venv.
 
+> **Current workflow: local generation + manual YouTube Studio upload.**
+> Do not use Buffer publishing, `crew --live`, or desktop/browser upload
+> commands as part of this workflow. Those are separate legacy automation
+> routes and were not exercised in this reliability pass. The local bot and
+> render jobs also cannot run when the PC is fully shut down.
+
 Want fewer words? `python main.py --help` lists everything; every command
 also takes `--help` (e.g. `python main.py clip --help`).
 
@@ -238,8 +244,7 @@ python main.py package              # upload-ready kits in upload/<id>/
 python main.py package --id 3f9     # one job (id prefix ok)
 python main.py reburn 3f9           # re-burn subtitles into a made video
 python main.py published 3f9 "https://youtu.be/xyz"   # record the upload
-python main.py autopost             # newest video -> Buffer draft (manual upload alternative)
-python main.py autopost --publish --title "..." --desc "..."
+# Manual route: open upload/<id>/CHECKLIST.md and upload in YouTube Studio.
 ```
 
 ---
@@ -342,49 +347,14 @@ python main.py meeting review --dry-run       # agenda only, spend nothing
 
 Nothing here can post. Uploads stay manual.
 
-## 7.8. Orders & the desktop lane (the AI takes the mouse)
+## 7.8. Orders & desktop automation (out of current scope)
 
-One sentence does the whole job — plan first, then work:
-
-```powershell
-python main.py order "get a link from the database, get 6 clips and post them in 6 channels, and generate 2 videos for 2 channels"
-python main.py order "get 3 clips" --plan-only      # plan only; runs nothing
-python main.py order "get 3 clips and 1 video" --dry-run   # clips/renders/stages; no browser post
-# --dry-run may consume configured provider quota; "viral" means AI hook/story picks, not a separate top-score filter
-```
-
-The desktop lane itself (your own Chrome — the window you watch):
-
-```powershell
-python main.py desktop setup        # once: install the browser engine (~120 MB)
-Desktop Chrome.bat                  # start your Chromium browser (Opera GX/Edge/Chrome/...) with the debug port; log in once
-python main.py desktop status       # settings + lessons AND a live connection test (✅/❌)
-python main.py desktop go "open youtube studio and tell me how the newest video is doing"
-python main.py desktop go "…" --no-hands     # look + plan, click nothing
-python main.py desktop shot                 # screenshot of the page already open (no URL needed)
-python main.py desktop text                 # read the page already open (no URL needed)
-python main.py order "get a link from the database, get 6 clips and post them in 5 channels" --plan-only
-                                            # the same sentence in the panel's Publish box (Plan / Dry run / Run)
-# status: ✅ connected | ⚠️ a tab froze (browser fine, click the tab) | ❌ browser not running
-# status also prints 'code : <commit> <date>' — proof of which version you are running
-python main.py desktop stop                 # kill switch for a running task
-python main.py desktop channels             # channels the lane can post to
-python main.py desktop channels add "MicroFeed-0" UCWKpOEGAYSgCUzJL-0fO4iQ
-python main.py desktop channels remove "MicroFeed-0"    # runtime ones only
-
-python main.py browser data @handle         # public subscriber/video numbers — no API key, no quota
-python main.py browser shot <url>           # screenshot any allowed page
-python main.py browser text <url>           # the page's text as a real browser sees it
-```
-
-Gates, not suggestions: only `desktop.allowed_domains` can be opened; the
-publish/schedule click needs `desktop.uploads: on` (`/desk uploads on`); the
-delete/buy/unsubscribe family is refused always. Every run: log in
-`work/desktop/logs/`, screenshots in `work/desktop/shots/`, lessons in
-`work/desktop/lessons.json`, winning paths in `work/desktop/playbooks.json`.
-
-From the phone: `/order <sentence>` · `/desk status|shot|log|stop|uploads on`
-· `/look <url>`.
+These older lanes can drive a browser and have separate upload gates. They are
+not part of the current manual YouTube workflow, were not exercised in this
+review, and are not a workaround for API audits or platform policies. Do not
+run order/desktop upload commands or enable upload gates unless the owner
+explicitly returns to that separate scope. For now: generate locally, package,
+review, and upload manually in YouTube Studio.
 
 ## 8. Your phone (Telegram)
 
@@ -428,15 +398,12 @@ python main.py subpreview C:\clip.mp4 --at 12 --text "sample line"
 
 ---
 
-## 10. Agents (more AI muscle)
+## 10. Legacy agents (not part of the manual upload workflow)
 
-```powershell
-python main.py crew --days 3 --per-day 4       # an agent team on a mission (drafts only)
-python main.py crew --goal "grow channel 2" --live      # really publish — careful
-python main.py crew --status                   # mission progress + chatter
-python main.py crew --stop
-python main.py jarvis "audit today's clips and retitle the weakest"   # one plain-language task
-```
+The `crew` and `jarvis` commands are separate automation lanes. They were not
+used in this review; do not start publishing/scheduling actions through them
+for the current YouTube-only manual workflow. Use the local `generate`,
+`package`, and `published` commands instead.
 
 ---
 

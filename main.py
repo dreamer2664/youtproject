@@ -55,6 +55,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import traceback
@@ -357,6 +358,21 @@ def _pick_fresh_topic(cfg, used: list[str]) -> tuple[str, str]:
     return cfg.topic, "channel topic (backlog dry)"
 
 
+def _restore_topics_to_backlog(path: Path, topics: list[str]) -> None:
+    """Put failed backlog picks back without overwriting newer backlog entries."""
+    if not topics:
+        return
+    from topics import is_same_topic, load_backlog, save_backlog
+
+    current = load_backlog(path)
+    restored: list[str] = []
+    for topic in topics:
+        if not any(is_same_topic(topic, other) for other in current + restored):
+            restored.append(topic)
+    if restored:
+        save_backlog(path, restored + current)
+
+
 def _reclaim_interrupted(queue: Queue, backlog_path: Path,
                          work_dir: Path) -> list[str]:
     """Give topics of killed renders back to the backlog (tested).
@@ -447,10 +463,13 @@ def cmd_generate(cfg, args) -> int:
     from topics import is_same_topic
 
     _reclaim_interrupted(queue, cfg.topics_backlog_file, cfg.work_dir)
-    # 'reclaimed' entries are killed-run ghosts; their topics are back on
-    # the backlog and must count as fresh, not covered.
-    used = [job.topic for job in queue.jobs if job.status != "reclaimed"]
+    # Only successfully rendered topics count as covered. Failed/reclaimed
+    # jobs must remain retryable; an unsuccessful render is not a video.
+    used = [job.topic for job in queue.jobs
+            if job.status in ("generated", "packaged", "published")]
     new_ids: list[str] = []
+    retry_topics: list[str] = []
+    failure_count = 0
     for number in range(1, count + 1):
         if args.topic:
             topic, source = args.topic, "--topic override"
@@ -478,6 +497,18 @@ def cmd_generate(cfg, args) -> int:
             from factcheck import check_script
 
             fact_report = check_script(script, cfg)
+            if fact_report.get("blocking"):
+                raise RuntimeError(
+                    "script review blocked this render: "
+                    + str(fact_report.get("reason") or "no safe scenes remain")
+                )
+            if not script.scenes:
+                raise RuntimeError("script has no scenes after review")
+            if any(re.search(r"\[\s*cut\s*\]", scene.narration or "", re.I)
+                   for scene in script.scenes):
+                raise RuntimeError(
+                    "script contains an unresolved [CUT] marker; refusing to synthesize it"
+                )
             from editorial import polish_script
 
             polish_script(script, cfg, provider)
@@ -668,12 +699,34 @@ def cmd_generate(cfg, args) -> int:
                 shutil.rmtree(job_dir, ignore_errors=True)
 
         except Exception as exc:  # noqa: BLE001
-            queue.update(job, status="failed", error=str(exc)[:400])
-            print(f"  \u274c failed: {exc}")
+            from safe_errors import configured_secrets, redact_error
+
+            failure_count += 1
+            detail = redact_error(exc, configured_secrets(cfg))
+            queue.update(job, status="failed", error=detail[:400])
+            print(f"  \u274c failed: {detail}")
+            if source == "from backlog":
+                retry_topics.append(topic)
             if args.verbose:
-                traceback.print_exc()
+                trace = "".join(traceback.format_exception(
+                    type(exc), exc, exc.__traceback__))
+                print(redact_error(trace, configured_secrets(cfg)), end="")
             if not args.keep_going:
+                try:
+                    _restore_topics_to_backlog(cfg.topics_backlog_file, retry_topics)
+                except Exception as restore_exc:  # noqa: BLE001
+                    print("  [topics] could not restore retry topic: "
+                          + redact_error(restore_exc, configured_secrets(cfg)))
                 return 1
+
+    try:
+        _restore_topics_to_backlog(cfg.topics_backlog_file, retry_topics)
+    except Exception as restore_exc:  # noqa: BLE001
+        from safe_errors import configured_secrets, redact_error
+
+        failure_count += 1
+        print("  [topics] could not restore retry topic: "
+              + redact_error(restore_exc, configured_secrets(cfg)))
 
     if cfg.autopost_after_generate and new_ids:
         _auto_chain(cfg, new_ids)
@@ -684,7 +737,7 @@ def cmd_generate(cfg, args) -> int:
         print("\nAuto-chain on: packaged + drafted to Buffer (review drafts to release).")
     else:
         print("\nNext: python main.py package")
-    return 0
+    return 1 if failure_count else 0
 
 
 # --------------------------------------------------------------------------
@@ -714,22 +767,32 @@ def cmd_package(cfg, args) -> int:
 
     print(f"Building upload kits for {len(pending)} video(s).\n")
     succeeded = 0
+    failed = 0
     for index, job in enumerate(pending, start=1):
         print(f"[{index}/{len(pending)}] {job.title or job.topic}")
         try:
             kit = build_package(job, cfg)
-            queue.update(job, status="packaged", package_dir=str(kit))
+            queue.update(job, status="packaged", package_dir=str(kit), error="")
             print(f"    kit \u2192 {kit}  (open CHECKLIST.md inside)")
             succeeded += 1
         except Exception as exc:  # noqa: BLE001
-            queue.update(job, status="failed", error=str(exc)[:400])
-            print(f"    \u274c {str(exc).splitlines()[0][:160]}")
+            from safe_errors import configured_secrets, redact_error
 
-    print(f"\n\u2705 {succeeded}/{len(pending)} packaged.")
+            failed += 1
+            # Keep the job in `generated`: a fixed disk/path/input issue can
+            # then be retried with `package` without losing the video.
+            detail = redact_error(exc, configured_secrets(cfg)).splitlines()[0][:360]
+            queue.update(job, error=f"package failed: {detail}"[:400])
+            print(f"    \u274c {detail[:160]}")
+
+    if failed:
+        print(f"\n\u274c {succeeded}/{len(pending)} packaged; {failed} failed (retry with package).")
+    else:
+        print(f"\n\u2705 {succeeded}/{len(pending)} packaged.")
     print(queue.format_table())
     if succeeded:
         print("\nNext: open upload/<id>/CHECKLIST.md and upload at https://youtube.com/upload")
-    return 0
+    return 1 if failed else 0
 
 
 def _subtitle_render_test(cfg) -> bool:
@@ -1243,7 +1306,7 @@ def cmd_clip(cfg, args) -> int:
         else:
             mark_sheet(cfg.sources_sheet, url, "failed",
                        f"clip failed: {detail}"[:200])
-    return 0 if any(status == "ok" for _, status, _ in results) else 1
+    return 0 if results and all(status == "ok" for _, status, _ in results) else 1
 
 
 def cmd_parts(cfg, args) -> int:
@@ -1286,7 +1349,7 @@ def cmd_parts(cfg, args) -> int:
         # single source: the failure message must still reach the user
         label, _, detail = results[0]
         print(f"\n  ❌ {label}" + (f" — {detail}" if detail else ""))
-    return 0 if any(status == "ok" for _, status, _ in results) else 1
+    return 0 if results and all(status == "ok" for _, status, _ in results) else 1
 
 
 def cmd_longform(cfg, args) -> int:
@@ -1330,7 +1393,7 @@ def cmd_longform(cfg, args) -> int:
         # single source: the failure message must still reach the user
         label, _, detail = results[0]
         print(f"\n  ❌ {label}" + (f" — {detail}" if detail else ""))
-    return 0 if any(status == "ok" for _, status, _ in results) else 1
+    return 0 if results and all(status == "ok" for _, status, _ in results) else 1
 
 
 def cmd_sheet(cfg, args) -> int:
@@ -2782,7 +2845,7 @@ def main() -> int:
 
     p = sub.add_parser("autopost", help="post a finished video via Buffer")
     p.add_argument("file", nargs="?", help="video to post (default: newest .mp4 in out/)")
-    p.add_argument("--channels", help="comma list, e.g. youtube,tiktok (default: config)")
+    p.add_argument("--channels", help="enabled destinations: youtube only (default: config)")
     p.add_argument("--title", help="override the sidecar title")
     p.add_argument("--desc", help="override the sidecar description")
     p.add_argument("--video-url", help="skip Cloudinary, use this public mp4 URL")

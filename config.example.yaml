@@ -22,7 +22,7 @@ channel:
   tone: "fast, punchy, high-energy"
 
   # Who is watching. Affects the voice and the writing.
-  audience: "scrolling TikTok/Shorts viewers with short attention spans"
+  audience: "scrolling YouTube Shorts viewers with short attention spans"
 
   # Target length of the finished video, in seconds. 65 is the default —
   # a portrait Short. Use 90-180 for landscape videos.
@@ -140,9 +140,9 @@ parts:
   snap_window: 10.0
 
 disclosure:
-  # YouTube requires AI-made videos to be disclosed. This footer is appended
-  # to description.txt at package time. You ALSO tick the "altered content"
-  # box in YouTube Studio — the per-video CHECKLIST.md reminds you.
+  # Optional transparency note appended to description.txt at package time.
+  # It does NOT replace or automatically determine YouTube Studio's per-video
+  # AI-use setting; answer that based on the actual finished video.
   append_to_description: true
   text: "Disclosure: the narration and visuals in this video were generated with AI tools."
 
@@ -439,14 +439,12 @@ telegram:
   owner_id: 0
 
 buffer:
-  # Autopost (free): `python main.py autopost` uploads the finished mp4 and
-  # creates one Buffer post per channel below. Drafts by default; add
-  # --publish / --schedule / --at to release. Proven with TikTok + YouTube.
-  # Get a key free at https://publish.buffer.com/settings/api
-  # (or export BUFFER_API_KEY instead of writing it in this file).
+  # Optional legacy Buffer integration; it is NOT used by the manual-upload
+  # workflow. Publishing/scheduling requires a separate explicit request.
+  # YouTube is the only enabled destination in this version.
+  # Get a free key at https://publish.buffer.com/settings/api only if needed.
   api_key: ""
-  # Which connected channels to post to (order = posting order).
-  channels: ["youtube", "tiktok"]
+  channels: ["youtube"]
   # YouTube upload defaults.
   youtube_privacy: "public"     # public | unlisted | private
   youtube_category_id: "27"     # 27 = Education, 28 = Science & Technology

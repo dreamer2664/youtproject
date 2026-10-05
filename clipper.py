@@ -1264,52 +1264,22 @@ def pick_title(cand: Candidate, words_in_clip: list[dict]) -> str:
 
 
 # ----------------------------------------------------------------- kit
-def clip_hashtags(title: str, platform: str) -> list[str]:
-    """Caption hashtags for a clip: platform staples + title words (tested)."""
-    base = {"tiktok": ["fyp", "foryou", "learnontiktok"],
-            "reels": ["reels", "explore", "learn"]}[platform]
-    words = []
-    for word in "".join(c if c.isalnum() else " " for c in title.lower()
-                        ).split():
-        if len(word) > 3 and word not in words and word not in base:
-            words.append(word)
-    return (words[:3] + base)[:6]
-
-
-def clip_platform_caption(title: str, platform: str) -> str:
-    """Ready-to-paste TikTok/Reels caption for a clip (pure, tested).
-
-    No source credit here — TikTok/Reels bios carry it; the YouTube kit
-    (DESCRIPTION.txt / CREDIT.txt) keeps the full attribution.
-    """
-    tags = clip_hashtags(title, platform)
-    return (title.strip() + "\n\n" + " ".join(f"#{t}" for t in tags)
-            + "\n") if tags else title.strip() + "\n"
-
-
 def _clip_checklist() -> str:
-    """Compact Studio walkthrough for a clip upload (tested).
-
-    First live clip posting (2026-09-23) went out with an EMPTY
-    description — the attribution line never reached YouTube. The
-    checklist exists so that never happens again.
-    """
+    """YouTube-only manual checklist with truthful rights guidance."""
     return (
-        "# Upload checklist — clip\n\n"
-        "- [ ] **Title** — paste from `TITLE.txt` (hashtags included)\n"
-        "- [ ] **Description** — paste from `DESCRIPTION.txt` **before "
-        "publishing**.\n"
-        "      It credits the source video and its channel — that "
-        "attribution is what\n      separates a clip from a reupload if "
-        "YouTube ever reviews the channel.\n"
-        "- [ ] **Category** — Entertainment, not Education: a stream clip "
-        "should be\n      compared against other clips, not courseware.\n"
-        "- [ ] **Upload** — the .mp4 in this folder, exactly as rendered "
-        "(subtitles burned in)\n"
-        "- [ ] **Cross-post** — `tiktok.txt` / `reels.txt` captions are "
-        "ready (no credit\n      line on those platforms by design)\n"
-        "- [ ] `CREDIT.txt` keeps the source link and the exact time "
-        "window for your records\n")
+        "# YouTube upload checklist — clip\n\n"
+        "- [ ] Review `CREDIT.txt` and the exact source/time window.\n"
+        "- [ ] Confirm you have the rights/permission needed to upload this "
+        "footage. Credit alone does not grant permission or guarantee that a "
+        "clip meets YouTube's reused-content rules; fair use is fact-specific.\n"
+        "- [ ] Add meaningful original commentary/context where appropriate; "
+        "do not treat trimming, captions, or attribution alone as a safe harbor.\n"
+        "- [ ] Paste the title from `TITLE.txt` and the full source credit from "
+        "`DESCRIPTION.txt`.\n"
+        "- [ ] Upload the rendered `.mp4`; review the entire video and captions.\n"
+        "- [ ] If this video contains realistic AI-generated/altered content, "
+        "answer Studio's AI-use setting according to YouTube's current criteria.\n"
+        "- [ ] Record the published URL with `python main.py published <id> <url>`.\n")
 
 
 def write_kit(clip: Path, title: str, cand: Candidate, source: dict,
@@ -1327,10 +1297,6 @@ def write_kit(clip: Path, title: str, cand: Candidate, source: dict,
         f"source: {source['url']}\nchannel: {source['channel']}\n"
         f"window: {cand.start:.1f}s - {cand.end:.1f}s\n",
         encoding="utf-8")
-    (kit / "tiktok.txt").write_text(
-        clip_platform_caption(title, "tiktok"), encoding="utf-8")
-    (kit / "reels.txt").write_text(
-        clip_platform_caption(title, "reels"), encoding="utf-8")
     (kit / "CHECKLIST.md").write_text(_clip_checklist(), encoding="utf-8")
     return kit
 

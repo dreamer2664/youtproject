@@ -152,7 +152,7 @@ def build_top(cfg, entries: list[dict], source: dict, source_key: str,
     print(f"  [top] building Top {len(plan)} countdown "
           f"({sum(e['len'] for e in plan):.0f}s of clips)...")
     build_top_video(plan, out_path, cfg, work_dir / "top")
-    from clipper import _clip_checklist, clip_platform_caption
+    from clipper import _clip_checklist
 
     kit = out_root / f"{key}_top{len(plan)}"
     kit.mkdir(parents=True, exist_ok=True)
@@ -163,10 +163,6 @@ def build_top(cfg, entries: list[dict], source: dict, source_key: str,
     (kit / "TITLE.txt").write_text(title, encoding="utf-8")
     (kit / "DESCRIPTION.txt").write_text(
         build_top_description(plan, source), encoding="utf-8")
-    (kit / "tiktok.txt").write_text(
-        clip_platform_caption(title, "tiktok"), encoding="utf-8")
-    (kit / "reels.txt").write_text(
-        clip_platform_caption(title, "reels"), encoding="utf-8")
     (kit / "CHECKLIST.md").write_text(_clip_checklist(), encoding="utf-8")
     size_mb = out_path.stat().st_size / (1024 * 1024)
     print(f"  [top] ✅ {out_path.name}  {size_mb:.1f} MB  "

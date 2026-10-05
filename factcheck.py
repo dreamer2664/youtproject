@@ -1,72 +1,144 @@
-"""Second-pass fact-check on generated scripts (Gemini, optional).
+"""Optional second-pass model review for generated scripts.
 
-Catches invented dates, wrong names and impossible numbers before they reach
-the voiceover. Never kills a render: any failure (no key, 429s, bad JSON)
-keeps the original script and just reports what happened.
+This is a plausibility/consistency review, NOT source-backed fact-checking.
+It never claims independent verification; every script still needs human source
+review before a manual YouTube upload. A model-marked [CUT] removes unsafe
+material, and a script with no remaining scenes blocks the render.
 """
 
 from __future__ import annotations
 
+import re
+
 from config import Config
+from safe_errors import configured_secrets, redact_error
 from scriptgen import extract_json
 
 
+def _base_report(**updates) -> dict:
+    report = {
+        "checked": False,
+        "review_type": "model_sanity_review",
+        "source_verified": False,
+        "review_required": True,
+        "blocking": False,
+        "changed": 0,
+        "removed_scenes": 0,
+        "notes": [],
+    }
+    report.update(updates)
+    return report
+
+
+def _reviewer_key_available(cfg: Config) -> bool:
+    """True only when a configured credential-backed reviewer can run."""
+    return bool(
+        cfg.gemini_api_keys or cfg.groq_llm_api_keys or cfg.openrouter_api_keys
+        or cfg.deepseek_api_keys or (cfg.azure_api_key and cfg.azure_endpoint)
+    )
+
+
 def check_script(script, cfg: Config) -> dict:
-    """Verify/fix scene narrations in place. Returns a JSON-safe report."""
+    """Review scene narration in place; return a JSON-safe, honest report."""
     if not cfg.factcheck_enabled:
-        return {"checked": False, "reason": "disabled"}
-    if not (cfg.gemini_api_key or cfg.groq_llm_api_keys):
-        print("      factcheck : skipped (no Gemini/Groq key)")
-        return {"checked": False, "reason": "no key"}
-    print("      factcheck : verifying claims...")
+        return _base_report(reason="disabled")
+    if not _reviewer_key_available(cfg):
+        print("      script review : skipped (no configured reviewer credentials)")
+        return _base_report(reason="no reviewer credentials")
+
+    print("      script review : checking for obvious errors/uncertainty...")
     try:
         return _check(script, cfg)
-    except Exception as exc:  # noqa: BLE001 - fact-check must never kill a render
-        print(f"      factcheck : failed ({str(exc)[:100]}) — keeping original script")
-        return {"checked": False, "reason": str(exc)[:200]}
+    except Exception as exc:  # noqa: BLE001 - review failure never loses the script
+        clean = redact_error(exc, configured_secrets(cfg))
+        print(f"      script review : unavailable ({clean[:100]}) — human review still required")
+        return _base_report(reason=clean[:200])
 
 
 def _check(script, cfg: Config) -> dict:
     from scriptgen import get_provider
 
-    numbered = "\n".join(f"[{i}] {s.narration}" for i, s in enumerate(script.scenes, 1))
-    prompt = f"""You are a meticulous fact-checker for a short-form video channel.
+    scenes = list(script.scenes or [])
+    if not scenes:
+        return _base_report(blocking=True, reason="script contains no scenes")
+    numbered = "\n".join(
+        f"[{i}] {scene.narration}" for i, scene in enumerate(scenes, 1))
+    prompt = f"""You are an AI consistency and plausibility reviewer, NOT an independent fact-checker.
+You have no web access and no source documents. Never claim that a statement is verified.
 LANGUAGE: {cfg.language}
-Below are {len(script.scenes)} scenes of voiceover narration. Verify every factual
-claim (names, dates, numbers, causes, records). For each scene:
-- If every claim checks out (or is clearly opinion/CTA), return the narration UNCHANGED.
-- If a claim is wrong, fix it with the SMALLEST possible edit that stays speakable.
-- If a claim is false and unfixable in one sentence, replace just that sentence with [CUT].
-- Never add new claims, never reword for style, keep each scene speakable aloud.
+Review the {len(scenes)} scenes of narration for obvious contradictions, implausible
+claims, unsupported specificity, and uncertain names, dates, numbers, records, or causes.
+For each scene:
+- Keep sound, ordinary narration unchanged.
+- Make only a minimal correction when you are genuinely confident from general knowledge.
+- If a factual sentence is uncertain or cannot be responsibly corrected, replace that
+  sentence with the exact marker [CUT]. Do not replace the whole scene unless nothing
+  else in it can safely remain.
+- Never add a new factual claim, source, quotation, or certainty. Do not treat your
+  internal knowledge as evidence. Preserve the remaining wording and speakability.
 
 NARRATION:
 {numbered}
 
 Return ONLY a JSON object in exactly this shape:
-{{"scenes": [{{"narration": "...", "changed": false, "note": "..."}}]}}"""
-    provider = get_provider(cfg)  # script chain: primary -> gemini -> groq
-    raw = provider.generate_text(prompt, temperature=0.2, tag="factcheck", json_mode=True)
+{{"scenes": [{{"narration": "...", "changed": false, "note": "brief uncertainty/correction note"}}]}}"""
+    provider = get_provider(cfg)
+    raw = provider.generate_text(
+        prompt, temperature=0.2, tag="script-review", json_mode=True)
     data = extract_json(raw)
-    fixed = data.get("scenes")
-    if not isinstance(fixed, list) or len(fixed) != len(script.scenes):
+    fixed = data.get("scenes") if isinstance(data, dict) else None
+    if not isinstance(fixed, list) or len(fixed) != len(scenes):
         got = len(fixed) if isinstance(fixed, list) else "?"
-        raise ValueError(f"expected {len(script.scenes)} scenes back, got {got}")
-    changed, notes = 0, []
-    for scene, item in zip(script.scenes, fixed):
-        text = str((item or {}).get("narration") or "").strip()
-        if not text:
+        raise ValueError(f"expected {len(scenes)} scenes back, got {got}")
+
+    kept = []
+    changed = 0
+    removed = 0
+    notes: list[str] = []
+    for original, item in zip(scenes, fixed):
+        if not isinstance(item, dict):
+            notes.append("malformed review item ignored")
+            kept.append(original)
+            continue
+        proposed = str(item.get("narration") or "").strip()
+        if not proposed:
             notes.append("empty correction ignored")
+            kept.append(original)
             continue
-        text = " ".join(text.replace("[CUT]", " ").split())
-        if not text or text == scene.narration.strip():
-            continue
-        scene.narration = text
-        changed += 1
-        note = str((item or {}).get("note") or "").strip()
+
+        # [CUT] is a removal instruction, never words for the TTS voice.
+        cleaned = re.sub(r"\[\s*CUT\s*\]", " ", proposed, flags=re.I)
+        cleaned = re.sub(r"\s+([,.!?;:])", r"\1", cleaned)
+        cleaned = " ".join(cleaned.split()).strip(" ,;:")
+        note = str(item.get("note") or "").strip()
         if note:
             notes.append(note[:160])
-    if changed:
-        print(f"      factcheck : {changed}/{len(script.scenes)} scenes corrected")
+        if not cleaned:
+            removed += 1
+            continue
+
+        if cleaned != str(original.narration or "").strip():
+            original.narration = cleaned
+            changed += 1
+        kept.append(original)
+
+    if not kept:
+        print("      script review : blocked — every scene was marked [CUT]")
+        return _base_report(
+            checked=True, blocking=True, changed=changed,
+            removed_scenes=removed, reviewed_scenes=len(scenes),
+            notes=notes, reason="model review removed every scene; human correction required",
+        )
+
+    script.scenes = kept
+    if changed or removed:
+        print(f"      script review : {changed} scene(s) revised, "
+              f"{removed} removed; source review still required")
     else:
-        print(f"      factcheck : clean ({len(script.scenes)} scenes verified)")
-    return {"checked": True, "changed": changed, "notes": notes}
+        print(f"      script review : {len(kept)} scene(s) reviewed; "
+              "no source verification performed")
+    return _base_report(
+        checked=True, blocking=False, changed=changed,
+        removed_scenes=removed, reviewed_scenes=len(scenes),
+        remaining_scenes=len(kept), notes=notes,
+    )

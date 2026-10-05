@@ -353,23 +353,20 @@ def build_part_description(title: str, index: int, total: int,
 
 
 def _parts_checklist() -> str:
-    """Compact Studio walkthrough for a part upload (tested)."""
+    """YouTube-only manual checklist with truthful rights guidance."""
     return (
-        "# Upload checklist — part\n\n"
-        "- [ ] **Title** — paste from `TITLE.txt`\n"
-        "- [ ] **Description** — paste from `DESCRIPTION.txt` **before "
-        "publishing**.\n"
-        "      It credits the source video — that attribution is what\n"
-        "      separates a series part from a reupload if YouTube ever "
-        "reviews the channel.\n"
-        "- [ ] **Upload** — the .mp4 in this folder, exactly as rendered "
-        "(subtitles burned in)\n"
-        "- [ ] **Captions** — *Subtitles* → *Add* → *Upload file* → "
-        "`captions.srt` (search + accessibility)\n"
-        "- [ ] **Cross-post** — `tiktok.txt` / `reels.txt` captions are "
-        "ready\n"
-        "- [ ] Post parts in order, one per day — the series numbering "
-        "only works as a sequence\n")
+        "# YouTube upload checklist — part\n\n"
+        "- [ ] Review `CREDIT.txt` and confirm you have the rights/permission "
+        "needed to upload this footage. Credit alone is not permission and "
+        "does not guarantee compliance with YouTube's reused-content rules.\n"
+        "- [ ] Add meaningful original commentary/context; trimming, captions, "
+        "series labels, and attribution alone are not a safe harbor.\n"
+        "- [ ] Paste the title from `TITLE.txt` and full source credit from "
+        "`DESCRIPTION.txt`.\n"
+        "- [ ] Upload the `.mp4`; add `captions.srt` in Studio if included.\n"
+        "- [ ] Review the finished video and answer Studio's AI-use setting "
+        "only if this video's content meets YouTube's current criteria.\n"
+        "- [ ] Post parts in order only if that sequence is useful to viewers.\n")
 
 
 def build_part_srt(words_in_part: list[dict], part_len: float,
@@ -398,8 +395,6 @@ def write_part_kit(clip: Path, title: str, index: int, total: int,
                    siblings: list[str], srt_path: Path | None,
                    ass_path: Path | None, out_root: Path) -> Path:
     """Upload-style kit for one part: mp4 + titles + credit + captions."""
-    from clipper import clip_platform_caption
-
     kit = out_root / clip.stem
     kit.mkdir(parents=True, exist_ok=True)
     shutil.copy2(clip, kit / clip.name)
@@ -413,10 +408,6 @@ def write_part_kit(clip: Path, title: str, index: int, total: int,
         f"window: {window[0]:.1f}s - {window[1]:.1f}s\n"
         f"part: {index}/{total}\n",
         encoding="utf-8")
-    (kit / "tiktok.txt").write_text(
-        clip_platform_caption(title, "tiktok"), encoding="utf-8")
-    (kit / "reels.txt").write_text(
-        clip_platform_caption(title, "reels"), encoding="utf-8")
     if srt_path and Path(srt_path).exists():
         shutil.copy2(srt_path, kit / "captions.srt")
     if ass_path and Path(ass_path).exists():

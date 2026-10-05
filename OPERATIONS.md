@@ -107,7 +107,7 @@ auto-corrected and cached, so re-runs are free) → picks the strongest
 moments → cuts on sentence boundaries, opens
 on the hook → **landscape VODs keep their whole frame** (sharp, centered,
 blurred background fill; `clip.crop_mode` switches to the old crop) →
-upload kits in `clips/` (with TikTok + Reels captions per clip). Batch
+YouTube-only upload kits in `clips/` with source credit and rights reminders. Batch
 runs isolate failures: one dead link doesn't kill the others. Costs ~15-17 API requests per source,
 less than one generated video.
 
@@ -299,8 +299,7 @@ What's different:
   (same tier order as parts); `--start` snaps to a boundary too. A
   whole source over `longform.max_minutes` (20) warns but renders.
 - **Kit**: TITLE/DESCRIPTION/CREDIT/captions.srt/longform.ass +
-  THUMB_1-3.jpg (subtitle-free frames for the thumbnail). No
-  tiktok/reels captions — it isn't vertical.
+  THUMB_1-3.jpg (subtitle-free frames for manual YouTube thumbnail review).
 
 ### `--top N` — the countdown compilation
 
@@ -368,107 +367,42 @@ list), `/clip <id>` (pull one here). Delivery uses Telegram's own copy
 Files over 48 MB are skipped with a reason (Telegram caps bot files at
 50 MB).
 
-## The night batch (unattended runs)
+## Local batch and Telegram power limits
 
-When you run several channels, the per-video minutes stop being the problem —
-sitting at the PC is. `nightbatch` is one command that does the day's work on
-its own:
+`nightbatch` can run a multi-step job and keeps a local journal/log:
 
-    python main.py nightbatch [--clips N] [--count M] [--seconds S]
-                              [--style STYLE] [--image-provider ROUTE]
-                              [--dry-run] [--fresh] [--force] [--no-push]
+    python main.py nightbatch [--clips N] [--count M] [--dry-run]
 
-Order of work: clip the next queued sources from the sheet → generate M videos
-from the backlog → park the new clips on Telegram (`pregen --push`) → send you
-a Telegram report (steps, durations, new file counts, failures with the last
-log line). Uploads stay manual; nothing here can post.
+Each step runs locally; upload remains manual. The journal helps resume after
+a process interruption, but it does not make the PC a hosted service. The bot
+polls Telegram only while `python main.py bot` is running. If the PC is fully
+shut down, it cannot receive commands, render, or send a report. A Telegram
+message sent while the bot is offline may be delivered after it reconnects,
+but do not treat that as a durable local request or rely on it indefinitely.
 
-Robustness, because it is meant to run at 01:30 while you sleep:
+The `wakeup`/Task Scheduler tools are optional Windows helpers for a machine
+that is configured to wake from sleep/hibernate. A fully shut down PC cannot
+run a scheduled job; the wake helper does not change that. The owner's current
+phone-first workflow powers the PC off before sleep, so this manual review does
+not assume any overnight batch or bot process. Start the local bot and render
+when you choose to use the PC, then upload manually through YouTube Studio.
 
-- every step is its own subprocess with its own log under
-  `work/nightbatch/logs/` — one crash can't kill the rest;
-- the journal `work/nightbatch/<date>.json` is updated after EVERY step, so
-  re-running the same day resumes: done steps are skipped, failed ones retried
-  (`--fresh` redoes everything);
-- a lock file refuses a second batch at the same time (a crashed run's lock
-  goes stale after 6 h, or take it with `--force`);
-- the report names failures with the failing log's last line, so you know
-  whether it was quota, network or a dud source.
+## `/go` request lifecycle
 
-Schedule it (Windows, once):
+When the bot is online, `/go` can write a local request to
+`work/nightrun/request.json` before the worker starts. The request is journaled
+and can resume after a process interruption. When the bot is offline, no local
+file is written until it receives the Telegram update; check `/go status` or
+the local journal after reconnecting rather than assuming work completed.
+Uploads stay manual; no step in this pipeline should publish on the owner's
+behalf.
 
-    schtasks /Create /TN "youtproject night batch" /TR "\"%~dp0Night Batch.bat\"" /SC DAILY /ST 01:30 /F
+## Legacy orders & desktop lane (outside current manual workflow)
 
-Then open Task Scheduler → the task → tick **"Wake the computer to run this
-task"** and **"Run task as soon as possible after a scheduled start is
-missed"**. A laptop that sleeps plugged-in will wake, batch, and go back to
-sleep. Check `work/nightbatch/console.log` for the raw output.
-
-From the phone: `/night` starts it, `/night dry` previews the plan.
-
-A sane starting cadence for ~8 channels (clips carry the views, per your own
-numbers): `--clips 3 --count 1` ≈ 45–60 min of unattended work producing
-~20–30 clips + 1 generated video a night.
-
-## The phone night shift (`/go` — the whole night from bed)
-
-The night batch assumes you are at the PC or that it is already running. This
-one assumes the opposite: you text the bot from your phone right before
-sleeping, and **the PC may already be off**.
-
-What actually happens, in order:
-
-1. you send **`/go`** (defaults: 3 clips, 0 videos, stats meeting, clip
-   review, top 5). Modifiers: `/go 4 2`, `/go later`, `/go dry`,
-   `/go status`, `fresh`, `nomeeting`, `noreview`;
-2. if the bot is running, the job is written to
-   `work/nightrun/request.json` FIRST and then executed — a shutdown mid-reply
-   cannot lose it. If the PC is off, Telegram holds the message and the bot
-   reads it at the next start (`/go later` is the same thing deliberately);
-3. the overnight task runs the request: **meeting stats** (the board reads
-   your channel numbers) → clip the queued sources → **meeting review** (the
-   four seats rank every new clip on hook and overall quality and pick what
-   to post, written to `work/nightbatch/review.json`) → generate videos →
-   park new clips on Telegram;
-4. the report arrives with a **"POST THESE TODAY"** block at the top, the
-   stats summary, and what failed;
-5. `wakeup` puts the PC back to hibernate, but only if nobody has touched
-   the keyboard for 5 minutes (`--min-idle` to change, `--no-inbox` to skip
-   the Telegram pass).
-
-Scheduling it (Windows, once):
-
-    schtasks /Create /TN "youtproject overnight" /TR "\"%~dp0Wake and Run.bat\"" /SC DAILY /ST 01:00 /F
-
-Then Task Scheduler → the task → tick **"Wake the computer to run this
-task"** and **"Run task as soon as possible after a scheduled start is
-missed"**. What those two ticks buy you:
-
-- *PC hibernating* → it wakes itself at 01:00, runs the shift, reports,
-  hibernates again. This is the true overnight case.
-- *PC fully shut down* → nothing can run, but nothing is lost: the `/go` sits
-  in Telegram and in `request.json`, and the missed-start tick runs it at the
-  next boot (turn the PC on and walk away — the shift starts by itself).
-
-Honest limits, so nothing is a surprise in the morning: a machine that is
-off does not execute code, and a machine without wake-from-sleep support (or
-a laptop closed with "do nothing" lid settings) behaves like the shutdown
-case. Both cases still produce a full night's work — just at the next
-power-on instead of 01:00.
-
-Manual run, same code path:
-
-    python main.py wakeup [--sleep-after] [--min-idle 300] [--no-inbox] [--dry-run]
-    python main.py nightbatch --if-requested     # no request = exits 0, does nothing
-    python main.py meeting review [--since ISO] [--clip ID] [--top N] [--json-out PATH]
-
-Request lifecycle: `pending` → `done` (with `failed_steps` and a note even
-when steps failed, so the morning report is truthful), or left `pending` if
-the machine dies mid-run — the next wake resumes from the journal instead of
-redoing the day. `work/nightrun/wake.log` has the raw output of the task.
-Uploads stay manual; no step in this pipeline can post.
-
-## Orders & the desktop lane (the AI drives your browser)
+This separate browser-automation lane is not part of the current YouTube-only
+manual upload workflow and was not used in this review. Do not enable upload
+gates or run posting/scheduling orders unless the owner explicitly returns to
+that scope and checks the applicable permissions.
 
 This is the "type it like a person" layer. One sentence:
 

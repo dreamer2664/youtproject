@@ -12,7 +12,9 @@ same video concept never renders twice.
 
 from __future__ import annotations
 
+import os
 import re
+import uuid
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -29,10 +31,27 @@ def load_backlog(path: Path) -> list[str]:
 
 
 def save_backlog(path: Path, topics: list[str]) -> None:
+    """Atomically persist one clean topic per line, preserving the old file on failure."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(HEADER + "".join(t.strip() + "\n" for t in topics if t.strip()),
-                    encoding="utf-8")
+    lines = []
+    for topic in topics:
+        clean = " ".join(str(topic or "").split())
+        if clean:
+            lines.append(clean + "\n")
+    payload = HEADER + "".join(lines)
+    temp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
+    try:
+        with temp.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def pop_topic(path: Path) -> str | None:

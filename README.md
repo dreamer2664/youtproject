@@ -20,36 +20,34 @@ Gemini script -> edge-tts voice -> Pollinations images -> FFmpeg -> YOU upload
                                               + karaoke subtitles burned in
 ```
 
-Each video gets an upload kit with the file, thumbnail, title, description,
-tags, captions file, and a step-by-step `CHECKLIST.md` for that exact video.
+Each video gets a YouTube-only upload kit with the video, available thumbnail,
+title, description, tags, optional captions, and a per-video `CHECKLIST.md`.
+The kit also reminds you to review facts, rights, and AI disclosure before
+manual upload.
 
 > **Just want the commands?** `CHEATSHEET.md` is every command, copy-paste
 > ready — setup, connecting your channels, the daily loop, every lane.
 
 ---
 
-## YouTube Data API uploads vs. manual Studio uploads
+## API audit vs. manual Studio upload
 
-YouTube's rule for API uploads:
+The YouTube Data API restriction applies to uploads through `videos.insert`
+from unverified API projects created after 28 July 2020. The audit is at the
+**API-project level**, not a separate audit for each channel. YouTube's Help
+says creators of videos locked private by an unverified API service can
+re-upload through the YouTube app/site; that is the legitimate path used here.
 
-> All videos uploaded via `videos.insert` from **unverified API projects created
-> after 28 July 2020** are restricted to **private viewing mode**.
+This project prepares local files and does not call `videos.insert`. Manual
+YouTube Studio upload avoids this particular API-project audit restriction;
+it is not a way to disguise an API upload or a blanket exemption for other
+automation. Separate channel-level feature/identity checks may still apply to
+some Studio features. The optional desktop lane is automated browser access
+and must be used only where permitted; it is not part of the manual workflow.
 
-Worse, that lock is **permanent**: a video uploaded through an unaudited API
-project cannot be made public afterwards — not via the API, not in YouTube
-Studio — and there is no appeal. You would have to re-upload every video.
-
-The API-specific restriction is handled through YouTube's developer
-verification/audit process; approval is not guaranteed. Check the current
-YouTube developer requirements for the exact eligibility and review steps.
-
-The supported no-API workflow is manual upload in YouTube Studio: the owner
-uploads the finished kit and completes Studio's disclosures/settings. This
-avoids this project's YouTube Data API upload path and its API-client audit
-question; it is not a blanket exemption for other kinds of automation. The
-optional desktop lane is automated browser access, which YouTube's Terms treat
-separately. Do not infer permission or compliance from the fact that it does
-not call `videos.insert`; use it only where your use is permitted.
+Official references: [Videos: insert](https://developers.google.com/youtube/v3/docs/videos/insert),
+[Videos locked as private](https://support.google.com/youtube/answer/7300965?hl=en),
+and [API Services Developer Policies](https://developers.google.com/youtube/terms/developer-policies).
 
 ---
 
@@ -138,24 +136,24 @@ python main.py meeting memory      # every decision the board ever made
 python main.py meeting last        # re-read the full boardroom transcript
 python main.py generate --style cartoon   # flat 2D vector toon look
 python main.py generate --no-subs       # skip subtitles for one run
-python main.py batch --topics topics.txt  # render a whole list overnight
+python main.py batch --topics topics.txt  # render a whole list while the PC is on
 python main.py batch --count 7          # 7 fresh backlog topics, auto-picked
 python main.py batch --dry-run --count 3  # preview a batch: topics + time, $0
 python main.py topics --topup       # refill the topic backlog with AI ideas
-python main.py schedule --per-day 2 # render 2 videos/day unattended (Ctrl+C stops)
+python main.py schedule --per-day 2 # render while this PC/process stays on
 python main.py schedule --dry-run   # preview the daily plan, $0
 python main.py bot                         # render videos from your phone via Telegram
-python main.py jarvis "make 3 videos and schedule them 4h apart tomorrow"  # channel manager
-python main.py autopost                     # post newest video via Buffer (draft)
-python main.py stats --days 30                # views/reach/eng per channel (Buffer)
 python main.py yt "@handle"                   # channel subs/views (1 quota unit)
 python main.py yt --search "roman engineering"  # 1 unit; separate 100-calls/day project bucket
-python main.py crew --days 3 --per-day 4      # autonomous mission (drafts; add --live)
 python main.py queue                    # what's in the queue
 python main.py package                  # build upload kits for generated videos
 python main.py published <id> <url>     # record a manual upload's URL
 python main.py voices --lang it-        # list Italian voiceover voices
 ```
+
+The core workflow stops at a local YouTube kit and **your manual upload**.
+Buffer, crew, and desktop automation commands are separate legacy routes and
+are not part of this workflow; no publishing action was used in this review.
 
 ### Picking topics (nothing repeats)
 
@@ -175,9 +173,9 @@ source (`from backlog` vs `--topic override` vs channel fallback).
    <https://youtube.com/upload>, follow the checklist (~3 min).
 4. `python main.py published <id> https://youtu.be/...` → queue stays accurate.
 
-One video a day, at the same hour, beats five at once. See `UPLOAD-GUIDE.md`
-for the full walkthrough: the AI-disclosure box, captions, audience settings,
-thumbnails, Shorts, and what not to do on a new channel.
+Choose a cadence that you can sustain and review. See `UPLOAD-GUIDE.md`
+for the manual Studio workflow, source/rights checks, captions, audience
+settings, thumbnail availability, and the per-video AI-use disclosure criteria.
 
 ### The panel (click instead of typing)
 
@@ -186,12 +184,12 @@ A local page opens (127.0.0.1 only, no terminal) with buttons for the moves
 you actually make: **Generate** (image route `stock`/`ai`/`free`, style and
 length as clicks), **Clip** and **Parts** (pick a link off your list or take
 the next queued one), the **boardroom** (run it, dry-run it, read minutes,
-or chat with any seat), plus snapshots, keys, queue, kits, errors, and the
-**Publish** section: type one sentence, watch it plan, dry-run it, or run it.
-Every button runs exactly the command you would have typed, streams its
-output live, and one job runs at a time. The Publish section drives the same
-`order` lane as the CLI (`python main.py order "…"`), which obeys the
-**uploads gate**: with `uploads: off` a Run stages everything and stops
+or chat with any seat), plus snapshots, keys, queue, kits, and errors. A
+separate **Publish** section can plan or run the legacy desktop `order` lane;
+it is not part of the current manual workflow. Every button runs exactly the
+command you would have typed, streams its output live, and one job runs at a
+time. That section obeys the **uploads gate**: with `uploads: off` a Run stages
+everything and stops
 before any publish click; the header shows `uploads off`/`uploads ON` at all
 times, and with ON the Run button asks before it starts. The panel itself
 contains no upload code. On Windows, FFmpeg/ffprobe runs without opening a
@@ -251,49 +249,28 @@ schtasks /Create /TN "youtproject night batch" /TR "\"%~dp0Night Batch.bat\"" /S
 sleeps). From your phone: **`/night`** starts it, **`/night dry`** previews
 the plan.
 
-### The whole night from your phone (`/go`)
+### Phone requests and PC power
 
-Send one message from bed and sleep. `/go` runs the full shift: a boardroom
-**stats meeting first**, then the clip + generate work, then a second meeting
-that **ranks the finished clips by hook and overall quality and picks what to
-post today**:
+Telegram commands can queue work, but the local bot and render pipeline only
+run while the PC is powered on and the bot process is active. A fully shut
+down PC cannot poll Telegram or render in the background. `/go later` persists
+a request for the next time the worker is started; it does not wake a fully
+shut down PC or complete work overnight. A Windows wake task works only when
+the machine is in a supported sleep/hibernate state and has been configured
+for that purpose. This project does not assume the PC stays on while you
+sleep. For now, render when you choose to use the PC and upload manually from
+your phone or Studio.
 
-```
-/go              # the default night: 3 clips, both meetings, top 5 picks
-/go 4 2          # 4 clips + 2 generated videos
-/go later        # queue it and stop — it runs at the next wake/boot
-/go dry          # print the plan, spend nothing
-/go status       # what is queued / what happened last night
-```
+A genuinely hosted worker would be a separate deployment decision: it would
+need an always-available free host, secrets management, and a fresh privacy /
+reliability review. No remote runner or paid service is enabled here.
 
-Add `fresh` (redo everything), `nomeeting` or `noreview` to any of them.
+### Legacy: orders and the desktop browser lane (outside this manual workflow)
 
-**The honest part about a PC that is off.** A powered-off PC executes nothing,
-so `/go` works by never needing it to be on *at the moment you send it*:
-Telegram holds the message, and the bot writes the job to
-`work/nightrun/request.json` before anything else — a shutdown cannot lose it.
-The **Wake and Run** task then picks it up when the machine is available:
-
-- PC hibernating → the task's *"wake the computer"* tick wakes it at 01:00,
-  does the whole shift, sends you the report, and hibernates again;
-- PC fully shut down → the task's *"run as soon as possible after a missed
-  start"* tick runs the shift at the next boot instead (turn the PC on in the
-  morning, the night's work is done and waiting).
-
-Setup (Windows, once each):
-
-```
-schtasks /Create /TN "youtproject overnight" /TR "\"%~dp0Wake and Run.bat\"" /SC DAILY /ST 01:00 /F
-```
-
-then in Task Scheduler → that task → tick **"Wake the computer to run this
-task"** and **"Run task as soon as possible after a scheduled start is
-missed"**. `Start Bot.bat` runs the bot while the PC is on; `Wake and Run.bat`
-is the overnight worker (its output goes to `work/nightrun/wake.log`). A
-hibernated PC is what makes this truly overnight — a full shutdown can only
-run it at the next power-on, which is exactly what the second tick covers.
-
-### Orders — hand the AI your browser
+This separate automation lane is not part of the current YouTube-only manual
+upload workflow and was not used in this review. Do not enable browser upload
+or run publish/schedule actions unless the owner explicitly returns to that
+scope and verifies the applicable permissions.
 
 One sentence, spoken like a person:
 
@@ -378,10 +355,9 @@ re-sends a finished video. `/jarvis <task>` hands the channel manager a job
 here as it goes. `/crew <mission>` launches the autonomous team for days
 (`/log` replays their chatter, `/stop` halts). Voice notes work too — talk, and it transcribes ("jarvis, …"
 routes to the channel manager, anything else becomes a render topic). One thing
-runs at a time; extras queue up. A rendered video
-arrives as a file (bit-exact, ready to upload) plus the caption and hashtags,
-and the full YouTube kit is also built on your PC. Only your account can use
-the bot.
+runs at a time; extras queue up. A rendered video arrives as a file plus YouTube title/description/tags for
+manual upload; the YouTube kit is also built on the PC. The bot only responds
+while its polling process is running, and only your account can use it.
 
 ---
 
@@ -394,14 +370,14 @@ Everything lives in `config.yaml`. The important keys:
 | `channel.topic` | Your niche. Drives every script and image. Be specific. |
 | `channel.tone` | How the narration sounds. |
 | `channel.voice` | Free neural voice. `python main.py voices` lists them. |
-| `channel.speech_rate` | Narration speed. `+40%` is brisk TikTok pacing (~180 wpm). |
+| `channel.speech_rate` | Narration speed; tune it by listening to the finished export. |
 | `channel.target_seconds` | Default target length. 90–180 suits a new channel. |
 | `channel.category_id` | Prefilled into each video's checklist. |
 | `video.format` | `landscape` (1920x1080) or `portrait` (1080x1920 Shorts). |
 | `video.images_per_scene` | Pictures per narrated scene, 1–6. Higher = denser cuts. |
 | `video.style` | Art direction: `photoreal` (default), `cartoon`, or `stickman` whiteboard explainer. |
 | `subtitles.enabled` | Karaoke captions (word highlight) burned in. Leave on. |
-| `disclosure.append_to_description` | Adds the AI-disclosure footer to descriptions. Leave on. |
+| `disclosure.append_to_description` | Adds an optional AI-tools transparency note; Studio's AI-use answer is conditional on the actual video. |
 | `ai.provider` | `gemini` (good scripts) or `template` (keyless fallback). |
 | `ai.gemini_model` | `gemini-3.8-flash` (re-surveyed 2026-09-16, newest-first fallbacks). |
 
@@ -422,7 +398,7 @@ Shorts, long-form and art styles without touching the config.
 | `voiceover.py` | edge-tts voiceover + word timings |
 | `subtitles.py` | Karaoke ASS + SRT writer, burn-in styling |
 | `assembler.py` | FFmpeg: sub-segments, burn-in, mux, thumbnails |
-| `package.py` | Upload kits + checklists + TikTok/Reels captions |
+| `package.py` | YouTube-only manual upload kits, checklists, and retry-safe replacement |
 | `jobqueue.py` | `state.json` job tracking |
 | `bot.py` | Telegram phone control (polls, renders, delivers) |
 | `nightreq.py` | the `/go` request file (`work/nightrun/request.json`) — survives a shutdown |
@@ -431,7 +407,7 @@ Shorts, long-form and art styles without touching the config.
 | `orders.py` | plain-language orders → clips + videos + channel mapping + staged packets |
 | `Desktop Chrome.bat` | starts a Chromium browser (Opera GX, Edge, Chrome, Brave, Vivaldi) with the debug port so the agent can drive the window you see |
 | `panel.py` / `panel.html` | Click-only control panel (`Start Panel.bat`, or `main.py panel`) |
-| `autopost.py` | Buffer autopost: video hosting + TikTok/YouTube/IG drafts or scheduled posts |
+| `autopost.py` | Optional legacy Buffer adapter; YouTube is the only enabled destination, not used by manual upload |
 | `jarvis.py` | Channel manager brain: tasks → render + schedule + report |
 | `openai_compat.py` | Shared base for OpenAI-style chat lanes (rotation + fallback) |
 | `groq.py` / `openrouter.py` | Free LLM lanes (primary / backup) |
@@ -466,14 +442,14 @@ documented in `API-REPORT.md` §11.
 
 ---
 
-## Not recommended
+## Scope and cautions
 
-- **Uploading via the YouTube API from an unaudited project.** Videos get
-  permanently locked to private. That is the trap this project exists to avoid.
-- **Browser automation for uploading.** YouTube's Terms restrict automated
-  access subject to stated exceptions/permission; this project cannot grant that
-  permission. It also breaks when Studio changes and risks the channel. Prefer
-  the manual Studio workflow unless your use is permitted.
-- **Dumping dozens of videos on day one.** New channels that publish one solid
-  video a day do better than ones that flood. The tool can generate faster than
-  you should publish.
+- This project does not use the YouTube Data API upload endpoint. Unverified
+  API projects can have `videos.insert` uploads restricted to private; the
+  official Help describes re-uploading through the YouTube app/site as an
+  option. The compliance audit is project-level, not per channel.
+- Manual Studio upload is the supported workflow here. The separate desktop
+  automation lane is off by default and is not enabled or exercised by this
+  review; check current Terms/permissions before using it.
+- The tool can render faster than a person can review. Set a cadence you can
+  sustain while checking sources, rights, the finished export, and metadata.

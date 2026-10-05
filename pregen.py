@@ -308,16 +308,11 @@ def push_pending(cfg, sender, chat_id: int, limit: int = 0,
     # Announce the winner only when this run parked it — otherwise every
     # push re-spams a crown the phone already saw.
     if best and best["id"] in report["pushed"]:
-        caption = ""
-        try:
-            from clipper import clip_platform_caption
-
-            caption = clip_platform_caption(best.get("title") or "", "tiktok")
-        except Exception:  # noqa: BLE001 - caption is a bonus
-            caption = ""
-        text = "🏆 Today's pick:\n\n" + format_scorecard(best)
-        if caption:
-            text += f"\n\nCaption (copy-paste):\n\n{caption}"
+        text = ("🏆 Today's YouTube Shorts pick:\n\n"
+                + format_scorecard(best)
+                + "\n\nYouTube only for now. Open the local upload kit to "
+                  "review rights, title, description, and captions before "
+                  "manual upload.")
         try:
             sender("message", chat_id, text)
         except Exception as exc:  # noqa: BLE001 - announced or not, clips are parked

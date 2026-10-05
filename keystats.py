@@ -86,7 +86,7 @@ LIMITS = {
 # (Gemini/YouTube quota scope re-verified 2026-10-05; see CAPACITY.md).
 ADVICE = {
     "gemini": [
-        "Powers: scripts + titles + fact-check + boardroom Strategist "
+        "Powers: scripts + titles + AI plausibility review (not source verification) + boardroom Strategist "
         "(chain head). Active limits vary by model and usage tier; check "
         "the current project limits in Google AI Studio.",
         "Quota scope: per project, not per API key. Keys in one project "

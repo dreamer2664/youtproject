@@ -1,158 +1,134 @@
-# UPLOAD-GUIDE — uploading manually in YouTube Studio
+# UPLOAD-GUIDE — manual YouTube Studio upload
 
-This is the full walkthrough. Each video's kit (`upload/<id>/`) also contains a
-shorter `CHECKLIST.md` prefilled with that video's values — this guide explains
-the *why* behind each step.
+The generator creates local files only. Each `upload/<id>/` kit includes a
+video, copy-paste metadata, an optional subtitle file, and a per-video
+`CHECKLIST.md`. Nothing here signs in to YouTube or uploads/publishes for you.
 
-Time per video: about 3 minutes once you've done it twice.
+This guide is intentionally YouTube-only. Review YouTube Studio's current
+labels and help pages when the interface or rules change.
 
----
+## Important: the API audit is not per channel
 
-> The optional desktop lane (README "Orders") can operate your own browser
-> when `desktop.uploads: on`, but this does not make browser automation an
-> audit-free or policy-approved route. YouTube's Terms restrict automated
-> access subject to stated exceptions/permission. Use the manual steps below
-> unless your automated use is permitted; this guide remains the supported
-> manual workflow.
+YouTube's restriction concerns uploads made through the YouTube Data API
+`videos.insert` endpoint by an unverified API project created after 28 July
+2020. The restriction is lifted through an audit of the **API project**—the
+official documentation says each API project must undergo the audit. It is
+not an audit you submit separately for every channel.
 
+This project does not call `videos.insert`. YouTube's Help says that, for a
+video locked private because it was uploaded through an unverified API
+service, the creator can re-upload through the YouTube app/site; that is the
+legitimate route this manual workflow uses. This is not a way to disguise an
+API upload or evade policy—it simply uses YouTube's own Studio/site upload.
+Separate channel feature eligibility or identity/phone verification may still
+apply to particular Studio features, such as custom thumbnails.
 
-## 1. Before your first upload (one-time, ~10 minutes)
+Official references:
+- [Videos: insert — project audit restriction](https://developers.google.com/youtube/v3/docs/videos/insert)
+- [Videos locked as private — YouTube Help](https://support.google.com/youtube/answer/7300965?hl=en)
+- [YouTube API Services Developer Policies](https://developers.google.com/youtube/terms/developer-policies)
 
-1. **Create the channel** at <https://youtube.com/channel_switcher> if you
-   haven't. Pick the name, handle and profile picture now — changing them later
-   confuses the algorithm and your viewers.
-2. **Verify your phone number** at <https://youtube.com/verify>. Free, instant,
-   and required for custom thumbnails. Without it your `thumbnail.jpg` can't be
-   used and you're stuck with auto-generated frames.
-3. **Enable 2-Step Verification** on the Google account. Channels get stolen
-   constantly; this is the cheapest insurance there is.
+## 1. Before uploading
+
+1. Make sure you are signed in to the intended channel in YouTube Studio.
+2. Watch the complete exported video with sound. Check the opening, ending,
+   image changes, burned-in text, audio levels, and subtitle timing.
+3. Review every factual claim against reliable, independent material. The
+   optional in-pipeline model review is a plausibility pass only: it has no
+   source documents, does not verify facts, and cannot replace your review.
+4. Check rights for every video, image, audio track, and source clip. Credit is
+   not permission; a clip kit's source credit does not guarantee copyright or
+   reused-content compliance. Fair use is fact-specific.
+5. Confirm the title, description, and thumbnail accurately represent the
+   finished video. Remove unsupported claims and misleading tags.
 
 ## 2. Upload the file
 
-1. Open <https://youtube.com/upload> while logged into the channel.
-2. Drag in `video.mp4` from the kit folder.
-3. **Do not close the tab** while it uploads and processes. Fill in the fields
-   below meanwhile — everything is copy-paste from the kit's `.txt` files.
+1. Open [YouTube Studio](https://studio.youtube.com/) and choose **Create →
+   Upload videos** (or use YouTube's current upload page).
+2. Select `video.mp4` from the kit and wait for upload/processing to finish.
+3. Keep the upload private or unlisted while you review the details if you
+   prefer; choose visibility yourself after the checks below.
 
 ## 3. Details
 
-- **Title** — paste from `title.txt`. Already ≤ 100 characters. Read it once
-  out loud; fix anything that sounds generated. A 30-second human edit here is
-  worth more than any tag trick.
-- **Description** — paste from `description.txt`. It ends with an AI-disclosure
-  footer. **Do not delete that footer.**
-- **Thumbnail** — *Upload File* → pick `thumbnail.jpg`. Custom thumbnails
-  massively outperform auto frames; always upload it. (For Shorts, see
-  section 8 — the thumbnail file is a fallback; viewers mostly see a
-  freeze-frame you pick in the mobile app.)
-- **Tags** — under *Show more*, paste from `tags.txt`. Already ≤ 500
-  characters total. Tags barely matter for discovery in 2026, but they cost
-  nothing.
-- **Language** — set your narration language (prefilled in the checklist).
-  This drives captions and search matching; don't leave it on auto.
-- **Category** — set it (prefilled in the checklist). Wrong category buries
-  videos in the wrong recommendations.
+- **Title** — copy `title.txt`; the kit enforces YouTube's 100-character
+  maximum. Read it once and remove any claim the video does not support.
+- **Description** — copy `description.txt`. Its optional AI-tools note is a
+  transparency note only. It is not a substitute for Studio's AI-use answer.
+- **Thumbnail** — use `thumbnail.jpg` if present and available for that video
+  type/account. If it is absent or Studio does not offer a custom thumbnail,
+  choose an appropriate frame using Studio's available controls.
+- **Tags** — copy `tags.txt` if you choose to use tags. They are optional and
+  do not guarantee discovery or reach. Keep every tag relevant.
+- **Language/category** — use the values in `CHECKLIST.md` when appropriate;
+  correct them if they do not describe the finished video.
 
-## 4. Altered content — REQUIRED, do not skip
+## 4. YouTube Studio's AI-use setting — decide per video
 
-YouTube shows this question for every upload:
+Answer from the finished video's content, not just from the fact that an AI
+tool was used. YouTube says disclosure is required when AI meaningfully
+alters or generates realistic content that could mislead viewers. Its examples
+include:
 
-> *Is this content altered or synthetic, and does it seem real?*
+- making a real person appear to say or do something they did not;
+- altering footage of a real event or place;
+- generating a realistic scene that did not happen; or
+- AI-generated music that is the main focus of the video.
 
-For videos made with this tool the answer is **Yes**. Then tick:
+Clearly fantastical/stylized content, minor aesthetic edits, and some
+production assistance may not require disclosure. The examples are not
+exhaustive. Inspect the actual visuals and audio; photorealistic invented
+scenes are a common reason this project's videos may need a **Yes** answer.
+In Studio, under **Attributes → AI use** (or the equivalent label shown in
+your version), choose **Yes** if the criteria apply and **No** if they do not.
+Do not select Yes automatically just because the script, narration, or images
+used AI tools—and do not select No automatically either.
 
-> *Generates realistic scenes that didn't happen.*
+See [YouTube's official GenAI disclosure guidance](https://support.google.com/youtube/answer/14328491?hl=en).
 
-What happens if you skip it: YouTube can remove the video or restrict the
-channel, and viewers increasingly filter for disclosed content anyway. The
-description footer and this checkbox together are the complete, correct
-disclosure. It takes five seconds.
+## 5. Captions
 
-## 5. Captions — upload the .srt even though subs are burned in
+If the kit contains `captions.srt`, upload it in Studio's subtitles/captions
+controls and review the result. Burned-in words are part of the video picture;
+an SRT is a separate, viewer-controllable caption track. If no SRT is present,
+do not claim that one was uploaded—use Studio's available caption tools and
+check any automatic transcription for errors.
 
-Subtitles are already burned into the picture, but still upload
-`captions.srt`: Studio → left menu **Subtitles** → pick the video → *Add* →
-*Upload file*. Why:
+## 6. Audience, visibility, and publish
 
-- Viewers can turn captions **off** (burned-in can't be disabled).
-- YouTube **indexes caption text for search**.
-- Auto-translate to other languages only works from uploaded captions.
+- Answer the **made for kids** question based on the video's intended audience
+  and YouTube's current guidance; documentary style alone does not determine
+  the answer.
+- Select Public, Unlisted, Private, or Schedule intentionally. There is no
+  guaranteed upload time or posting cadence that makes a video perform well.
+- Review all fields once more, then make the final publish/schedule decision
+  yourself.
 
-If your video was made with `--no-subs`, there is no `.srt` — either let
-YouTube auto-generate captions (slower, no Studio action needed) or regenerate
-with subtitles on.
+## 7. Record the URL locally
 
-## 6. Audience
-
-> *Is this video made for kids?*
-
-Answer **No** unless the video genuinely targets children. Answering Yes
-(disabling comments, notifications and most ads) or answering wrong in either
-direction brings COPPA trouble you do not want. Documentary-style narration =
-not for kids.
-
-## 7. Visibility — schedule, don't dump
-
-- **First video:** Public, publish now. Check it renders correctly (thumbnail,
-  captions, end screen).
-- **After that:** *Schedule* one video per day at a consistent hour. Your
-  audience and the algorithm both prefer rhythm over floods.
-- New channels should **not** publish 10 videos on day one. It looks like spam
-  to automated systems and splits your tiny initial audience across videos
-  instead of concentrating watch time on one.
-
-## 8. Shorts (portrait videos)
-
-- Anything vertical under 3 minutes is shelved as a Short **automatically** —
-  there is no separate upload flow. Just upload normally.
-- **Thumbnail:** Shorts show a freeze-frame, picked in the **mobile** YouTube /
-  Studio app after upload (web Studio can't change it). Scroll to a frame with
-  a clean background and visible subtitles.
-- **Pacing:** the first 2 seconds decide everything. Watch your Short once and
-  check the hook lands immediately — if the opening line is slow, regenerate
-  with a punchier `--topic` angle.
-- **Subtitles** are placed high enough to clear the Shorts UI overlay (title,
-  like/subscribe buttons). Don't move them.
-- Don't hashtag-stuff: `#Shorts` in the description is harmless but no longer
-  required for shelfing.
-
-## 9. After publishing
+After a successful manual upload, record its URL so the local queue remains
+accurate:
 
 ```bash
 python main.py published <id> https://youtu.be/PASTE-ID-HERE
 ```
 
-This marks the job done in the queue so `python main.py queue` stays truthful.
+## If you are using the clips/parts/longform lanes
 
----
+Those kits are also YouTube-only. They preserve source URLs/time windows where
+available, but you are responsible for confirming rights and permissions
+before uploading. Attribution is useful context, not a guarantee that a clip
+is permitted or sufficiently original. Read YouTube's current copyright,
+Community Guidelines, and monetization/reused-content guidance before using
+third-party footage.
 
-## Things that get AI channels in trouble
+## Monetization and policy
 
-1. **Undisclosed AI content.** Covered above. Checkbox + footer, every video.
-2. **Repetitious / mass-produced content.** YouTube's spam policy explicitly
-   covers bulk-generated videos with little variation. Defenses: a genuinely
-   specific niche, varied topics per video (`--topic`), human review of every
-   script before upload, and one-a-day pacing.
-3. **Misleading metadata.** Titles and thumbnails must match the video. The
-   generator writes honest ones — don't "optimize" them into clickbait that
-   the video can't deliver.
-4. **Reused content (for monetization).** To join the Partner Program later,
-   the channel needs original commentary and educational value, not compilations
-   of others' work. Everything this tool makes is original — keep it that way
-   and don't mix in downloaded clips.
-5. **Browser-automation uploaders.** Tools that drive YouTube Studio with
-   Selenium violate the Terms of Service and get channels terminated. Three
-   minutes of manual uploading is the entire cost of staying compliant.
-
----
-
-## Monetization reality check
-
-- You need **1,000 subscribers + 4,000 watch hours** (or 10M Shorts views) for
-  the Partner Program. AI channels get there the same way as any channel: good
-  niche, good retention, consistency.
-- AI-generated content **is** eligible for monetization if it's original and
-  provides value — YouTube's policy targets low-effort spam, not the tools.
-  Disclosure (step 4) is part of staying eligible.
-- Don't buy subscribers or views. Ever. Detection is automatic and the penalty
-  is channel termination with no appeal.
+Eligibility and review requirements can change. Do not rely on fixed numbers
+or a tool's claims about monetization. Check [YouTube Partner Program
+policies](https://support.google.com/youtube/answer/72851?hl=en),
+[Community Guidelines](https://www.youtube.com/howyoutubeworks/policies/community-guidelines/),
+and [YouTube monetization policies](https://support.google.com/youtube/answer/1311392?hl=en)
+for current rules. AI disclosure does not itself decide monetization eligibility;
+content still has to comply with the policies that apply to all uploads.

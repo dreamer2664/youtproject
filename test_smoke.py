@@ -225,6 +225,11 @@ def t_template_all_styles():
         script = TemplateProvider().generate(cfg, "test topic")
         assert len(script.scenes) >= 3, style
         assert script.title and script.description and script.tags, style
+        narration = " ".join(scene.narration for scene in script.scenes).lower()
+        for unsupported in ("documented and checked twice", "witnesses", "confirmed it",
+                            "this really happened", "case closed"):
+            assert unsupported not in narration, (style, unsupported)
+        assert "verify" in script.description.lower() or "verify" in narration
         final = stylize(script.scenes[0].image_prompt, style)
         assert not final.startswith(", "), f"{style}: leading-comma artifact"
         direction = style_spec(style)["direction"]
@@ -265,12 +270,55 @@ def t_factcheck_never_blocks():
     from factcheck import check_script
     from scriptgen import TemplateProvider
 
-    cfg = tmp_cfg()  # no Gemini key
+    cfg = tmp_cfg()  # no text-provider credentials
     script = TemplateProvider().generate(cfg, "test topic")
     report = check_script(script, cfg)
     assert report["checked"] is False
+    assert report["source_verified"] is False
     cfg.data["factcheck"]["enabled"] = False
     assert check_script(script, cfg)["checked"] is False
+
+
+def t_factcheck_cut_and_truthfulness():
+    """Honor [CUT], block an all-cut script, and never call model output verified."""
+    from unittest.mock import patch
+
+    from factcheck import check_script
+    from scriptgen import Scene, Script
+
+    cfg = tmp_cfg()
+    cfg.data["ai"]["gemini_api_key"] = "synthetic-test-key"
+
+    class Reviewer:
+        def __init__(self, reply):
+            self.reply = reply
+
+        def generate_text(self, *args, **kwargs):
+            return json.dumps(self.reply)
+
+    script = Script(
+        title="Review me", description="", tags=[], provider="test",
+        scenes=[Scene("Unsupported claim.", "one"),
+                Scene("A claim to inspect.", "two")])
+    partial = {"scenes": [
+        {"narration": "[CUT]", "note": "unsupported"},
+        {"narration": "A claim to inspect.", "note": ""},
+    ]}
+    with patch("scriptgen.get_provider", return_value=Reviewer(partial)):
+        report = check_script(script, cfg)
+    assert [scene.narration for scene in script.scenes] == ["A claim to inspect."]
+    assert report["removed_scenes"] == 1
+    assert report["source_verified"] is False and report["review_required"] is True
+
+    all_cut = {"scenes": [{"narration": "[CUT]", "note": "unsupported"},
+                           {"narration": "[CUT]", "note": "uncertain"}]}
+    untouched = Script(title="No safe scenes", description="", tags=[], provider="test",
+                       scenes=[Scene("claim one", "one"), Scene("claim two", "two")])
+    with patch("scriptgen.get_provider", return_value=Reviewer(all_cut)):
+        blocked = check_script(untouched, cfg)
+    assert blocked["blocking"] is True
+    assert len(untouched.scenes) == 2, "all-cut output must not silently pass or erase source"
+    assert blocked["source_verified"] is False
 
 
 # --------------------------------------------------------------------------
@@ -370,6 +418,24 @@ def t_topics_clean():
     assert cleaned == ["First idea!", "second idea"]  # deduped case-insensitively
 
 
+def t_topics_atomic_replace():
+    from unittest.mock import patch
+
+    from topics import load_backlog, save_backlog
+
+    path = Path(_mkdtemp()) / "backlog.txt"
+    save_backlog(path, ["keep this topic"])
+    with patch("topics.os.replace", side_effect=OSError("synthetic replace failure")):
+        try:
+            save_backlog(path, ["replacement topic"])
+        except OSError:
+            pass
+        else:
+            raise AssertionError("injected atomic replace failure was not raised")
+    assert load_backlog(path) == ["keep this topic"]
+    assert not list(path.parent.glob(f".{path.name}.tmp-*"))
+
+
 def t_topics_norepeat():
     from topics import (_clean, is_same_topic, load_backlog, normalize,
                         pop_fresh_topic, save_backlog)
@@ -414,13 +480,9 @@ def t_package():
     import shutil
 
     from jobqueue import Job
-    from package import build_package, build_platform_caption, fit_tags
+    from package import build_package, fit_tags
 
     assert fit_tags(["a" * 400, "b" * 200]) == ["a" * 400]
-    caption = build_platform_caption(
-        {"title": "T", "tags": ["shark facts"], "format": "portrait"}, "tiktok"
-    )
-    assert "#shark" in caption and "#fyp" in caption
 
     tmp = Path(_mkdtemp())
     (tmp / "v.mp4").write_bytes(b"fakevideo")
@@ -439,15 +501,62 @@ def t_package():
               video_file=str(tmp / "v.mp4"), meta_file=str(tmp / "v.meta.json"))
     kit = build_package(job, cfg)
     for name in ("video.mp4", "thumbnail.jpg", "captions.srt", "title.txt",
-                 "description.txt", "tags.txt", "tiktok.txt", "reels.txt",
-                 "CHECKLIST.md"):
+                 "description.txt", "tags.txt", "CHECKLIST.md"):
         assert (kit / name).exists(), name
+    assert not (kit / "tiktok.txt").exists() and not (kit / "reels.txt").exists()
     # Missing .srt: the checklist must stay honest (no captions step).
     (tmp / "v.srt").unlink()
     shutil.rmtree(kit)
     kit2 = build_package(job, cfg)
     assert not (kit2 / "captions.srt").exists()
     assert "captions.srt" not in (kit2 / "CHECKLIST.md").read_text()
+
+
+def t_package_transactional_replace():
+    """Failed rebuilds preserve the old kit; new kits match available assets."""
+    import package
+    from jobqueue import Job
+    from unittest.mock import patch
+
+    tmp = Path(_mkdtemp())
+    video = tmp / "video.mp4"
+    video.write_bytes(b"new video bytes")
+    meta_path = tmp / "video.meta.json"
+    meta_path.write_text(json.dumps({
+        "title": "A careful title", "description": "A description.",
+        "tags": ["topic"], "format": "landscape", "width": 1920,
+        "height": 1080, "duration_seconds": 30, "provider": "template",
+        "subtitle_file": None, "subtitles_burned_in": False,
+    }), encoding="utf-8")
+    cfg = tmp_cfg()
+    cfg.data["paths"]["package_dir"] = str(tmp / "kits")
+    job = Job(id="safe123", topic="topic", status="generated",
+              video_file=str(video), meta_file=str(meta_path))
+    final = cfg.package_dir / job.id
+    final.mkdir(parents=True)
+    (final / "sentinel.txt").write_text("old complete kit", encoding="utf-8")
+    (final / "video.mp4").write_bytes(b"old video bytes")
+
+    with patch("package.shutil.copy2", side_effect=OSError("synthetic disk full")):
+        try:
+            package.build_package(job, cfg)
+        except OSError:
+            pass
+        else:
+            raise AssertionError("injected package failure was not propagated")
+    assert (final / "sentinel.txt").read_text(encoding="utf-8") == "old complete kit"
+    assert (final / "video.mp4").read_bytes() == b"old video bytes"
+    assert not list(cfg.package_dir.glob(".safe123.stage-*")), "staging tree leaked"
+
+    kit = package.build_package(job, cfg)
+    assert (kit / "video.mp4").read_bytes() == b"new video bytes"
+    assert not (kit / "sentinel.txt").exists()
+    assert not (kit / "thumbnail.jpg").exists()
+    assert "no custom thumbnail was included" in (kit / "CHECKLIST.md").read_text().lower()
+    assert not (kit / "tiktok.txt").exists() and not (kit / "reels.txt").exists()
+    checklist = (kit / "CHECKLIST.md").read_text(encoding="utf-8").lower()
+    assert "cross-post" not in checklist
+    assert "not independent source verification" in checklist
 
 
 # --------------------------------------------------------------------------
@@ -717,7 +826,9 @@ def t_parts_kit():
     assert (kit / "captions.srt").exists()
     assert not (kit / "part.ass").exists()  # None in -> no file out
     assert (kit / "CHECKLIST.md").exists()
-    assert (kit / "tiktok.txt").exists() and (kit / "reels.txt").exists()
+    assert not (kit / "tiktok.txt").exists() and not (kit / "reels.txt").exists()
+    checklist = (kit / "CHECKLIST.md").read_text(encoding="utf-8").lower()
+    assert "credit alone is not permission" in checklist
 
 
 def t_caption_overlap():
@@ -1645,7 +1756,7 @@ def t_meeting():
     with _patch.object(clipper, "run_clip", fake_run_clip), \
          redirect_stdout(buf):
         code = cli.cmd_clip(cfg, args)
-    assert code == 0, buf.getvalue()       # one source survived
+    assert code == 1, buf.getvalue()       # partial batches are failures even if one source survived
     rows = {r["url"]: r for r in sh.load_sheet(cfg.sources_sheet)}
     assert rows["https://youtu.be/ok1"]["status"] == "clipped"
     assert cfg.topic in rows["https://youtu.be/ok1"]["result"]
@@ -2821,7 +2932,115 @@ def t_generate_rejects_bad_count():
         raise AssertionError("--count 0 should exit(1)")
 
 
+def t_generate_failure_requeues_and_fails_exit():
+    """A failed backlog render stays retryable and cannot exit 0 with --keep-going."""
+    import argparse
+    from unittest.mock import patch
+
+    import main
+    from jobqueue import Queue
+    from topics import load_backlog, save_backlog
+
+    cfg = tmp_cfg()
+    cfg.data["topics"]["backlog_target"] = 1
+    save_backlog(cfg.topics_backlog_file, ["a fresh retryable topic"])
+
+    class BrokenProvider:
+        def generate(self, *_args, **_kwargs):
+            raise RuntimeError("synthetic provider outage")
+
+    args = argparse.Namespace(
+        topic=None, count=1, seconds=None, format=None,
+        images_per_scene=None, no_subs=False, style=None,
+        image_provider=None, no_gemini=False, keep_work=False,
+        keep_going=True, verbose=False,
+    )
+    with patch.object(main, "get_provider", return_value=BrokenProvider()):
+        rc = main.cmd_generate(cfg, args)
+
+    assert rc == 1, "--keep-going must continue work without hiding failures"
+    jobs = Queue(cfg.state_file).jobs
+    assert len(jobs) == 1 and jobs[0].status == "failed", jobs
+    assert load_backlog(cfg.topics_backlog_file) == ["a fresh retryable topic"]
+    covered = [job.topic for job in jobs
+               if job.status in ("generated", "packaged", "published")]
+    assert main._pick_fresh_topic(cfg, covered) == (
+        "a fresh retryable topic", "from backlog")
+
+
+def t_package_failure_is_retryable_and_nonzero():
+    """A packaging failure leaves its generated job retryable and returns failure."""
+    import argparse
+
+    from jobqueue import Queue
+    from main import cmd_package
+
+    cfg = tmp_cfg()
+    queue = Queue(cfg.state_file)
+    job = queue.add("retry package topic")
+    queue.update(job, status="generated", title="Ready to package",
+                 video_file=str(cfg.out_dir / "missing.mp4"),
+                 meta_file=str(cfg.out_dir / "missing.meta.json"))
+
+    rc = cmd_package(cfg, argparse.Namespace(id=None, limit=None))
+    saved = Queue(cfg.state_file).get(job.id)
+    assert rc == 1, "missing package inputs must not exit successfully"
+    assert saved.status == "generated", "package failure must remain retryable"
+    assert "package failed" in saved.error.lower(), saved.error
+
+    # Once the missing inputs are repaired, the SAME generated job packages.
+    video = cfg.out_dir / "missing.mp4"
+    meta_path = cfg.out_dir / "missing.meta.json"
+    video.write_bytes(b"repaired video")
+    meta_path.write_text(json.dumps({
+        "title": "Ready now", "description": "Review before upload.",
+        "tags": ["retry"], "format": "landscape",
+        "duration_seconds": 20,
+    }), encoding="utf-8")
+    rc = cmd_package(cfg, argparse.Namespace(id=job.id, limit=None))
+    repaired = Queue(cfg.state_file).get(job.id)
+    assert rc == 0 and repaired.status == "packaged", repaired
+    assert Path(repaired.package_dir, "video.mp4").read_bytes() == b"repaired video"
+    assert not repaired.error
+
+
+def t_partial_source_commands_fail_nonzero():
+    """A mixed-success URL batch is incomplete for clip, parts, and longform."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    import clipper
+    import longform
+    import main
+    import parts
+
+    cfg = tmp_cfg()
+    urls = ["https://youtu.be/AAAAAAAAAAA", "https://youtu.be/BBBBBBBBBBB"]
+    clip_args = SimpleNamespace(
+        target="", url=urls, file=[], max_clips=5, min_len=None,
+        max_len=None, no_vision=True, keep_work=False, out=None,
+        sub_pos="default", top=0, whole=None, half=False,
+    )
+    parts_args = SimpleNamespace(
+        target="", url=urls, file=[], part_len=None, max_parts=None,
+        no_header=False, out=None, sub_pos="bottom", keep_work=False,
+        dry_run=False, whole=None, half=False,
+    )
+    longform_args = SimpleNamespace(
+        target="", url=urls, file=[], minutes=None, start=0.0,
+        sub_pos="bottom", no_subs=False, no_chapters=False, top=0,
+        no_vision=False, dry_run=False, keep_work=False, out=None,
+    )
+    with patch.object(clipper, "run_clip", side_effect=[RuntimeError("one failed"), None]):
+        assert main.cmd_clip(cfg, clip_args) == 1
+    with patch.object(parts, "run_parts", side_effect=[RuntimeError("one failed"), None]):
+        assert main.cmd_parts(cfg, parts_args) == 1
+    with patch.object(longform, "run_longform", side_effect=[RuntimeError("one failed"), None]):
+        assert main.cmd_longform(cfg, longform_args) == 1
+
+
 def t_mux_builder():
+
     """The final-mux command builder: full mix has burn + CTA + candy (the
     progress bar rides the .ass burn-in now — drawbox can't animate), the
     minimal mix is narration-only, and the CTA pop follows the end-card
@@ -2947,10 +3166,10 @@ def t_autopost_builders():
                           resolve_mode)
 
     cfg = tmp_cfg()
-    assert cfg.buffer_channels == ["youtube", "tiktok"]
+    assert cfg.buffer_channels == ["youtube"]
     assert cfg.youtube_privacy == "public"
     cfg.data["buffer"]["channels"] = ["TikTok", "bogus", "instagram"]
-    assert cfg.buffer_channels == ["tiktok", "instagram"]
+    assert cfg.buffer_channels == ["youtube"], "non-YouTube destinations stay disabled"
     cfg.data["buffer"]["youtube_privacy"] = "nonsense"
     assert cfg.youtube_privacy == "public"
 
@@ -3127,8 +3346,32 @@ def t_gemini_network():
             raise AssertionError("_post should have raised")
     assert post.call_count == 1
 
+    # Requests errors can echo query strings. Never persist/print an API key.
+    api_key = "AIzaSYNTHETIC_SECRET_123456"
+    detail = f"timed out for url: https://example.test/generate?key={api_key}&x=1"
+    with patch("requests.post", side_effect=requests.exceptions.ReadTimeout(detail)), \
+            patch("time.sleep", return_value=None):
+        result, status, error = GeminiProvider(api_key=api_key)._try_model(
+            "m", {}, tag="t")
+    assert result is None and status == 0
+    assert api_key not in error and "[REDACTED]" in error, error
+
+
+def t_safe_error_redaction():
+    from safe_errors import redact_error
+
+    api_key = "AIzaSYNTHETIC_SECRET_123456"
+    bot_token = "1234567890:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_123456"
+    raw = (f"query ?key={api_key}&q=test; "
+           f"Telegram /bot{bot_token}/getMe; Authorization: Bearer {api_key}")
+    clean = redact_error(raw, (api_key, bot_token))
+    assert api_key not in clean and bot_token not in clean, clean
+    assert clean.count("[REDACTED]") >= 3, clean
+    assert redact_error("plain DNS failure") == "plain DNS failure"
+
 
 def t_sentry():
+
     """Sentry init: no DSN (or no SDK) = silent no-op; with DSN it inits."""
     import sys
     from unittest.mock import Mock
@@ -6404,21 +6647,9 @@ def t_clip_distribution():
     import tempfile
     from pathlib import Path
 
-    from clipper import (Candidate, clip_hashtags,
-                         clip_platform_caption, plan_clip_sources,
-                         write_kit)
+    from clipper import Candidate, plan_clip_sources, write_kit
 
-    # hashtags: platform staples + title words, capped
-    tt = clip_hashtags("Why Cells Become the Most Immortal Animal", "tiktok")
-    assert tt[:3] == ["cells", "become", "most"] and "fyp" in tt
-    assert len(tt) <= 6
-    assert "reels" in clip_hashtags("Title Here", "reels")
-    # captions: title + tags, one line each, no credit (that's for YouTube)
-    cap = clip_platform_caption("Why Cells Become Immortal", "tiktok")
-    assert cap.startswith("Why Cells Become Immortal\n")
-    assert "#fyp" in cap and "youtu" not in cap.lower()
-    assert clip_platform_caption("T", "reels").endswith("\n")
-    # kit: platform files land next to the old ones
+    # Manual clip kits are YouTube-only and include rights/source reminders.
     with tempfile.TemporaryDirectory() as tmp:
         clip = Path(tmp) / "clip_01.mp4"
         clip.write_bytes(b"v" * 64)
@@ -6426,14 +6657,13 @@ def t_clip_distribution():
         kit = write_kit(clip, "Why Cells Become Immortal", cand,
                         {"title": "s", "channel": "c", "url": "u"},
                         Path(tmp))
-        assert (kit / "tiktok.txt").exists()
-        assert (kit / "reels.txt").exists()
-        assert "#fyp" in (kit / "tiktok.txt").read_text(encoding="utf-8")
-        assert (kit / "CREDIT.txt").exists()  # youtube credit intact
-        # checklist: the 2026-09-23 live posting went out with an empty
-        # description — kits now carry the walkthrough that prevents it
-        check = (kit / "CHECKLIST.md").read_text(encoding="utf-8")
-        assert "DESCRIPTION.txt" in check and "attribution" in check.lower()
+        assert (kit / "CREDIT.txt").exists()
+        assert not (kit / "tiktok.txt").exists()
+        assert not (kit / "reels.txt").exists()
+        checklist = (kit / "CHECKLIST.md").read_text(encoding="utf-8").lower()
+        assert "description.txt" in checklist
+        assert "credit alone does not grant permission" in checklist
+        assert "reused-content" in checklist
     # batch planning: positional first, then flags in typed order
     assert plan_clip_sources("https://youtu.be/a", [], []) == \
         [("https://youtu.be/a", "")]
@@ -11122,11 +11352,13 @@ def main(argv: list[str] | None = None) -> int:
         ("template_unknown_style_falls_back", t_template_unknown_style_falls_back),
         ("extract_json", t_extract_json),
         ("factcheck_never_blocks", t_factcheck_never_blocks),
+        ("factcheck_cut_and_truthfulness", t_factcheck_cut_and_truthfulness),
         ("subtitles", t_subtitles),
         ("cta_rotation", t_cta_rotation),
         ("script_no_double_cta", t_script_no_double_cta),
         ("script_length_repair", t_script_length_repair),
         ("topics_clean", t_topics_clean),
+        ("topics_atomic_replace", t_topics_atomic_replace),
         ("topics_norepeat", t_topics_norepeat),
         ("reclaim_interrupted", t_reclaim_interrupted),
         ("sub_position", t_sub_position),
@@ -11156,14 +11388,19 @@ def main(argv: list[str] | None = None) -> int:
         ("top_video", t_top_video),
         ("bot_parser", t_bot_parser),
         ("package", t_package),
+        ("package_transactional_replace", t_package_transactional_replace),
         ("audiofx", t_audiofx),
         ("queue", t_queue),
         ("generate_rejects_bad_count", t_generate_rejects_bad_count),
+        ("generate_failure_requeues_and_fails_exit", t_generate_failure_requeues_and_fails_exit),
+        ("package_failure_is_retryable_and_nonzero", t_package_failure_is_retryable_and_nonzero),
+        ("partial_source_commands_fail_nonzero", t_partial_source_commands_fail_nonzero),
         ("mux_builder", t_mux_builder),
         ("gemini_fallback_order", t_gemini_fallback_order),
         ("gemini_429_fast_failover", t_gemini_429_fast_failover),
         ("gemini_key_sweep", t_gemini_key_sweep),
         ("gemini_network", t_gemini_network),
+        ("safe_error_redaction", t_safe_error_redaction),
         ("sentry", t_sentry),
         ("azure_budget", t_azure_budget),
         ("music_rotation", t_music_rotation),
