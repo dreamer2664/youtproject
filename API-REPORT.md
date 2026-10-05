@@ -310,18 +310,43 @@ other applications' usage, so it intentionally does not claim exact
 project quota remaining. See the [official quota calculator](https://developers.google.com/youtube/v3/determine_quota_cost)
 and [Developer Policies guide](https://developers.google.com/youtube/terms/developer-policies-guide).
 
-**New cross-channel feature gate:** the current YouTube policies guide
-explicitly lists gamifying channel performance by ranking/tracking views
-between different channels, or stoking creator rivalries, as a prohibited
-API use. Do not build an API-powered cross-channel view contest, leaderboard,
-prize trigger, or derived view score unless the use case obtains the
-required policy review/permission. A manual, private Studio-entered scorecard
-is a possible lower API-data-risk alternative, not a legal determination.
+**Cross-channel feature gate — corrected 2026-10-05.** The general
+[Developer Policies guide](https://developers.google.com/youtube/terms/developer-policies-guide)
+still prohibits API-driven gamification by default and says not to create
+derived metrics unless approved. However, the official
+[Additional policies for derived metrics and data storage](https://developers.google.com/youtube/terms/derived-metrics-policy),
+updated 2026-09-14, now contains an explicit permitted category,
+“Gamification and Leaderboards”: an accepted analytics use case may compare
+or rank channel performance/views. The same policy forbids framing intended
+to foster harassment or brigading (for example, a “war” or “battle”). This is
+a conditional permission, not a blanket ban.
+
+The published process is to submit the
+[Audit and Quota Extension Form](https://support.google.com/youtube/contact/yt_api_form),
+select Section 5 “Analytics & Reporting,” and complete the derived-metrics
+agreement. YouTube states that it will determine whether the described use
+case qualifies. Treat this as a review/permission application, not instant
+opt-in: do not run the API-driven race, leaderboard, prize trigger, or derived
+view score until the use case is explicitly accepted. The form has a
+no-change/default-quota option, so higher daily quota is not necessarily
+needed; the form still requests compliance information and evidence.
+
+**Scope correction:** the form describes one API Client per submission and
+allows multiple Google Cloud project numbers; the official documentation does
+not indicate a separate audit for each channel. Channel-specific OAuth
+authorization for owner-only Analytics data is a distinct requirement. A
+private, phone-accessible spreadsheet manually populated from YouTube Studio
+can operate without the project querying those counts, but it is a different
+data path, not a guaranteed policy exemption or legal determination. Do not
+substitute scraping, unofficial endpoints, or project sharding for approval.
 
 The existing public-key-only `snap` path also deserves an owner policy
-review before it is expanded: YouTube's policy limits retention of
-non-authorized API statistics to 30 days, while this repo's default
-`snap.keep_days` is 180. No existing snapshots were deleted, rewritten, or
-pruned in this correction; reducing retention can destroy user history and
+review before it is expanded: absent the accepted additional-metrics
+permission, non-authorized API statistics are limited to 30 days, while this
+repo's default `snap.keep_days` is 180. An accepted use case can store
+specified statistics and derived metrics for up to 36 calendar months, but
+other data (such as titles and creator names) remains subject to 30-day
+refresh/deletion requirements. No existing snapshots were deleted, rewritten,
+or pruned in this correction; reducing retention can destroy user history and
 must be handled deliberately. The long-form lane itself still makes no
 YouTube Data API calls.
