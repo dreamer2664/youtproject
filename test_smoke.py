@@ -3926,6 +3926,34 @@ def t_keystats():
     assert arow["tags"]["whisper"]["audio"] == 1200
     assert arow["tags"]["voicenote"]["audio"] == 30
 
+    # YouTube search is 1 unit/call in a separate project-level 100-call
+    # bucket. Old generic-tag 100-unit ledger rows are corrected on read.
+    yt_now = datetime.now(timezone.utc)
+    yt_sample = [
+        {"t": yt_now.isoformat(), "p": "youtube", "k": "...0001",
+         "req": 0, "units": 100, "tag": "api"},
+        {"t": yt_now.isoformat(), "p": "youtube", "k": "...0002",
+         "req": 1, "units": 1, "tag": "yt-search"},
+    ]
+    yt_searches = keystats.window_sum(
+        yt_sample, "youtube", yt_now - timedelta(days=1), tag="yt-search")
+    assert yt_searches["...0001"]["req"] == 1
+    assert yt_searches["...0001"]["units"] == 1
+    assert yt_searches["...0002"]["req"] == 1
+    yt_month = keystats.month_totals(yt_sample, now=yt_now)["youtube"]
+    assert yt_month["units"] == 2 and yt_month["req"] == 2
+    assert yt_month["tags"]["yt-search"]["req"] == 2
+    yt_cfg = tmp_cfg()
+    yt_cfg.data["youtube"]["api_keys"] = ["yt-key-0001", "yt-key-0002"]
+    keystats.init(yt_cfg)
+    keystats._write(keystats._path, yt_sample)
+    yt_status = keystats.build_status(yt_cfg, now=yt_now)
+    yt_section = yt_status.split("YOUTUBE DATA API")[-1].split("\n\n", 1)[0]
+    assert "project grouping is unknown" in yt_section
+    assert "1/100 search.list calls self-counted" in yt_section
+    assert "all keys" not in yt_section and "10,000 left" not in yt_section
+    keystats.init(cfg)  # restore the original temp ledger
+
     # -- key strategy advice (2026-10-02): honest multi-key truths --------
     advice = keystats.advice_report()
     assert "org-level" in advice or "NOTHING" in advice   # groq truth
@@ -3961,6 +3989,9 @@ def t_keystats():
     assert "35 separate pools" in keystats._keys_note(35, False)
     note = keystats._keys_note(5, True)
     assert "ONE shared pool" in note and "no capacity" in note
+    yt_note = keystats._keys_note(2, False, "youtube")
+    assert "project grouping is unknown" in yt_note
+    assert "separate pools" not in yt_note
     # A wall of PER-KEY pools (the real setup: ~35 Gemini keys) gets an
     # aggregate row — 35 individual "N left of 1,500" rows are unreadable
     # and the aggregate is the number that gates the day. The legacy key
@@ -7450,15 +7481,19 @@ def t_youtube():
     assert get.call_args.args[0].startswith(
         "https://www.googleapis.com/youtube/v3/")
     assert get.call_args.kwargs["params"]["key"] == "k1"
-    # quotaExceeded on key1 -> key2 serves, quota counted once.
+    # Project quota exhaustion stops; another key/project must not bypass it.
     denied = Mock(status_code=403, text="quota")
     denied.json.return_value = {"error": {"errors": [{"reason":
                                                       "quotaExceeded"}]}}
     client = YouTubeClient(["k1", "k2"])
     with patch("requests.get", side_effect=[denied, ok]) as get:
-        video_stats(client, "v")
-    assert get.call_count == 2 and client.spent == 1
-    assert get.call_args_list[1].kwargs["params"]["key"] == "k2"
+        try:
+            video_stats(client, "v")
+            raise AssertionError("quota exhaustion should stop")
+        except RuntimeError as exc:
+            assert "quotaExceeded" in str(exc)
+    assert get.call_count == 1 and client.spent == 0
+    assert get.call_args.kwargs["params"]["key"] == "k1"
     # Invalid key dropped; malformed request raises at once.
     badkey = Mock(status_code=400, text="bad")
     badkey.json.return_value = {"error": {"errors": [{"reason":
@@ -7495,7 +7530,7 @@ def t_youtube():
         channel = channel_stats(YouTubeClient(["k"]), "@ch")
     assert channel["subs"] == 10
     assert get.call_args.kwargs["params"]["forHandle"] == "ch"
-    # Search costs 100 units and parses items.
+    # Search costs 1 unit and records one call in the separate search bucket.
     spayload = {"items": [{
         "id": {"videoId": "s1"},
         "snippet": {"title": "S", "channelTitle": "C",
@@ -7504,8 +7539,11 @@ def t_youtube():
     sok.json.return_value = spayload
     client = YouTubeClient(["k"])
     with patch("requests.get", return_value=sok):
-        results = search_shorts(client, "q", max_results=5)
-    assert results[0]["id"] == "s1" and client.spent == 100
+        with patch("keystats.bump") as bump:
+            results = search_shorts(client, "q", max_results=5)
+    assert results[0]["id"] == "s1" and client.spent == 1
+    bump.assert_called_once_with("youtube", "k", req=1, units=1,
+                                 tag="yt-search")
 
 
 def t_crew():

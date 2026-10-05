@@ -1,9 +1,10 @@
 """YouTube Data API v3: niche + competitor stats. Quota-aware, never silent.
 
-Quota discipline is the whole game: videos.list / channels.list cost 1 unit,
-but search.list costs 100 (of 10k/day per key). So lookups are free-flowing
-while search lives behind an explicit flag and always reports its cost.
-Keys rotate on quota/rate errors; each key is its own 10k/day pool.
+Ordinary read endpoints cost 1 quota unit/call in a 10,000-units/day
+Cloud-project pool. `search.list` also costs 1 unit/call, but has a separate
+100-calls/day/project bucket. Project keys share those limits. Only invalid
+or API-not-enabled configuration errors may use another configured key;
+quota/rate errors stop instead of rotating projects to bypass a limit.
 
 Verified live against the real API (video + forHandle channel lookups).
 """
@@ -19,12 +20,12 @@ import keystats
 import keypool
 
 API = "https://www.googleapis.com/youtube/v3/{}"
-# 403 reasons worth burning the next key on (quota, rate, or a project
-# where the API was never enabled — another key means another project).
-ROTATE_REASONS = {"quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded",
-                  "userRateLimitExceeded", "accessNotConfigured"}
+# Fail over only for an API-not-enabled configuration error. Quota/rate
+# limits belong to the project; another key may share the exhausted pool, and
+# another project's quota must not be used to bypass the limit.
+ROTATE_REASONS = {"accessNotConfigured"}
 COST_LIST = 1
-COST_SEARCH = 100
+COST_SEARCH = 1
 
 
 def _num(value) -> int:
@@ -82,7 +83,7 @@ def extract_id(ref: str) -> tuple[str, str]:
 
 
 class YouTubeClient:
-    """Thin client with key rotation. Tracks quota spent this run."""
+    """Thin client with configuration-key fallback; tracks units spent."""
 
     def __init__(self, keys: list[str] | str) -> None:
         if isinstance(keys, str):
@@ -121,7 +122,8 @@ class YouTubeClient:
                 continue
             if response.status_code == 200:
                 self.spent += cost
-                keystats.bump("youtube", key, units=cost, tag="api")
+                tag = "yt-search" if method == "search" else "api"
+                keystats.bump("youtube", key, req=1, units=cost, tag=tag)
                 try:
                     return response.json()
                 except ValueError as exc:
@@ -199,8 +201,9 @@ def channel_stats(client: YouTubeClient, ref: str) -> dict:
 
 def search_shorts(client: YouTubeClient, query: str,
                   max_results: int = 10) -> list[dict]:
-    """Top Shorts for a niche query, by view count. 100 quota units!
+    """Top Shorts for a niche query, by view count. 1 unit + 1 search call.
 
+    `search.list` is limited to 100 calls/day/project in its own bucket.
     Search never returns view counts, so this is titles + IDs — follow up
     with video_stats (1 unit each) on whatever looks interesting.
     """

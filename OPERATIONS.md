@@ -638,7 +638,7 @@ Retention (APV) is only in Studio Analytics — the public API can't see it.
 Everything runs on free tiers. Check the tanks any time:
 
 ```powershell
-python main.py keys           # per-key usage vs every free-tier limit
+python main.py keys           # self-counted use; YouTube quota is project-level
 python main.py keys --probe   # every Gemini key + the reserved Groq text keys
 python main.py keys --month   # 30-day spend per provider, split by call tag
 python main.py costs          # Azure spend (if ever configured)
@@ -654,7 +654,8 @@ Groq keys are not chat-probed; they are validated during transcription.
   Groq text keys; the rest of the configured fallback chain stays active.
 - ElevenLabs: 1 premium-voice video/day (`ai.premium_voices`), the rest use
   free edge-tts. Raise/lower the number in config.yaml.
-- `snap` costs ~4 of 10,000 daily YouTube API units.
+- `snap` costs ~4 units from the shared 10,000/day YouTube project pool;
+  `search.list` uses a separate 100-calls/day bucket at 1 unit/call.
 
 ### LLM call budget (audited 2026-09-23 — every call site walked)
 

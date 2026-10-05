@@ -143,7 +143,7 @@ python main.py jarvis "make 3 videos and schedule them 4h apart tomorrow"  # cha
 python main.py autopost                     # post newest video via Buffer (draft)
 python main.py stats --days 30                # views/reach/eng per channel (Buffer)
 python main.py yt "@handle"                   # channel subs/views (1 quota unit)
-python main.py yt --search "roman engineering"  # top niche Shorts (~100 units)
+python main.py yt --search "roman engineering"  # 1 unit; separate 100-calls/day project bucket
 python main.py crew --days 3 --per-day 4      # autonomous mission (drafts; add --live)
 python main.py queue                    # what's in the queue
 python main.py package                  # build upload kits for generated videos
@@ -452,7 +452,8 @@ the read-only YouTube Data API keys (`yt` / `snap` stats only), Telegram,
 Buffer, Cloudinary. They all live in `config.yaml`, which is git-ignored, and
 `hooks/pre-commit` blocks commits containing API keys or tokens. The setup
 scripts install that guard automatically — this repo is public, so that guard
-is not optional.
+is not optional. YouTube Data API quota, retention, and cross-channel metric
+policy boundaries are documented in `API-REPORT.md` §11.
 
 ---
 

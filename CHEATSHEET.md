@@ -409,7 +409,7 @@ While the bot runs you can text it: any message = a topic to render,
 ```powershell
 python main.py snap                 # (see §2) channel stats + RETITLE? flags
 python main.py yt "https://youtu.be/xyz"     # one video/channel's public stats (1 unit)
-python main.py yt --search "roman shorts"    # niche Shorts research (~100 units)
+python main.py yt --search "roman shorts"    # 1 unit; separate 100-calls/day project bucket
 python main.py stats                # local render-history report
 python main.py stats --days 14
 python main.py keys                 # API key usage vs free-tier limits

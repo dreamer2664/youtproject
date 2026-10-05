@@ -1,22 +1,25 @@
 # Daily capacity: what the free stack can actually produce
 
-Researched 2026-09-16, quotas re-verified 2026-10-02 (see the bottom
-section). All quotas below are free-tier, no credit card.
+Researched 2026-09-16; most quotas re-verified 2026-10-02, with YouTube's
+quota scope corrected 2026-10-05 (see the bottom section). All quotas below
+are free-tier, no credit card.
 
-**Bottom line at the current cadence** (one clip per channel per day, three
-channels, plus a boardroom meeting): the stack runs at a few percent of its
-free capacity. **The constraint is judgment and hand-uploading, not quota.**
-The one pool that can actually bite is **Groq Whisper audio-minutes** (~8 h/day,
-org-level) — and only on sources with no harvestable YouTube captions, which
-is why the ingest tries captions first. Premium-voice minutes and the
+**Bottom line at a planning cadence** (one clip per channel per day, five
+channels currently, eight after the three planned additions, plus a boardroom
+meeting): the stack still has ample free-tier headroom. **The constraint is
+judgment and hand-uploading, not quota.** The pool most likely to bite is
+**Groq Whisper audio-minutes** (~8 h/day, org-level): fresh/uncached sources
+now use Whisper first even when YouTube captions exist, while the shared
+transcript cache prevents repeat audio spend. Premium-voice minutes and the
 OpenRouter daily cap used to be the binding constraints; premium voices are
 off by default now and OpenRouter only burns during a multi-provider outage.
 
 For volume runs the honest ceilings are below, but **do not plan from this
-table** — run `python main.py keys` (live ledger, and with several keys per
-provider it prints the aggregate pool) and `python main.py keys --advice`
-(what each lane powers + the multi-key truths). Quotas move; the ledger
-doesn't lie.
+table** — run `python main.py keys` for self-counted usage and
+`python main.py keys --advice` for the multi-key truths. The dashboard only
+aggregates where independent pools are known; it deliberately does not
+multiply YouTube keys because that quota is project-level. Quotas move; the
+ledger shows local spend, not provider-side remaining balances.
 
 ## What one ~65s generated video costs the stack
 
@@ -45,7 +48,7 @@ Key counts below are the ones this project actually runs with as of
 | Pixabay stock | ~100 req/min per key, no published monthly cap | the second stock lane; effectively unmetered at this volume |
 | Pollinations images | anonymous ~1 req/15 s (own pacer) + ~50 s per image | ~105 imgs/day paced ≈ 5 videos. **Add a Pexels/Pixabay key or a Pollinations token** — this is the slowest link in the generate lane |
 | ElevenLabs voice | ~10k chars/month **per key** | **0 today**: the 6 keys recorded in Sep 2026 all probed 401-dead (commit `ea37869`). Re-create keys or stay on edge-tts (free, unmetered) — `ai.premium_voices` caps it either way |
-| YouTube Data API | 10,000 units/day per key | n/a — `snap` costs ~3 units/channel/day, `yt --search` 100 |
+| YouTube Data API | 10,000 standard units/day/project + separate 100 `search.list` calls/day/project (1 unit/call) | n/a — `snap` costs ~3 units/channel/run; searches use the separate call bucket |
 
 
 ## How to read this
@@ -73,16 +76,14 @@ Key counts below are the ones this project actually runs with as of
 
 ## Live usage
 
-`python main.py keys` shows every key: requests/characters/audio spent
-today or this month, what's left of each free tier, and when it refills
-(self-counted ledger in work/usage_ledger.json — the APIs don't expose
-remaining quota). With more than one key on a provider the section header
-says what the keys are actually worth (`N keys = N separate pools` vs
-`N keys, ONE shared pool — the extra keys add no capacity`), and per-key
-providers get an `all keys  used / capacity today` aggregate row so a wall
-of keys is still readable at a glance. `keys --month` splits the spend by
-call tag, including which lane ate the Whisper pool (`whisper` =
-clip/parts/longform transcription, `voicenote` = the Telegram bot).
+`python main.py keys` shows self-counted requests/characters/audio and
+refill windows; providers do not expose remaining quota to this ledger.
+With multiple keys, section headers explain shared pools. For known
+per-key providers it can show an aggregate row. YouTube is different:
+quota is per Cloud project, but the ledger cannot map keys to projects or
+count other apps, so it shows per-key usage and search calls without
+claiming project quota remaining or adding capacities. `keys --month`
+splits spend by call tag, including which lane ate the Whisper pool.
 
 ## Re-verification 2026-10-01 (what moved, what to check)
 
@@ -125,7 +126,9 @@ the live ledger, `keys --probe` measures your own keys):
 | OpenRouter | 25+ `:free` models, 20 RPM, **50 req/day per account**; one-time $10 credit → **1,000/day** (credit never expires) | nothing — the cap is per ACCOUNT, keys share it |
 | DeepSeek | balance-based free grant (platform.deepseek.com) | new account = new grant |
 | ElevenLabs | ~10k chars/month per key | each key its own ~10k |
-| Pexels / Pixabay / YouTube / Pollinations | unchanged (200/h + 20k/mo · ~100/min · 10k units/day · 1 req/15s) | each key its own pool |
+| Pexels / Pixabay | unchanged (200/h + 20k/mo · ~100/min) | per-key limits; see provider docs |
+| YouTube Data API | 10k standard units/day/project; separate 100 `search.list` calls/day/project (1 unit/call) | keys in one project share quota; do not shard one use case across projects |
+| Pollinations | unchanged (1 req/15s) | paced; no published hard cap |
 
 **What this means for the key re-creation plan** (decided 2026-10-02):
 
@@ -179,3 +182,23 @@ $10 credit → 1,000/day, credits never expire).
   operation the first healthy Whisper key takes the load until it is
   rate-limited. The usage ledger tracks attempted Groq audio requests by
   masked key; it is not a provider-side quota read.
+
+## YouTube quota correction (2026-10-05)
+
+The current [official quota calculator](https://developers.google.com/youtube/v3/determine_quota_cost)
+(last updated 2026-09-15) defines **10,000 standard units/day per Cloud
+project**. `search.list` has a separate **100 calls/day/project** bucket,
+and each call costs **1 unit**; `videos.insert` likewise has a separate
+100-calls/day bucket at 1 unit/call. `channels.list`, `videos.list`, and
+`playlistItems.list` cost 1 unit/call. Keys in one project share the
+project quota; the YouTube guide forbids spreading one API use case across
+projects just to increase quota.
+
+The code now counts search calls separately, corrects identifiable legacy
+100-unit search rows at read time without rewriting the ledger, and stops
+on quota/rate errors instead of trying another project. The ledger can only
+see calls from this installation and cannot infer which configured keys
+share a project or what other clients used; `keys` therefore shows
+self-counted usage but does not add project capacity or claim a precise
+remaining quota. `crew.max_searches: 3` is a local safety limit, not the
+published API limit.
